@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Calist output — written next to the source forms.
+# Root-anchored on purpose: git is case-insensitive on Windows, so an unanchored
+# rule would also swallow template/Device List.xlsx, which must stay tracked.
+/device list.xlsx
+
+# Completed inspection forms may contain real device and site data;
+# never commit them.
+*-inspection.xlsx
+/forms/
+/inspections/
+
+# Local backups
+_backup-*/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
