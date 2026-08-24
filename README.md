@@ -1,58 +1,66 @@
-<h1 align="center">Calist</h1>
+<div align="center">
 
-<p align="center">
-  <em>Compile a folder of device inspection forms into one equipment register.</em>
-</p>
+# Calist
 
-<p align="center">
-  <a href="https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml">
-    <img alt="Tests" src="https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg">
-  </a>
-  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-blue">
-  <img alt="Devices" src="https://img.shields.io/badge/device%20types-57-brightgreen">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-lightgrey">
-</p>
+**Turn a folder of device inspection forms into one equipment register — in seconds.**
 
-<p align="center">
-  <img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="860">
-</p>
+[![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
+![Device types](https://img.shields.io/badge/device%20types-57-brightgreen)
+![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen)
+![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+
+<img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="880">
+
+</div>
 
 ---
 
-## The problem
+Biomedical equipment inspections are recorded one Excel form per device. A hospital wing produces
+several hundred in a round, and every one holds the same six facts — manufacturer, model, serial,
+location, date, status.
 
-Biomedical equipment inspections are recorded one Excel form per device. A hospital wing might produce
-several hundred of them in a round, and each one holds the same six facts — manufacturer, model, serial,
-location, date, status — in six fixed cells.
+The catch: **those six cells sit in a different place on every device's form.** A defibrillator's
+serial is in `K15`. An ultrasound's is in `L17`. A baby incubator's is in `L72`. Compiling the
+register by hand means opening every file, working out which layout you're looking at, and copying
+six cells — several hundred times.
 
-The catch is that **the cells are in a different place on every device's form.** A defibrillator's
-serial is in `K15`; an ultrasound's is in `L17`; a baby incubator's is in `L72`. Building the equipment
-register by hand means opening every file, remembering which layout you're looking at, and copying six
-cells out of it.
+Calist knows all 57 layouts. Point it at the folder and it does the round in about six seconds.
 
-## What Calist does
+<div align="center">
 
-Point it at a folder of completed inspection forms and a blank register template. It reads the device
-type from each filename, looks up that device's cell layout, pulls the six fields out, and writes one
-row per device into a copy of your template — sorted, numbered, and optionally de-duplicated.
+| Doing it by hand | With Calist |
+|---|---|
+| Open 300 files one at a time | Pick the folder once |
+| Remember 57 different cell layouts | Recognised automatically from the filename |
+| Discover a bad file at row 214 | Flagged before the run starts |
+| Retype serials and hope | Read straight from the cell |
+| An afternoon | **~6 seconds** |
 
-Several hundred forms take a few seconds.
+</div>
 
-## How it works
+## Contents
 
-```
-Clinic-AGH001.xlsx
-        │
-        ├─ 1. read device code from filename ──────────►  "AGH"
-        │
-        ├─ 2. look up its layout in device_config.py ──►  Model E18, S.N K18, …
-        │
-        ├─ 3. read those cells from sheet 1 ───────────►  {Model: "MX450", S.N: "SN-100", …}
-        │
-        ├─ 4. generate the sub-module row, if any ─────►  + a second "NIBP" row
-        │
-        └─ 5. sort, de-duplicate, write into template ─►  device list.xlsx
-```
+[Features](#features) · [Install](#install) · [How it works](#how-it-works) ·
+[Performance](#performance) · [Filename convention](#filename-convention) ·
+[The device table](#the-device-table) · [Two-row devices](#two-row-devices) ·
+[Duplicate serials](#duplicate-serial-numbers) · [Headless use](#headless-use) ·
+[Development](#development) · [Known issues](#known-issues)
+
+## Features
+
+| | |
+|---|---|
+| **Folder-first** | Pick one folder and every Excel file inside it is pulled in, subfolders included. No hand-picking 300 files. |
+| **Validated before you build** | Every file is resolved to a device the moment it's added. An unrecognised code shows up in the table *immediately* — not 200 files into a run. |
+| **You can see it working** | Rows turn green one by one as each device is read, with a progress bar, the file currently open, and time remaining. |
+| **Cancel any time** | Stops cleanly between files and writes nothing. |
+| **The destination is never a surprise** | The *Saves to* row shows exactly where the register will land, before you commit — and warns if a register is already there. |
+| **Handles two-row devices** | A patient monitor and its NIBP module share a chassis but need separate lines. Calist generates the second row and sorts it beneath its parent. |
+| **Smart duplicate removal** | Optional. Drops repeated serials, but knows a device and its own sub-module legitimately share one. |
+| **Remembers your setup** | Template, last folder and preferences persist. Choosing the template is a first-run step only. |
+| **Old and new Excel** | `.xlsx`, `.xlsm` via openpyxl; legacy `.xls` via xlrd. |
+| **Scriptable** | The pipeline imports no GUI toolkit, so it drives headlessly from Python. |
 
 ## Install
 
@@ -63,51 +71,96 @@ pip install -r requirements.txt
 python calist.py
 ```
 
-Requires Python 3.10 or newer. `openpyxl` handles `.xlsx`/`.xlsm`, `xlrd` handles legacy `.xls`, and
-`customtkinter` draws the interface.
+**Requirements** — Python 3.10 or newer on Windows. `openpyxl`, `xlrd` and `customtkinter` install
+from `requirements.txt`.
 
-Installing `tkinterdnd2` as well lets you drag a folder straight onto the window; without it the drop
-zone is click-only and nothing else changes.
+> **Optional:** `pip install tkinterdnd2` enables dragging a folder straight onto the window.
+> Without it the drop zone is click-only and nothing else changes.
 
-## Usage
-
-**Point it at the folder.** Everything else follows from that.
+## How it works
 
 <table>
 <tr>
-<td width="50%"><img src="docs/ui-1-hero.png" alt="Empty state"></td>
+<td width="50%"><img src="docs/ui-1-hero.png" alt="Adding devices"></td>
 <td width="50%"><img src="docs/ui-3-working.png" alt="Building the register"></td>
 </tr>
-<tr>
-<td><b>1 · Add your devices.</b> Picking a folder pulls in every Excel file inside it, subfolders
-included. Each one is checked on arrival, so an unrecognised device code shows up in the table
-straight away — before you commit to a run, not after it.</td>
-<td><b>2 · Watch it work.</b> Rows turn green as each device is read, with a progress bar, the file
-currently open, and an estimate of the time left. Cancel stops it cleanly without writing anything.</td>
+<tr valign="top">
+<td>
+
+**1 · Add your devices**
+
+Pick a folder and every Excel file inside it comes in, subfolders included.
+
+Each one is checked on arrival, so an unrecognised device code appears in the
+table straight away — before you commit to a run.
+
+</td>
+<td>
+
+**2 · Watch it work**
+
+Rows turn green as each device is read, with the file currently open and an
+estimate of the time left.
+
+Cancel stops cleanly without writing anything.
+
+</td>
 </tr>
 </table>
 
-<p align="center">
-  <img src="docs/ui-4-results.png" alt="Results" width="720">
-</p>
+<div align="center">
+<img src="docs/ui-4-results.png" alt="Results" width="760">
+</div>
 
-**3 · Collect the register.** The results card says what was built and exactly where it went, with
-**Open register** and **Reveal in folder** one click away. The table filters itself to anything that
-needs attention.
+**3 · Collect the register** — the results card says what was built and exactly where it went, with
+**Open register** and **Reveal in folder** one click away. The table filters itself down to anything
+that needs attention.
 
-The register is saved as `device list.xlsx` **next to the first source file** — the destination is
-shown in the *Saves to* row throughout, so it is never a surprise. If a register is already there,
-the row says so before you build.
+The register is saved as `device list.xlsx` **beside the first source file**. That location is shown
+in the *Saves to* row the whole time, so it's never a surprise.
 
-The template is remembered between sessions, so choosing it is a first-run step only. Duplicate
-serial removal is optional and off by default.
+<details>
+<summary><b>What happens to a single form</b></summary>
+
+```
+Clinic-AGH001.xlsx
+        │
+        ├─ 1. read the device code from the filename ──►  "AGH"
+        │
+        ├─ 2. look up its layout in device_config.py ──►  Model E18, S.N K18, …
+        │
+        ├─ 3. read those cells from sheet 1 ───────────►  {Model: "MX450", S.N: "SN-100", …}
+        │
+        ├─ 4. generate the sub-module row, if any ─────►  + a second "NIBP" row
+        │
+        └─ 5. sort, de-duplicate, write to template ───►  device list.xlsx
+```
+
+</details>
 
 ### Keyboard
 
-`Ctrl+O` add a folder · `Ctrl+Enter` build · `Esc` cancel a run · `Delete` remove selected rows ·
-double-click a row to reveal that file.
+| | |
+|---|---|
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Add a folder |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Build the register |
+| <kbd>Esc</kbd> | Cancel a run |
+| <kbd>Delete</kbd> | Remove selected rows |
+| Double-click | Reveal that file in Explorer |
 
-### Filename convention
+## Performance
+
+Measured on 300 forms spanning five different device layouts, on a normal desktop machine:
+
+| | |
+|---|---|
+| Full run, 300 forms → 360 rows | **~5.5 seconds** (≈55 forms/sec) |
+| Pre-flight validation, 300 filenames | **under 5 ms** (~14 µs each) |
+
+Pre-flight costs so little because it never opens a workbook — it resolves the filename against the
+device table and nothing more. That's what makes validating-on-add practical even for a large folder.
+
+## Filename convention
 
 The device type comes from the filename, so this part matters:
 
@@ -117,13 +170,13 @@ Clinic-AGH001.xlsx
         └──  everything after the first "-", leading letters only  →  AGH
 ```
 
-If there is no `-`, the whole name is used (`VNT023.xlsx` → `VNT`). A file whose code isn't in the
+If there's no `-`, the whole name is used (`VNT023.xlsx` → `VNT`). A file whose code isn't in the
 device table is **skipped with an error** rather than silently producing a junk row.
 
 ## The device table
 
-All 57 layouts live in [`device_config.py`](device_config.py). Because 51 of the 57 forms are the same
-layout at a different row offset, they're built by a helper rather than written out by hand:
+All 57 layouts live in [`device_config.py`](device_config.py). Because 51 of the 57 forms are the
+same layout at a different row offset, they're built by a helper rather than written out by hand:
 
 ```python
 "DG": {"device_name": "CBC Analyzer", "cells": form(18, "H32")},
@@ -133,12 +186,13 @@ layout at a different row offset, they're built by a helper rather than written 
 
 ```
                       form(18, "H32")
+
       Date          E16   ← row - 2
-      Model         E18   ← row          the anchor
+      Model         E18   ← row            the anchor
       Manufacturer  E20   ← row + 2
       S.N           K18   ← row,     value column
       Location      K20   ← row + 2, value column
-      Status        H32   ← given explicitly, it moves the most
+      Status        H32   ← given explicitly; it moves the most
 ```
 
 Keyword arguments cover the variations:
@@ -160,32 +214,10 @@ One line. Find the Model cell on the form, note the Status cell, and add:
 "XY": {"device_name": "Your Device", "cells": form(<model row>, "<status cell>")},
 ```
 
-## Two-row devices
+<details>
+<summary><b>All 57 supported devices</b></summary>
 
-Some units are inspected as one device but recorded as two — a patient monitor and its NIBP module
-share a chassis and a serial number, but each gets its own status and its own line in the register.
-A `second_row` block generates that line automatically:
-
-```python
-"AGH": {
-    "device_name": "Patient Monitor",
-    "cells": form(18, "D39", extra={"Status2": "J39"}),
-    "second_row": {"device_name": "NIBP", "code_replace": ("AGH", "AGCB")},
-},
-```
-
-The generated row copies the parent's data, takes its status from `Status2`, and rewrites the code
-(`Clinic-AGH001` → `Clinic-AGCB001`). It always sorts directly beneath its parent.
-
-## Duplicate serial numbers
-
-With **Remove duplicate S/N** ticked, a repeated serial is dropped and logged. The exception is a
-device and its own generated sub-module — they legitimately share one serial because they are one
-physical unit. A *third* record on that serial is still dropped.
-
-Blank serials are always kept; several devices with no serial recorded shouldn't collapse into one row.
-
-## Supported devices
+<br>
 
 | | | |
 |---|---|---|
@@ -209,42 +241,47 @@ Blank serials are always kept; several devices with no serial recorded shouldn't
 | `AS` Centrifuge | `DV` OR light | `GP` Holter machines |
 | `AU` Chemistry analyzer | `EA` C-Arm | `VAH` Vital Sign (SPO2 Module) |
 
-<sub>Names are reproduced exactly as they appear in the register output — including the
-spelling slips noted below.</sub>
+<sub>Names appear exactly as they're written into the register — including the spelling slips noted
+under <a href="#known-issues">Known issues</a>.</sub>
 
-## Development
+</details>
 
-```bash
-pip install pytest
-python -m pytest
+## Two-row devices
+
+Some units are inspected as one device but recorded as two. A patient monitor and its NIBP module
+share a chassis and a serial number, but each gets its own status and its own line in the register.
+A `second_row` block generates that line automatically:
+
+```python
+"AGH": {
+    "device_name": "Patient Monitor",
+    "cells": form(18, "D39", extra={"Status2": "J39"}),
+    "second_row": {"device_name": "NIBP", "code_replace": ("AGH", "AGCB")},
+},
 ```
 
-35 tests covering the logic with no I/O — filename parsing, value handling, ordering, de-duplication,
-second-row generation and pre-flight classification — plus end-to-end runs against workbooks built on
-the fly, and integrity checks over the device table itself. One of those asserts that every two-row
-device's names are covered by the shared-serial exemption, so renaming a device can't silently break
-de-duplication.
+The generated row copies the parent's data, takes its status from `Status2`, and rewrites the code
+(`Clinic-AGH001` → `Clinic-AGCB001`). It always sorts directly beneath its parent.
 
-The suite imports `calist` only, never `ui`, so it needs no display and no GUI toolkit.
+## Duplicate serial numbers
 
-### Layout
+With **Remove duplicate serial numbers** switched on, a repeated serial is dropped and logged.
 
-```
-calist.py                      the pipeline — no GUI toolkit imported
-ui.py                          the desktop interface (customtkinter)
-device_config.py               the 57 device layouts and the form() helper
-test_calist.py                 the test suite
-template/Device List.xlsx      reference register template
-```
+The exception is a device and its own generated sub-module — they legitimately share one serial,
+because they are one physical unit. A *third* record on that serial is still dropped.
 
-The pipeline knows nothing about the interface. `calist.py` imports no GUI toolkit at all — `ui.py`
-attaches a logging handler to pick up progress, and reads the structured `FileOutcome` / `RunResult`
-values the pipeline returns. So the whole thing drives headlessly:
+Blank serials are always kept: several devices with no serial recorded shouldn't collapse into one row.
+
+## Headless use
+
+The pipeline knows nothing about the interface — `calist.py` imports no GUI toolkit at all. So the
+whole thing drives from Python:
 
 ```python
 from calist import process_files
 
 result = process_files(["Clinic-AGH001.xlsx"], "Device List.xlsx", deduplicate=True)
+
 print(result.rows_written, "rows ->", result.output_path)
 for problem in result.problems:
     print(problem.filename, problem.detail)
@@ -253,12 +290,44 @@ for problem in result.problems:
 `process_files` also takes `on_file=` for per-file progress and `cancel=` (a `threading.Event`) to
 stop a long run — a cancelled run writes nothing.
 
-To check what a filename *would* resolve to without opening it:
+To check what a filename *would* resolve to, without opening it:
 
 ```python
 from calist import classify_file
+
 classify_file("Clinic-AGH001.xlsx").device_name   # 'Patient Monitor  +NIBP'
+classify_file("Clinic-ZZZ999.xlsx").status        # 'unknown_code'
 ```
+
+## Development
+
+```bash
+pip install pytest
+python -m pytest
+```
+
+35 tests, run in CI against Python 3.10, 3.11 and 3.12. They cover the logic with no I/O — filename
+parsing, value handling, ordering, de-duplication, second-row generation and pre-flight
+classification — plus end-to-end runs against workbooks built on the fly, and integrity checks over
+the device table itself.
+
+One of those asserts that every two-row device's names are covered by the shared-serial exemption,
+so renaming a device can't silently break de-duplication.
+
+The suite imports `calist` only, never `ui`, so it needs no display and no GUI toolkit.
+
+### Project layout
+
+```
+calist.py                    the pipeline — imports no GUI toolkit
+ui.py                        the desktop interface (customtkinter)
+device_config.py             the 57 device layouts and the form() helper
+test_calist.py               the test suite
+template/Device List.xlsx    reference register template
+```
+
+The two halves meet in exactly two places: the pipeline emits log records that `ui.py` picks up with
+a handler, and it returns structured `FileOutcome` / `RunResult` values that the table renders.
 
 ## Known issues
 
@@ -266,16 +335,16 @@ Four entries in the device table need checking against the paper forms:
 
 - `EU` (Lab Oven) puts Location at `K19`; every other standard form puts it at `K20`.
 - `CF` (Baby Warmer) has Model *below* Manufacturer — inverted compared with all 56 others.
-- `CA` is identical to `BF` and its name is unfinished in the source (`"X-ray ()"`).
+- `CA` is identical to `BF`, and its name is unfinished in the source (`"X-ray ()"`).
 - `AO` and `CK` are both named `Infrared` with different Status cells.
 
 Three device names carry spelling slips that reach the register output — `Protien Analyzer`,
-`Tornique`, and `X-ray ()`. They're left as-is deliberately: correcting them changes the text written
-into every historical register, so it should be a deliberate call rather than a drive-by fix.
+`Tornique` and `X-ray ()`. They're left as-is deliberately: correcting them changes the text written
+into every historical register, so it should be a considered call rather than a drive-by fix.
 
-Also: because the output lands among the source files, selecting the same folder twice will feed the
-previous run's output back in. Its code resolves to `DEVICE`, which isn't in the table, so it's skipped
-with an error rather than corrupting the register.
+Because the output lands among the source files, selecting the same folder twice will feed the
+previous run's output back in. Its code resolves to `DEVICE`, which isn't in the table, so it's
+skipped with an error rather than corrupting the register.
 
 ## License
 
