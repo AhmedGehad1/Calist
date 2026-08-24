@@ -10,40 +10,71 @@ inspection Excel forms and compiles them into one flat equipment register.
 ## Commands
 
 ```powershell
-python calist.py                # launch the GUI (the only entry point)
-python -m pytest                # run the test suite (pip install pytest first)
-python -c "import calist"       # import check without opening a window
-pip install -r requirements.txt # openpyxl + xlrd
+python calist.py                # launch the app
+python -m pytest                # run the test suite (35 tests)
+python -c "import calist"       # pipeline import check — pulls in no GUI
+pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 ```
 
 `xlrd` 2.x reads **only** `.xls`; `.xlsx`/`.xlsm` go through `openpyxl`.
 
 ## Architecture
 
-Two modules, one direction: [calist.py](calist.py) imports `DEVICE_CONFIGS` from
-[device_config.py](device_config.py), which is pure data.
+Three modules, strictly one direction:
+
+```
+ui.py  ──imports──>  calist.py  ──imports──>  device_config.py
+(customtkinter)      (pipeline)               (pure data)
+```
+
+**`calist.py` must never import a GUI toolkit.** `main()` imports `ui` lazily inside the function
+body, so `python calist.py` still launches the app while `import calist` stays GUI-free — which is
+what lets the test suite run without a display. There is a test-adjacent check for this:
+`python -c "import calist, sys; assert 'tkinter' not in sys.modules"`.
+
+The two meet in two places, and nowhere else:
+
+- **Logging** — the pipeline emits `log.info/warning/error`; `ui.TkLogHandler` routes records into
+  the details drawer.
+- **Structured results** — `FileOutcome` and `RunResult` carry the same facts in a form the table
+  renders. Neither channel replaces the other; keep both fed.
 
 The pipeline is a chain of small functions orchestrated by
-[`process_files()`](calist.py#L343), which does no work itself:
+[`process_files()`](calist.py#L462), which does no work itself:
 
-1. [`extract_device_code()`](calist.py#L89) — filename stem, split on the first `-`, leading letters of
-   the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`.
+1. [`extract_device_code()`](calist.py#L188) — filename stem, split on the first `-`, leading letters
+   of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`.
 2. `DEVICE_CONFIGS[code]["cells"]` — maps field names to A1 refs.
-3. [`read_record()`](calist.py#L144) — reads those cells via [`_open_source()`](calist.py#L112), a
+3. [`read_record()`](calist.py#L243) — reads those cells via [`_open_source()`](calist.py#L211), a
    context manager that hides the openpyxl/xlrd split behind one `get(ref)` function. **Always
    worksheet index 0.**
-4. [`clean()`](calist.py#L75) — renders raw cell values as output strings.
-5. [`build_second_row()`](calist.py#L157) — for configs with a `second_row` block, emits a sub-module
+4. [`clean()`](calist.py#L142) — renders raw cell values as output strings.
+5. [`build_second_row()`](calist.py#L256) — for configs with a `second_row` block, emits a sub-module
    row of the same physical unit.
-6. [`sort_records()`](calist.py#L261) → optional [`deduplicate_records()`](calist.py#L267) →
-   [`write_output()`](calist.py#L323).
+6. [`sort_records()`](calist.py#L380) → optional [`deduplicate_records()`](calist.py#L386) →
+   [`write_output()`](calist.py#L442).
 
-### Logging is the seam between core and GUI
+### Pre-flight
 
-Core functions call `log.info/warning/error` on the module logger; they contain no reference to Tkinter.
-The GUI attaches a [`TkLogHandler`](calist.py#L411) that marshals records onto the main thread via
-`widget.after(0, ...)`. **Keep it that way** — anything that reaches into the GUI from pipeline code
-breaks headless use and the tests.
+[`classify_file()`](calist.py#L156) resolves a filename to a device **without opening the workbook** —
+extension check, code extraction, config lookup. The UI runs it on every file the moment it is added,
+which is how an unrecognised code surfaces before a long run instead of after it. It must stay
+I/O-free; a test asserts it works on a path that does not exist.
+
+### Threading rules (both of these have already caused bugs)
+
+The pipeline runs on a worker thread. Two hard rules:
+
+1. **Never read a Tk variable off the main thread.** `self._template.get()` inside the worker raises
+   `RuntimeError: main thread is not in main loop`. `App._start` captures `template`, `deduplicate`
+   and the file list into plain Python values *before* spawning the thread — keep it that way.
+2. **Never touch a widget from the worker.** `on_file` pushes onto `App._events` (a `queue.Queue`);
+   `App._drain` polls it on the main thread via `after()`. `TkLogHandler.emit` does the same with
+   its own queue. Batching there is also what keeps a few hundred forms from redrawing the table
+   once per file.
+
+`widget.after(0, ...)` called from a worker thread is the common shortcut and is *not* safe — it
+registers a Tcl command from outside the main loop. Use the queues.
 
 ### Value normalisation
 
@@ -91,7 +122,7 @@ asymmetry is deliberate, so odd forms stand out.
 
 ## Coupling to keep in mind
 
-`ALLOWED_SHARED_SN_PAIRS` ([calist.py:61](calist.py#L61)) holds `device_name` strings verbatim from
+`ALLOWED_SHARED_SN_PAIRS` ([calist.py:60](calist.py#L60)) holds `device_name` strings verbatim from
 `device_config.py`; renaming a device there breaks the exemption that lets a Patient Monitor and its
 NIBP row share a serial. `test_second_row_names_are_covered_by_the_dedup_exemptions` guards this — run
 the tests after renaming anything.
@@ -99,7 +130,7 @@ the tests after renaming anything.
 ## Behaviour worth knowing
 
 - An unknown device code **skips the file** with an error rather than emitting a junk row. Set
-  `SKIP_UNKNOWN_CODES = False` ([calist.py:49](calist.py#L49)) to restore the old A1:A6 fallback.
+  `SKIP_UNKNOWN_CODES = False` ([calist.py:48](calist.py#L48)) to restore the old A1:A6 fallback.
 - Output is `device list.xlsx` beside the first source file. `resolve_output_path()` refuses to run if
   that would overwrite the template (Windows paths are case-insensitive, so it would otherwise clobber
   `Device List.xlsx`).
@@ -120,6 +151,32 @@ Flagged in `device_config.py` and the README, unresolved — they need checking 
 Device names are reproduced verbatim in output, spelling slips included (`Protien Analyzer`,
 `Tornique`). Correcting them changes the text written into every register, so treat it as a deliberate
 data change, not a typo fix.
+
+## `ui.py`
+
+One window, three states swapped in the same layout by `_enter_setup` / `_enter_working` /
+`_enter_results`. Not a wizard — this is a tool the same person runs repeatedly, and steps tax every
+repeat run.
+
+- **Adding devices is the hero.** With nothing loaded, `_refresh_intake` gives the vertical slack to
+  the hero panel and hides the table; once devices are in, the weights flip and the table takes over.
+  That trade is the reason rows 1 and 2 have no static `grid_rowconfigure` weight.
+- **The destination is always on screen.** The *Saves to* row shows where the register will land
+  *before* the run, and warns when it would replace an existing file. `shorten_path()` elides the
+  middle of long paths, never the tail — the deepest folders and filename are what the user reads.
+  This exists because the output location is deliberately unchanged from the original behaviour
+  (beside the first source file); surfacing it was the fix, not moving it.
+- **Live per-row status is the anti-frozen signal**, more than the progress bar — users watch their
+  own filenames resolve.
+- Inputs are frozen during a run (`_set_inputs_enabled`), so the settings can't describe a build
+  other than the one happening.
+- The `ttk.Treeview` is styled to match CTk (`style_treeview`). It stays a Treeview rather than
+  stacked CTk frames because it routinely holds hundreds of rows.
+- Drag-and-drop is optional: `HAS_DND` gates a `TkinterDnD.DnDWrapper` mixin on the root. Absent the
+  package, the drop zone is click-only and nothing else changes. **Untested** — `tkinterdnd2` is not
+  installed here.
+- Template, last folder and the dedup switch persist to `%APPDATA%\Calist\settings.json`; both read
+  and write are best-effort and must never raise.
 
 ## Repo
 

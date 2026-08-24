@@ -18,10 +18,9 @@ import logging
 import os
 import re
 import threading
-import tkinter as tk
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable, Iterable, Iterator
 
 import xlrd
@@ -69,6 +68,74 @@ log = logging.getLogger("aggregator")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Structured results
+#
+# The pipeline reports progress twice over: as log records (the seam the GUI
+# and headless callers both read), and as these dataclasses, which carry the
+# same facts in a form a table can render. Neither replaces the other.
+# ──────────────────────────────────────────────────────────────────────────────
+
+#: A file's state. "ready" is pre-flight only — it means the filename resolved
+#: to a known device, not that the workbook has been opened.
+READY = "ready"
+OK = "ok"
+UNSUPPORTED = "unsupported"
+UNKNOWN_CODE = "unknown_code"
+ERROR = "error"
+CANCELLED = "cancelled"
+
+#: Statuses that mean a file contributed nothing to the register.
+PROBLEM_STATUSES = frozenset({UNSUPPORTED, UNKNOWN_CODE, ERROR})
+
+
+@dataclass
+class FileOutcome:
+    """What happened to one source file."""
+
+    filename: str
+    path: str
+    status: str
+    device_code: str | None = None
+    device_name: str | None = None
+    detail: str = ""
+    rows: int = 0               # 1, or 2 where a second_row was generated
+
+    @property
+    def is_problem(self) -> bool:
+        return self.status in PROBLEM_STATUSES
+
+
+@dataclass
+class RunResult:
+    """The outcome of one full run."""
+
+    output_path: Path | None = None
+    rows_written: int = 0
+    outcomes: list[FileOutcome] = field(default_factory=list)
+    duplicates_removed: int = 0
+    second_rows_added: int = 0
+    cancelled: bool = False
+    error: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.output_path is not None
+
+    @property
+    def files_read(self) -> int:
+        return sum(1 for o in self.outcomes if o.status == OK)
+
+    @property
+    def problems(self) -> list[FileOutcome]:
+        return [o for o in self.outcomes if o.is_problem]
+
+
+#: Called after each file with (outcome, index, total). Fires on the worker
+#: thread, so a GUI caller must marshal back to its own loop.
+ProgressHook = Callable[[FileOutcome, int, int], None]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Value normalisation
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -85,6 +152,38 @@ def clean(value: object) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Filename → device code
 # ──────────────────────────────────────────────────────────────────────────────
+
+def classify_file(filepath: str) -> FileOutcome:
+    """Work out what a file *would* produce, without opening it.
+
+    Extension check plus a filename-to-config lookup — no workbook I/O, so this
+    is cheap enough to run on every file the moment it is added. That is what
+    lets an unrecognised device code surface before a long run rather than
+    after it.
+    """
+    path = Path(filepath)
+    filename = path.name
+
+    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        return FileOutcome(filename, filepath, UNSUPPORTED,
+                           detail=f"Unsupported format '{path.suffix}'")
+
+    code = extract_device_code(filename)
+    config = DEVICE_CONFIGS.get(code)
+
+    if config is None:
+        shown = f"'{code}'" if code else "none found"
+        return FileOutcome(filename, filepath, UNKNOWN_CODE, device_code=code,
+                           detail=f"code {shown} is not in the device table")
+
+    name = config["device_name"]
+    rows = 2 if "second_row" in config else 1
+    if rows == 2:
+        name = f"{name}  +{config['second_row']['device_name']}"
+
+    return FileOutcome(filename, filepath, READY, device_code=code,
+                       device_name=name, rows=rows)
+
 
 def extract_device_code(filename: str) -> str | None:
     """Pull the device-type code out of a filename.
@@ -174,36 +273,52 @@ def build_second_row(record: Record, second_row: dict) -> Record:
 
 def extract_records(
     source_files: Iterable[str],
-    progress_callback: Callable[[], None] | None = None,
-) -> list[Record]:
-    """Read every source file and return the records to be written."""
+    on_file: ProgressHook | None = None,
+    cancel: threading.Event | None = None,
+) -> tuple[list[Record], list[FileOutcome]]:
+    """Read every source file, returning the records and a per-file outcome.
+
+    ``on_file(outcome, index, total)`` fires after each file. ``cancel`` is
+    checked between files, so a long run can be stopped without waiting for it
+    to finish; files not reached are reported as CANCELLED.
+    """
+    ordered = sorted(source_files)
+    total = len(ordered)
     records: list[Record] = []
+    outcomes: list[FileOutcome] = []
 
-    for filepath in sorted(source_files):
+    def report(outcome: FileOutcome, index: int) -> None:
+        outcomes.append(outcome)
+        if on_file:
+            on_file(outcome, index, total)
+
+    for index, filepath in enumerate(ordered, start=1):
+        if cancel is not None and cancel.is_set():
+            for remaining in ordered[index - 1:]:
+                outcomes.append(FileOutcome(os.path.basename(remaining), remaining,
+                                            CANCELLED, detail="Run cancelled"))
+            log.warning("Cancelled — %d file(s) not processed.", total - index + 1)
+            break
+
         filename = os.path.basename(filepath)
-        extension = Path(filepath).suffix.lower()
+        pre = classify_file(filepath)
 
-        if extension not in SUPPORTED_EXTENSIONS:
-            log.warning("%s — unsupported format '%s'", filename, extension)
-            if progress_callback:
-                progress_callback()
+        if pre.status == UNSUPPORTED:
+            log.warning("%s — %s", filename, pre.detail)
+            report(pre, index)
             continue
 
-        code_key = extract_device_code(filename)
-        config = DEVICE_CONFIGS.get(code_key)
-
-        if config is None:
+        if pre.status == UNKNOWN_CODE:
             if SKIP_UNKNOWN_CODES:
-                log.error(
-                    "%s — code '%s' is not in device_config.py; file skipped",
-                    filename, code_key,
-                )
-                if progress_callback:
-                    progress_callback()
+                log.error("%s — code '%s' is not in device_config.py; file skipped",
+                          filename, pre.device_code)
+                report(pre, index)
                 continue
             log.warning("%s — code '%s' not found, using fallback cell map",
-                        filename, code_key)
+                        filename, pre.device_code)
             config = UNKNOWN_FALLBACK
+        else:
+            config = DEVICE_CONFIGS[pre.device_code]
 
         try:
             record = read_record(filepath, config["cells"])
@@ -219,27 +334,31 @@ def extract_records(
             record["_row_order"] = 0
 
             records.append(record)
+            rows = 1
             log.info(
                 "[OK]    %s  →  %s (%s)  |  Model: %s  |  S/N: %s  |  Status: %s",
-                filename, config["device_name"], code_key,
+                filename, config["device_name"], pre.device_code,
                 record.get("Model", ""), record.get("S.N", ""), record.get("Status", ""),
             )
 
             if "second_row" in config:
                 extra = build_second_row(record, config["second_row"])
                 records.append(extra)
+                rows = 2
                 log.info(
                     "        ↳ 2nd row added: %s  |  Code: %s  |  Status: %s",
                     extra["Device"], extra["Code"], extra["Status"],
                 )
 
+            report(FileOutcome(filename, filepath, OK, pre.device_code,
+                               config["device_name"], rows=rows), index)
+
         except Exception as exc:
             log.error("%s — %s", filename, exc)
+            report(FileOutcome(filename, filepath, ERROR, pre.device_code,
+                               pre.device_name, detail=str(exc)), index)
 
-        if progress_callback:
-            progress_callback()
-
-    return records
+    return records, outcomes
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -328,9 +447,9 @@ def write_output(records: list[Record], template_file: str, output_path: Path) -
         for index, record in enumerate(records):
             row = TEMPLATE_START_ROW + index
             sheet.cell(row=row, column=1, value=index + 1)
-            for offset, field in enumerate(FIELDS):
+            for offset, name in enumerate(FIELDS):
                 sheet.cell(row=row, column=TEMPLATE_START_COL + offset,
-                           value=record.get(field, ""))
+                           value=record.get(name, ""))
         workbook.save(output_path)
     finally:
         workbook.close()
@@ -345,14 +464,21 @@ def process_files(
     template_file: str,
     *,
     deduplicate: bool = False,
-    progress_callback: Callable[[], None] | None = None,
-) -> Path | None:
-    """Run the full pipeline. Returns the output path, or None on failure."""
+    on_file: ProgressHook | None = None,
+    cancel: threading.Event | None = None,
+) -> RunResult:
+    """Run the full pipeline and report what happened.
+
+    Always returns a RunResult; check ``.succeeded`` or ``.output_path``. A
+    cancelled run writes nothing and comes back with ``cancelled=True``.
+    """
     rule = "─" * 55
+    result = RunResult()
 
     if not source_files:
-        log.error("No source files selected.")
-        return None
+        result.error = "No source files selected."
+        log.error("%s", result.error)
+        return result
 
     log.info(rule)
     log.info("Template : %s", os.path.basename(template_file))
@@ -362,292 +488,60 @@ def process_files(
     try:
         output_path = resolve_output_path(source_files, template_file)
     except ValueError as exc:
+        result.error = str(exc)
         log.error("%s", exc)
-        return None
+        return result
 
-    records = sort_records(extract_records(source_files, progress_callback))
+    records, result.outcomes = extract_records(source_files, on_file, cancel)
+    result.second_rows_added = sum(1 for o in result.outcomes if o.rows == 2)
+    records = sort_records(records)
+
+    if cancel is not None and cancel.is_set():
+        result.cancelled = True
+        log.warning("Run cancelled — no file written.")
+        return result
 
     if deduplicate:
         before = len(records)
         records = deduplicate_records(records)
-        removed = before - len(records)
-        log.info("%d duplicate record(s) removed.", removed) if removed \
-            else log.info("No duplicates found.")
+        result.duplicates_removed = before - len(records)
+        log.info("%d duplicate record(s) removed.", result.duplicates_removed) \
+            if result.duplicates_removed else log.info("No duplicates found.")
 
     if not records:
-        log.warning("No valid records extracted. No file created.")
-        return None
+        result.error = "No valid records extracted. No file created."
+        log.warning("%s", result.error)
+        return result
 
     try:
         write_output(records, template_file, output_path)
     except Exception as exc:
-        log.error("Could not save output file: %s", exc)
-        return None
+        result.error = f"Could not save output file: {exc}"
+        log.error("%s", result.error)
+        return result
+
+    result.output_path = output_path
+    result.rows_written = len(records)
 
     log.info(rule)
     log.info("✔ Success! %d record(s) written.", len(records))
     log.info("NEW FILE SAVED AT: %s", output_path)
-    return output_path
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GUI
+# Entry point
 # ──────────────────────────────────────────────────────────────────────────────
-
-# Catppuccin Mocha
-BG = "#1e1e2e"
-SURFACE = "#313244"
-TEXT = "#cdd6f4"
-SUBTLE = "#a6adc8"
-BLUE = "#89b4fa"
-GREEN = "#a6e3a1"
-RED = "#f38ba8"
-PEACH = "#fab387"
-GREY = "#6c7086"
-
-FONT = "Segoe UI"
-
-
-class TkLogHandler(logging.Handler):
-    """Routes log records to a Tk text widget from any thread."""
-
-    def __init__(self, widget: scrolledtext.ScrolledText):
-        super().__init__()
-        self.widget = widget
-
-    def emit(self, record: logging.LogRecord) -> None:
-        message = self.format(record)
-        # Tk is not thread-safe; hop back to the main loop before touching it.
-        self.widget.after(0, self._append, message)
-
-    def _append(self, message: str) -> None:
-        self.widget.config(state="normal")
-        self.widget.insert("end", message + "\n")
-        self.widget.see("end")
-        self.widget.config(state="disabled")
-
-
-class StatusFormatter(logging.Formatter):
-    """Tags warnings and errors, leaving ordinary progress lines unadorned."""
-
-    LABELS = {logging.WARNING: "WARN", logging.ERROR: "ERROR",
-              logging.CRITICAL: "FATAL"}
-
-    def format(self, record: logging.LogRecord) -> str:
-        message = record.getMessage()
-        label = self.LABELS.get(record.levelno)
-        return f"[{label}]  {message}" if label else message
-
-
-class App(tk.Tk):
-    def __init__(self) -> None:
-        super().__init__()
-        self.title("Calist")
-        self.configure(bg=BG)
-        self.geometry("820x580")
-        self.minsize(640, 460)
-
-        self._source_files: set[str] = set()
-        self._template_file = tk.StringVar(value="")
-        self._dedup = tk.BooleanVar(value=False)
-        self._done_count = 0
-
-        self._build_ui()
-        self._attach_logging()
-
-    # ── construction ─────────────────────────────────────────────────────────
-
-    def _build_ui(self) -> None:
-        self._build_header()
-        self._build_toolbar()
-        self._build_selection_labels()
-        self._build_log_panel()
-        self._build_progress()
-        self._build_footer()
-
-    def _build_header(self) -> None:
-        tk.Label(self, text="Calist", font=(FONT, 17, "bold"),
-                 bg=BG, fg=TEXT).pack(pady=(18, 2))
-        tk.Label(self, text="Compile device inspection forms into one equipment register",
-                 font=(FONT, 9), bg=BG, fg=SUBTLE).pack(pady=(0, 12))
-
-    def _build_toolbar(self) -> None:
-        bar = tk.Frame(self, bg=BG)
-        bar.pack(fill="x", padx=14, pady=6)
-
-        self._btn_sources = self._button(bar, "📂  Select Source Files", self._pick_sources, BLUE)
-        self._btn_sources.pack(side="left", padx=(0, 8))
-
-        self._btn_template = self._button(bar, "📄  Select Template File", self._pick_template, GREEN)
-        self._btn_template.pack(side="left", padx=(0, 8))
-
-        self._btn_process = self._button(bar, "▶  Process Data", self._run_processing,
-                                         RED, state="disabled")
-        self._btn_process.pack(side="left")
-
-        tk.Checkbutton(bar, text="Remove duplicate S/N", variable=self._dedup,
-                       font=(FONT, 9), bg=BG, fg=TEXT, selectcolor=SURFACE,
-                       activebackground=BG, activeforeground=TEXT,
-                       cursor="hand2").pack(side="left", padx=(12, 0))
-
-    def _build_selection_labels(self) -> None:
-        self._lbl_sources = tk.Label(self, text="No source files selected.",
-                                     font=(FONT, 9), bg=BG, fg=SUBTLE, anchor="w")
-        self._lbl_sources.pack(fill="x", padx=14, pady=(4, 0))
-
-        self._lbl_template = tk.Label(self, text="No template selected.",
-                                      font=(FONT, 9), bg=BG, fg=SUBTLE, anchor="w")
-        self._lbl_template.pack(fill="x", padx=14, pady=(0, 6))
-
-    def _build_log_panel(self) -> None:
-        frame = tk.Frame(self, bg=SURFACE, bd=1, relief="sunken")
-        frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
-
-        tk.Label(frame, text=" Status Log", font=(FONT, 9, "bold"),
-                 bg=SURFACE, fg=TEXT, anchor="w").pack(fill="x")
-
-        self._log_box = scrolledtext.ScrolledText(
-            frame, wrap="word", font=("Consolas", 9), bg=BG, fg=TEXT,
-            insertbackground=TEXT, relief="flat", state="disabled", height=14,
-        )
-        self._log_box.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-
-    def _build_progress(self) -> None:
-        frame = tk.Frame(self, bg=BG)
-        frame.pack(fill="x", padx=14, pady=(0, 4))
-
-        self._prog_label = tk.Label(frame, text="", font=(FONT, 8),
-                                    bg=BG, fg=SUBTLE, anchor="w")
-        self._prog_label.pack(fill="x")
-
-        self._progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
-        self._progress.pack(fill="x")
-
-    def _build_footer(self) -> None:
-        frame = tk.Frame(self, bg=BG)
-        frame.pack(anchor="e", padx=14, pady=(0, 10))
-
-        self._btn_clear_sources = self._button(frame, "🗑  Clear Sources",
-                                               self._clear_sources, PEACH, width=15)
-        self._btn_clear_sources.pack(side="left", padx=(0, 8))
-
-        self._button(frame, "🗑  Clear Log", self._clear_log, GREY, width=12).pack(side="left")
-
-    def _button(self, parent, text, command, colour, state="normal", width=None) -> tk.Button:
-        options = dict(
-            text=text, command=command, font=(FONT, 9, "bold"),
-            bg=colour, fg=BG, activebackground=colour, activeforeground=BG,
-            relief="flat", cursor="hand2", padx=10, pady=6, state=state,
-        )
-        if width:
-            options["width"] = width
-        return tk.Button(parent, **options)
-
-    def _attach_logging(self) -> None:
-        handler = TkLogHandler(self._log_box)
-        handler.setFormatter(StatusFormatter())
-        log.addHandler(handler)
-        log.setLevel(logging.INFO)
-        log.propagate = False
-
-    # ── actions ──────────────────────────────────────────────────────────────
-
-    def _pick_sources(self) -> None:
-        chosen = filedialog.askopenfilenames(
-            title="Select Source Excel Files",
-            filetypes=[("Excel files", "*.xlsx *.xls *.xlsm"), ("All files", "*.*")],
-        )
-        if not chosen:
-            return
-        self._source_files.update(chosen)
-        self._lbl_sources.config(
-            text=f"{len(self._source_files)} source file(s) selected.", fg=BLUE)
-        log.info("Added %d file(s). Total: %d", len(chosen), len(self._source_files))
-        self._refresh_process_btn()
-
-    def _pick_template(self) -> None:
-        chosen = filedialog.askopenfilename(
-            title="Select Template Excel File",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-        )
-        if not chosen:
-            return
-        self._template_file.set(chosen)
-        self._lbl_template.config(text=f"Template: {os.path.basename(chosen)}", fg=GREEN)
-        log.info("Template selected: %s", os.path.basename(chosen))
-        self._refresh_process_btn()
-
-    def _clear_sources(self) -> None:
-        self._source_files.clear()
-        self._lbl_sources.config(text="No source files selected.", fg=SUBTLE)
-        log.info("Cleared all source files.")
-        self._refresh_process_btn()
-
-    def _clear_log(self) -> None:
-        self._log_box.config(state="normal")
-        self._log_box.delete("1.0", "end")
-        self._log_box.config(state="disabled")
-
-    def _refresh_process_btn(self) -> None:
-        ready = bool(self._source_files) and bool(self._template_file.get())
-        self._btn_process.config(state="normal" if ready else "disabled")
-
-    def _set_busy(self, busy: bool) -> None:
-        state = "disabled" if busy else "normal"
-        for button in (self._btn_sources, self._btn_template, self._btn_clear_sources):
-            button.config(state=state)
-        self._btn_process.config(
-            state="disabled" if busy else "normal",
-            text="⏳  Processing…" if busy else "▶  Process Data",
-        )
-
-    def _run_processing(self) -> None:
-        self._set_busy(True)
-
-        files = sorted(self._source_files)
-        total = len(files)
-        self._done_count = 0
-        self._progress.config(maximum=total, value=0)
-        self._prog_label.config(text=f"0 / {total} files processed")
-
-        def on_progress() -> None:
-            self._done_count += 1
-            done = self._done_count      # capture now; the lambda runs later
-            self.after(0, lambda: (
-                self._progress.config(value=done),
-                self._prog_label.config(
-                    text=f"{done} / {total} files processed  ({total - done} remaining)"),
-            ))
-
-        def worker() -> None:
-            try:
-                output_path = process_files(
-                    files, self._template_file.get(),
-                    deduplicate=self._dedup.get(),
-                    progress_callback=on_progress,
-                )
-            except Exception as exc:                 # never let the thread die silently
-                log.exception("Unexpected failure: %s", exc)
-                output_path = None
-            self.after(0, self._on_done, output_path)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_done(self, output_path: Path | None) -> None:
-        self._set_busy(False)
-        self._refresh_process_btn()
-        if output_path:
-            self._prog_label.config(text=f"✔ Done — saved to {output_path.name}")
-        else:
-            self._prog_label.config(text="✖ Finished with errors — see the log.")
-            messagebox.showerror(
-                "Processing failed",
-                "No output file was produced. Check the status log for details.",
-            )
-
 
 def main() -> None:
-    App().mainloop()
+    """Launch the desktop app.
+
+    The UI is imported here rather than at module scope so that importing this
+    module — from a test, a script, or another tool — costs nothing and pulls
+    in no GUI toolkit.
+    """
+    from ui import run
+    run()
 
 
 if __name__ == "__main__":

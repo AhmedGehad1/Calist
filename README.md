@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Calist after a completed run" width="820">
+  <img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="860">
 </p>
 
 ---
@@ -63,20 +63,49 @@ pip install -r requirements.txt
 python calist.py
 ```
 
-Requires Python 3.10 or newer. `openpyxl` handles `.xlsx`/`.xlsm`; `xlrd` handles legacy `.xls`.
+Requires Python 3.10 or newer. `openpyxl` handles `.xlsx`/`.xlsm`, `xlrd` handles legacy `.xls`, and
+`customtkinter` draws the interface.
+
+Installing `tkinterdnd2` as well lets you drag a folder straight onto the window; without it the drop
+zone is click-only and nothing else changes.
 
 ## Usage
 
-1. **Select Source Files** — the completed inspection forms. You can add to the selection across
-   several clicks; picking the same file twice is harmless.
-2. **Select Template File** — the blank register
-   ([`template/Device List.xlsx`](template/Device%20List.xlsx) is the reference layout: headers on
-   row 3, data from row 4).
-3. *(optional)* Tick **Remove duplicate S/N** to drop repeated serial numbers.
-4. **Process Data.**
+**Point it at the folder.** Everything else follows from that.
 
-The result is saved as `device list.xlsx` **next to the first source file**. Progress and every
-per-file outcome appear in the status log.
+<table>
+<tr>
+<td width="50%"><img src="docs/ui-1-hero.png" alt="Empty state"></td>
+<td width="50%"><img src="docs/ui-3-working.png" alt="Building the register"></td>
+</tr>
+<tr>
+<td><b>1 · Add your devices.</b> Picking a folder pulls in every Excel file inside it, subfolders
+included. Each one is checked on arrival, so an unrecognised device code shows up in the table
+straight away — before you commit to a run, not after it.</td>
+<td><b>2 · Watch it work.</b> Rows turn green as each device is read, with a progress bar, the file
+currently open, and an estimate of the time left. Cancel stops it cleanly without writing anything.</td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="docs/ui-4-results.png" alt="Results" width="720">
+</p>
+
+**3 · Collect the register.** The results card says what was built and exactly where it went, with
+**Open register** and **Reveal in folder** one click away. The table filters itself to anything that
+needs attention.
+
+The register is saved as `device list.xlsx` **next to the first source file** — the destination is
+shown in the *Saves to* row throughout, so it is never a surprise. If a register is already there,
+the row says so before you build.
+
+The template is remembered between sessions, so choosing it is a first-run step only. Duplicate
+serial removal is optional and off by default.
+
+### Keyboard
+
+`Ctrl+O` add a folder · `Ctrl+Enter` build · `Esc` cancel a run · `Delete` remove selected rows ·
+double-click a row to reveal that file.
 
 ### Filename convention
 
@@ -190,26 +219,45 @@ pip install pytest
 python -m pytest
 ```
 
-The suite covers the logic with no I/O — filename parsing, value handling, ordering, de-duplication and
-second-row generation — plus integrity checks over the device table itself. One of those, for example,
-asserts that every two-row device's names are covered by the shared-serial exemption, so renaming a
-device can't silently break de-duplication.
+35 tests covering the logic with no I/O — filename parsing, value handling, ordering, de-duplication,
+second-row generation and pre-flight classification — plus end-to-end runs against workbooks built on
+the fly, and integrity checks over the device table itself. One of those asserts that every two-row
+device's names are covered by the shared-serial exemption, so renaming a device can't silently break
+de-duplication.
+
+The suite imports `calist` only, never `ui`, so it needs no display and no GUI toolkit.
 
 ### Layout
 
 ```
-calist.py                      GUI + the extraction pipeline
+calist.py                      the pipeline — no GUI toolkit imported
+ui.py                          the desktop interface (customtkinter)
 device_config.py               the 57 device layouts and the form() helper
 test_calist.py                 the test suite
 template/Device List.xlsx      reference register template
 ```
 
-The pipeline logic has no reference to Tkinter — it reports through the `logging` module, and the GUI
-attaches a handler that routes records to the status log. That keeps it usable headlessly:
+The pipeline knows nothing about the interface. `calist.py` imports no GUI toolkit at all — `ui.py`
+attaches a logging handler to pick up progress, and reads the structured `FileOutcome` / `RunResult`
+values the pipeline returns. So the whole thing drives headlessly:
 
 ```python
 from calist import process_files
-process_files(["Clinic-AGH001.xlsx"], "Device List.xlsx", deduplicate=True)
+
+result = process_files(["Clinic-AGH001.xlsx"], "Device List.xlsx", deduplicate=True)
+print(result.rows_written, "rows ->", result.output_path)
+for problem in result.problems:
+    print(problem.filename, problem.detail)
+```
+
+`process_files` also takes `on_file=` for per-file progress and `cancel=` (a `threading.Event`) to
+stop a long run — a cancelled run writes nothing.
+
+To check what a filename *would* resolve to without opening it:
+
+```python
+from calist import classify_file
+classify_file("Clinic-AGH001.xlsx").device_name   # 'Patient Monitor  +NIBP'
 ```
 
 ## Known issues
