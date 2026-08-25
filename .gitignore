@@ -6,6 +6,10 @@ venv/
 env/
 .pytest_cache/
 
+# PyInstaller build output. calist.spec IS tracked — it is the build recipe.
+/build/
+/dist/
+
 # Calist output — written next to the source forms.
 # Root-anchored on purpose: git is case-insensitive on Windows, so an unanchored
 # rule would also swallow template/Device List.xlsx, which must stay tracked.

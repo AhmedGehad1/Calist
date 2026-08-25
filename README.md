@@ -1,14 +1,19 @@
 <div align="center">
 
+<img src="docs/calist-icon.png" alt="Calist" width="96">
+
 # Calist
 
 **Turn a folder of device inspection forms into one equipment register — in seconds.**
 
+[![Download](https://img.shields.io/badge/⬇%20Download%20for%20Windows-2ea44f?style=for-the-badge)](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)
+
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
+[![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Device types](https://img.shields.io/badge/device%20types-57-brightgreen)
 ![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
 
 <img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="880">
 
@@ -41,7 +46,7 @@ Calist knows all 57 layouts. Point it at the folder and it does the round in abo
 
 ## Contents
 
-[Features](#features) · [Install](#install) · [How it works](#how-it-works) ·
+[Download](#download) · [Features](#features) · [How it works](#how-it-works) ·
 [Performance](#performance) · [Filename convention](#filename-convention) ·
 [The device table](#the-device-table) · [Two-row devices](#two-row-devices) ·
 [Duplicate serials](#duplicate-serial-numbers) · [Headless use](#headless-use) ·
@@ -58,11 +63,30 @@ Calist knows all 57 layouts. Point it at the folder and it does the round in abo
 | **The destination is never a surprise** | The *Saves to* row shows exactly where the register will land, before you commit — and warns if a register is already there. |
 | **Handles two-row devices** | A patient monitor and its NIBP module share a chassis but need separate lines. Calist generates the second row and sorts it beneath its parent. |
 | **Smart duplicate removal** | Optional. Drops repeated serials, but knows a device and its own sub-module legitimately share one. |
-| **Remembers your setup** | Template, last folder and preferences persist. Choosing the template is a first-run step only. |
+| **Nothing to set up** | The register template ships inside the executable, so a freshly downloaded copy works on first launch. Swap in your own whenever you like. |
+| **Remembers your setup** | Template, last folder and preferences persist between sessions. |
 | **Old and new Excel** | `.xlsx`, `.xlsm` via openpyxl; legacy `.xls` via xlrd. |
 | **Scriptable** | The pipeline imports no GUI toolkit, so it drives headlessly from Python. |
 
-## Install
+## Download
+
+### [⬇ Download Calist.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)
+
+**One file. No installer, no Python, nothing to configure.** Download it, double-click, and point it
+at your folder of forms. The register template is built in, so the first run works immediately.
+
+Works on Windows 10 and 11. About 12 MB. Every release is built and tested automatically by
+[GitHub Actions](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml) from the
+source in this repository — see [all releases](https://github.com/AhmedGehad1/Calist/releases).
+
+> **First launch:** Windows shows *"Windows protected your PC"* because the file isn't
+> code-signed — a certificate costs a few hundred dollars a year, and this is a free tool.
+> Click **More info → Run anyway**. You only see it once.
+
+<details>
+<summary><b>Run from source instead</b></summary>
+
+<br>
 
 ```bash
 git clone https://github.com/AhmedGehad1/Calist.git
@@ -71,11 +95,29 @@ pip install -r requirements.txt
 python calist.py
 ```
 
-**Requirements** — Python 3.10 or newer on Windows. `openpyxl`, `xlrd` and `customtkinter` install
-from `requirements.txt`.
+Python 3.10 or newer. `openpyxl`, `xlrd` and `customtkinter` install from `requirements.txt`.
 
-> **Optional:** `pip install tkinterdnd2` enables dragging a folder straight onto the window.
-> Without it the drop zone is click-only and nothing else changes.
+`pip install tkinterdnd2` additionally enables dragging a folder straight onto the window; without
+it the drop zone is click-only and nothing else changes.
+
+</details>
+
+<details>
+<summary><b>Build the executable yourself</b></summary>
+
+<br>
+
+```bash
+pip install pyinstaller
+pyinstaller calist.spec --noconfirm --clean
+```
+
+The result is `dist/Calist.exe`. [`calist.spec`](calist.spec) is the build recipe; two settings in it
+are load-bearing and commented as such — `hiddenimports=["ui"]`, because the interface is imported
+lazily and PyInstaller's static analysis cannot see it, and `collect_data_files("customtkinter")`,
+because CustomTkinter loads its themes and fonts from disk at runtime.
+
+</details>
 
 ## How it works
 

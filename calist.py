@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -65,6 +66,21 @@ ALLOWED_SHARED_SN_PAIRS = {
 Record = dict[str, str]
 
 log = logging.getLogger("aggregator")
+
+#: Where the reference template lives relative to the app.
+TEMPLATE_NAME = "Device List.xlsx"
+
+
+def bundled_template() -> Path | None:
+    """The reference template shipped with the app, if it can be found.
+
+    A frozen build unpacks its data files to ``sys._MEIPASS``; running from a
+    checkout, they sit beside this module. Returning it as a default means a
+    freshly downloaded copy is usable without hunting for a template first.
+    """
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    candidate = base / "template" / TEMPLATE_NAME
+    return candidate if candidate.is_file() else None
 
 
 # ──────────────────────────────────────────────────────────────────────────────

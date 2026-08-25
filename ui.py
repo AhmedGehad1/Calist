@@ -279,7 +279,7 @@ class App(_Root):
 
         self._settings = load_settings()
         self._files: dict[str, FileOutcome] = {}       # path → latest outcome
-        self._template = tk.StringVar(value=self._settings.get("template", ""))
+        self._template = tk.StringVar(value=self._initial_template())
         self._dedup = tk.BooleanVar(value=self._settings.get("deduplicate", False))
         self._cancel: threading.Event | None = None
         self._events: queue.Queue[tuple] = queue.Queue()
@@ -296,6 +296,19 @@ class App(_Root):
         self.bind("<Control-o>", lambda _e: self._add_folder())
         self.bind("<Control-Return>", lambda _e: self._start())
         self.bind("<Escape>", lambda _e: self._cancel_run())
+
+    def _initial_template(self) -> str:
+        """The remembered template, else the one shipped with the app.
+
+        Falling back matters most for a freshly downloaded copy: without it the
+        first run stalls on "choose a template" with nothing obvious to choose.
+        It also covers a remembered template that has since been moved.
+        """
+        remembered = self._settings.get("template", "")
+        if remembered and Path(remembered).is_file():
+            return remembered
+        shipped = calist.bundled_template()
+        return str(shipped) if shipped else ""
 
     # ── layout ───────────────────────────────────────────────────────────────
 
