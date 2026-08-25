@@ -12,7 +12,7 @@
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Device types](https://img.shields.io/badge/device%20types-57-brightgreen)
-![Tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-95%20passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
 
 <img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="880">
@@ -403,7 +403,7 @@ pip install pytest
 python -m pytest
 ```
 
-91 tests, run in CI against Python 3.10, 3.11 and 3.12. They cover the logic with no I/O — filename
+95 tests, run in CI against Python 3.10, 3.11 and 3.12. They cover the logic with no I/O — filename
 parsing and format validation, value handling, ordering, de-duplication, second-row generation,
 pre-flight classification and the daily access code — plus end-to-end runs against workbooks built
 on the fly, and integrity checks over the device table itself.

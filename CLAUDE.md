@@ -11,7 +11,7 @@ inspection Excel forms and compiles them into one flat equipment register.
 
 ```powershell
 python calist.py                # launch the app
-python -m pytest                # run the test suite (91 tests)
+python -m pytest                # run the test suite (95 tests)
 python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 ```
