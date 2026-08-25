@@ -1001,10 +1001,29 @@ class App(_Root):
             self._refresh_all()
 
     def _remember(self) -> None:
-        self._settings.update(template=self._template.get(),
-                              deduplicate=bool(self._dedup.get()),
+        self._settings.update(deduplicate=bool(self._dedup.get()),
                               strict_names=bool(self._strict.get()))
+
+        # Never persist the built-in template. In a frozen build it lives in
+        # PyInstaller's temp extraction folder, which is deleted on exit and
+        # gets a new random name next launch — so the stored path would be dead
+        # before it was ever read back. Leaving the key out means the fallback
+        # in _initial_template() resolves it fresh each time.
+        chosen = self._template.get()
+        if chosen and not self._is_bundled_template(chosen):
+            self._settings["template"] = chosen
+        else:
+            self._settings.pop("template", None)
+
         save_settings(self._settings)
+
+    @staticmethod
+    def _is_bundled_template(path: str) -> bool:
+        shipped = calist.bundled_template()
+        if not shipped:
+            return False
+        return os.path.normcase(os.path.abspath(path)) == \
+            os.path.normcase(os.path.abspath(str(shipped)))
 
     def _on_strict_toggled(self) -> None:
         """Re-check every loaded name against the new setting, immediately.
