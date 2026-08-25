@@ -21,11 +21,13 @@ import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
 import xlrd
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from openpyxl.utils.cell import coordinate_to_tuple
 
 from device_config import DEVICE_CONFIGS
@@ -70,6 +72,13 @@ log = logging.getLogger("aggregator")
 #: Where the reference template lives relative to the app.
 TEMPLATE_NAME = "Device List.xlsx"
 
+#: Authorship. Written into every register and into the workbook's document
+#: properties, so the credit travels with the file rather than living only in
+#: the app that made it.
+AUTHOR_NAME = "Ahmed Gehad"
+AUTHOR_EMAIL = "ahmedgehad2112@gmail.com"
+ATTRIBUTION = f"{AUTHOR_NAME} · {AUTHOR_EMAIL}"
+
 
 def bundled_template() -> Path | None:
     """The reference template shipped with the app, if it can be found.
@@ -97,11 +106,12 @@ READY = "ready"
 OK = "ok"
 UNSUPPORTED = "unsupported"
 UNKNOWN_CODE = "unknown_code"
+BAD_FORMAT = "bad_format"
 ERROR = "error"
 CANCELLED = "cancelled"
 
 #: Statuses that mean a file contributed nothing to the register.
-PROBLEM_STATUSES = frozenset({UNSUPPORTED, UNKNOWN_CODE, ERROR})
+PROBLEM_STATUSES = frozenset({UNSUPPORTED, UNKNOWN_CODE, BAD_FORMAT, ERROR})
 
 
 @dataclass
@@ -169,13 +179,64 @@ def clean(value: object) -> str:
 # Filename → device code
 # ──────────────────────────────────────────────────────────────────────────────
 
-def classify_file(filepath: str) -> FileOutcome:
+# ──────────────────────────────────────────────────────────────────────────────
+# Optional filename-format check
+#
+#   G302  -  AGH001  -  0425
+#   │        │          └── MMYY: month 01-12, then a two-digit year
+#   │        └───────────── device code + unit number
+#   └────────────────────── site code: letters then digits
+#
+# The happy path is ONE precompiled match and nothing else — no splitting, no
+# allocation — because this runs on every file the moment it is added. The
+# per-part diagnosis below only runs for names that already failed, which costs
+# nothing on a folder where everything is named correctly.
+# ──────────────────────────────────────────────────────────────────────────────
+
+FILENAME_EXAMPLE = "G302-AGH001-0425"
+
+_NAME_RE = re.compile(r"[A-Za-z]+\d+-[A-Za-z]+\d+-(?:0[1-9]|1[0-2])\d{2}\Z")
+_PART_RE = re.compile(r"[A-Za-z]+\d+\Z")
+_DATE_RE = re.compile(r"\d{4}\Z")
+
+
+def check_filename_format(stem: str) -> str | None:
+    """None if the stem matches the house format, else why it doesn't."""
+    if _NAME_RE.match(stem):
+        return None
+    return _explain_bad_filename(stem)
+
+
+def _explain_bad_filename(stem: str) -> str:
+    """Say which part is wrong. Only reached for names that already failed."""
+    parts = stem.split("-")
+    if len(parts) != 3:
+        return (f"expected 3 parts like {FILENAME_EXAMPLE}, "
+                f"found {len(parts)}")
+
+    site, device, date = parts
+    if not _PART_RE.match(site):
+        return f"site code '{site}' should be letters then digits, like G302"
+    if not _PART_RE.match(device):
+        return f"device code '{device}' should be letters then digits, like AGH001"
+    if not _DATE_RE.match(date):
+        return f"date '{date}' should be 4 digits (MMYY), like 0425"
+    if not 1 <= int(date[:2]) <= 12:
+        return f"month '{date[:2]}' in '{date}' is not between 01 and 12"
+    return f"does not match {FILENAME_EXAMPLE}"
+
+
+def classify_file(filepath: str, strict_names: bool = False) -> FileOutcome:
     """Work out what a file *would* produce, without opening it.
 
-    Extension check plus a filename-to-config lookup — no workbook I/O, so this
-    is cheap enough to run on every file the moment it is added. That is what
-    lets an unrecognised device code surface before a long run rather than
-    after it.
+    Extension check, optional filename-format check, and a filename-to-config
+    lookup — no workbook I/O, so this is cheap enough to run on every file the
+    moment it is added. That is what lets a bad name or an unrecognised device
+    surface before a long run rather than after it.
+
+    With ``strict_names`` the house format is enforced first: when it is on,
+    the user has asked for that shape specifically, so a malformed name is the
+    finding worth reporting even if a device code could still be salvaged.
     """
     path = Path(filepath)
     filename = path.name
@@ -183,6 +244,11 @@ def classify_file(filepath: str) -> FileOutcome:
     if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         return FileOutcome(filename, filepath, UNSUPPORTED,
                            detail=f"Unsupported format '{path.suffix}'")
+
+    if strict_names:
+        problem = check_filename_format(path.stem)
+        if problem:
+            return FileOutcome(filename, filepath, BAD_FORMAT, detail=problem)
 
     code = extract_device_code(filename)
     config = DEVICE_CONFIGS.get(code)
@@ -291,12 +357,14 @@ def extract_records(
     source_files: Iterable[str],
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
+    strict_names: bool = False,
 ) -> tuple[list[Record], list[FileOutcome]]:
     """Read every source file, returning the records and a per-file outcome.
 
     ``on_file(outcome, index, total)`` fires after each file. ``cancel`` is
     checked between files, so a long run can be stopped without waiting for it
-    to finish; files not reached are reported as CANCELLED.
+    to finish; files not reached are reported as CANCELLED. ``strict_names``
+    enforces the house filename format, skipping anything that breaks it.
     """
     ordered = sorted(source_files)
     total = len(ordered)
@@ -317,7 +385,12 @@ def extract_records(
             break
 
         filename = os.path.basename(filepath)
-        pre = classify_file(filepath)
+        pre = classify_file(filepath, strict_names)
+
+        if pre.status == BAD_FORMAT:
+            log.error("%s — %s; file skipped", filename, pre.detail)
+            report(pre, index)
+            continue
 
         if pre.status == UNSUPPORTED:
             log.warning("%s — %s", filename, pre.detail)
@@ -466,9 +539,33 @@ def write_output(records: list[Record], template_file: str, output_path: Path) -
             for offset, name in enumerate(FIELDS):
                 sheet.cell(row=row, column=TEMPLATE_START_COL + offset,
                            value=record.get(name, ""))
+
+        stamp_attribution(sheet, workbook, len(records))
         workbook.save(output_path)
     finally:
         workbook.close()
+
+
+def stamp_attribution(sheet, workbook, record_count: int) -> None:
+    """Sign the register, visibly and in the file's own properties.
+
+    A register gets emailed, printed and filed long after the app that made it
+    is out of sight, so the credit belongs in the document rather than only in
+    the tool. One line, a blank row clear of the data, plus the Excel document
+    properties that show under File → Properties.
+    """
+    row = TEMPLATE_START_ROW + record_count + 1
+    made_on = datetime.now().strftime("%d/%m/%Y")
+
+    cell = sheet.cell(row=row, column=TEMPLATE_START_COL)
+    cell.value = f"Generated by Calist — {ATTRIBUTION} — {made_on}"
+    cell.font = Font(italic=True, size=9, color="FF808080")
+
+    workbook.properties.creator = ATTRIBUTION
+    workbook.properties.lastModifiedBy = ATTRIBUTION
+    workbook.properties.title = "Equipment register"
+    workbook.properties.description = (
+        f"Compiled from {record_count} row(s) by Calist — {ATTRIBUTION}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -480,6 +577,7 @@ def process_files(
     template_file: str,
     *,
     deduplicate: bool = False,
+    strict_names: bool = False,
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
 ) -> RunResult:
@@ -487,6 +585,7 @@ def process_files(
 
     Always returns a RunResult; check ``.succeeded`` or ``.output_path``. A
     cancelled run writes nothing and comes back with ``cancelled=True``.
+    ``strict_names`` skips any file whose name breaks the house format.
     """
     rule = "─" * 55
     result = RunResult()
@@ -508,7 +607,8 @@ def process_files(
         log.error("%s", exc)
         return result
 
-    records, result.outcomes = extract_records(source_files, on_file, cancel)
+    records, result.outcomes = extract_records(source_files, on_file, cancel,
+                                               strict_names)
     result.second_rows_added = sum(1 for o in result.outcomes if o.rows == 2)
     records = sort_records(records)
 

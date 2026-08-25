@@ -28,9 +28,11 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
+import access
 import calist
-from calist import (CANCELLED, ERROR, OK, READY, UNKNOWN_CODE, UNSUPPORTED,
-                    FileOutcome, RunResult)
+from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, BAD_FORMAT,
+                    CANCELLED, ERROR, FILENAME_EXAMPLE, OK, READY,
+                    UNKNOWN_CODE, UNSUPPORTED, FileOutcome, RunResult)
 
 # Drag-and-drop is a bonus, never a requirement: without tkinterdnd2 the drop
 # zone is simply click-only.
@@ -67,12 +69,16 @@ STATUS_DISPLAY = {
     OK: ("Read", "ok"),
     UNKNOWN_CODE: ("Unknown code", "warn"),
     UNSUPPORTED: ("Unsupported file", "warn"),
+    BAD_FORMAT: ("Name format", "warn"),
     ERROR: ("Failed", "error"),
     CANCELLED: ("Cancelled", "muted"),
 }
 
 SETTINGS_FILE = (Path(os.environ.get("APPDATA") or Path.home())
                  / "Calist" / "settings.json")
+
+#: How often an open window re-checks whether the calendar date has moved on.
+NEW_DAY_CHECK_MS = 30_000
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -265,6 +271,174 @@ else:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Lock screen
+# ──────────────────────────────────────────────────────────────────────────────
+
+class LockDialog(ctk.CTkToplevel):
+    """Asks for the day's PIN. Modal, and the only way past it is the code.
+
+    Owns no persistence: it reports the updated settings dict back through
+    ``result`` and ``state``, and the caller decides what to save.
+    """
+
+    DOTS = 4
+
+    def __init__(self, master, state: dict):
+        super().__init__(master)
+
+        self.state_dict = dict(state)
+        self.result = False
+        self._entry = ""
+
+        self.title("Calist")
+        self.geometry("400x580")
+        self.resizable(False, False)
+        self.configure(fg_color=BG)
+        self.protocol("WM_DELETE_WINDOW", self._give_up)
+
+        self._build()
+        self._refresh_dots()
+        self._tick_cooldown()
+
+        # Modal: hold focus until this is answered.
+        self.transient(master)
+        self.grab_set()
+        self.bind("<Key>", self._on_key)
+        self.focus_force()
+
+    # ── layout ───────────────────────────────────────────────────────────────
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(self, text="Calist", text_color=TEXT,
+                     font=ctk.CTkFont(FONT, 26, "bold")
+                     ).grid(row=0, column=0, pady=(38, 2))
+        ctk.CTkLabel(self, text="Enter today's access code", text_color=MUTED,
+                     font=ctk.CTkFont(FONT, 13)).grid(row=1, column=0)
+
+        # PIN dots
+        self._dots = ctk.CTkFrame(self, fg_color="transparent")
+        self._dots.grid(row=2, column=0, pady=(26, 6))
+        self._dot_widgets = []
+        for i in range(self.DOTS):
+            dot = ctk.CTkFrame(self._dots, width=18, height=18, corner_radius=9,
+                               fg_color=SURFACE_2, border_width=1,
+                               border_color=BORDER)
+            dot.grid(row=0, column=i, padx=9)
+            dot.grid_propagate(False)
+            self._dot_widgets.append(dot)
+
+        self._message = ctk.CTkLabel(self, text="", text_color=DANGER,
+                                     font=ctk.CTkFont(FONT, 12))
+        self._message.grid(row=3, column=0, pady=(6, 10))
+
+        # Keypad
+        pad = ctk.CTkFrame(self, fg_color="transparent")
+        pad.grid(row=4, column=0)
+        keys = [("1", 0, 0), ("2", 0, 1), ("3", 0, 2),
+                ("4", 1, 0), ("5", 1, 1), ("6", 1, 2),
+                ("7", 2, 0), ("8", 2, 1), ("9", 2, 2),
+                ("C", 3, 0), ("0", 3, 1), ("<", 3, 2)]
+        self._keys = []
+        for label, r, c in keys:
+            muted = label in ("C", "<")
+            btn = ctk.CTkButton(
+                pad, text=label, width=82, height=62, corner_radius=12,
+                fg_color=SURFACE if muted else SURFACE_2,
+                hover_color=BORDER, text_color=MUTED if muted else TEXT,
+                font=ctk.CTkFont(FONT, 20 if not muted else 16,
+                                 "bold" if not muted else "normal"),
+                command=lambda k=label: self._press(k))
+            btn.grid(row=r, column=c, padx=6, pady=6)
+            self._keys.append(btn)
+
+        self._hint = ctk.CTkLabel(
+            self, text=f"The code changes daily. Ask {AUTHOR_NAME} for today's.",
+            text_color=FAINT, font=ctk.CTkFont(FONT, 11))
+        self._hint.grid(row=5, column=0, pady=(16, 2))
+        ctk.CTkLabel(self, text=AUTHOR_EMAIL, text_color=FAINT,
+                     font=ctk.CTkFont(FONT, 11)).grid(row=6, column=0, pady=(0, 20))
+
+    # ── entry ────────────────────────────────────────────────────────────────
+
+    def _refresh_dots(self) -> None:
+        for i, dot in enumerate(self._dot_widgets):
+            filled = i < len(self._entry)
+            dot.configure(fg_color=PRIMARY if filled else SURFACE_2,
+                          border_color=PRIMARY if filled else BORDER)
+
+    def _press(self, key: str) -> None:
+        if self._locked_out():
+            return
+        if key == "C":
+            self._entry = ""
+        elif key == "<":
+            self._entry = self._entry[:-1]
+        elif key.isdigit() and len(self._entry) < self.DOTS:
+            self._entry += key
+            self._message.configure(text="")
+
+        self._refresh_dots()
+        if len(self._entry) == self.DOTS:
+            self.after(120, self._submit)          # let the last dot paint
+
+    def _on_key(self, event) -> None:
+        if event.char.isdigit():
+            self._press(event.char)
+        elif event.keysym in ("BackSpace", "Delete"):
+            self._press("<")
+        elif event.keysym == "Escape":
+            self._give_up()
+
+    def _submit(self) -> None:
+        if len(self._entry) != self.DOTS or self._locked_out():
+            return
+
+        if access.verify_pin(self._entry):
+            self.state_dict = access.mark_unlocked(self.state_dict)
+            self.result = True
+            self.grab_release()
+            self.destroy()
+            return
+
+        self.state_dict = access.record_failure(self.state_dict)
+        self._entry = ""
+        self._refresh_dots()
+
+        wait = access.cooldown_remaining(self.state_dict)
+        if wait:
+            self._tick_cooldown()
+        else:
+            left = access.attempts_left(self.state_dict)
+            note = f"  ({left} left)" if left <= 2 else ""
+            self._message.configure(text=f"That code is not right{note}",
+                                    text_color=DANGER)
+
+    # ── cooldown ─────────────────────────────────────────────────────────────
+
+    def _locked_out(self) -> bool:
+        return access.cooldown_remaining(self.state_dict) > 0
+
+    def _tick_cooldown(self) -> None:
+        """Count the penalty down in place, disabling the pad while it runs."""
+        wait = access.cooldown_remaining(self.state_dict)
+        for btn in self._keys:
+            btn.configure(state="disabled" if wait else "normal")
+
+        if wait:
+            self._message.configure(
+                text=f"Too many attempts — wait {human_duration(wait)}",
+                text_color=WARNING)
+            self.after(500, self._tick_cooldown)
+
+    def _give_up(self) -> None:
+        self.result = False
+        self.grab_release()
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Application
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -281,6 +455,7 @@ class App(_Root):
         self._files: dict[str, FileOutcome] = {}       # path → latest outcome
         self._template = tk.StringVar(value=self._initial_template())
         self._dedup = tk.BooleanVar(value=self._settings.get("deduplicate", False))
+        self._strict = tk.BooleanVar(value=self._settings.get("strict_names", False))
         self._cancel: threading.Event | None = None
         self._events: queue.Queue[tuple] = queue.Queue()
         self._result: RunResult | None = None
@@ -296,6 +471,10 @@ class App(_Root):
         self.bind("<Control-o>", lambda _e: self._add_folder())
         self.bind("<Control-Return>", lambda _e: self._start())
         self.bind("<Escape>", lambda _e: self._cancel_run())
+
+        # Scheduled, not called: the initial unlock belongs to run(), and
+        # checking here as well would raise a second prompt behind the first.
+        self.after(NEW_DAY_CHECK_MS, self._watch_for_new_day)
 
     def _initial_template(self) -> str:
         """The remembered template, else the one shipped with the app.
@@ -334,12 +513,25 @@ class App(_Root):
                      text_color=MUTED, font=ctk.CTkFont(FONT, 13)
                      ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
+        buttons = ctk.CTkFrame(bar, fg_color="transparent")
+        buttons.grid(row=0, column=1, rowspan=2, sticky="e")
+
         self._btn_details = ctk.CTkButton(
-            bar, text="Details", width=88, height=32, corner_radius=8,
+            buttons, text="Details", width=88, height=32, corner_radius=8,
             fg_color=SURFACE, hover_color=SURFACE_2, text_color=MUTED,
             font=ctk.CTkFont(FONT, 12), command=self._toggle_log,
         )
-        self._btn_details.grid(row=0, column=1, rowspan=2, sticky="e")
+        self._btn_details.grid(row=0, column=0, padx=(0, 8))
+
+        ctk.CTkButton(
+            buttons, text="About", width=76, height=32, corner_radius=8,
+            fg_color=SURFACE, hover_color=SURFACE_2, text_color=MUTED,
+            font=ctk.CTkFont(FONT, 12), command=self._show_about,
+        ).grid(row=0, column=1)
+
+        ctk.CTkLabel(bar, text=f"Built by {AUTHOR_NAME}", text_color=FAINT,
+                     font=ctk.CTkFont(FONT, 11)
+                     ).grid(row=2, column=1, sticky="e", pady=(4, 0))
 
     def _build_intake(self) -> None:
         """Adding devices is the whole point of the app, so it leads.
@@ -530,8 +722,23 @@ class App(_Root):
             font=ctk.CTkFont(FONT, 12), text_color=TEXT, progress_color=PRIMARY,
             button_color=TEXT, fg_color=BORDER, command=self._remember,
         )
-        self._switch_dedup.grid(row=2, column=0, columnspan=2, sticky="w",
-                                padx=(18, 0), pady=(4, 14))
+        self._switch_dedup.grid(row=2, column=0, columnspan=3, sticky="w",
+                                padx=(18, 0), pady=(4, 2))
+
+        self._switch_strict = ctk.CTkSwitch(
+            panel, text=f"Accept only filenames like  {FILENAME_EXAMPLE}",
+            variable=self._strict, font=ctk.CTkFont(FONT, 12), text_color=TEXT,
+            progress_color=PRIMARY, button_color=TEXT, fg_color=BORDER,
+            command=self._on_strict_toggled,
+        )
+        self._switch_strict.grid(row=3, column=0, columnspan=3, sticky="w",
+                                 padx=(18, 0), pady=(2, 2))
+
+        self._lbl_format = ctk.CTkLabel(
+            panel, text="site code · device code and number · month and year",
+            text_color=FAINT, anchor="w", font=ctk.CTkFont(FONT, 11))
+        self._lbl_format.grid(row=4, column=0, columnspan=3, sticky="w",
+                              padx=(66, 0), pady=(0, 14))
 
     def _build_action(self) -> None:
         self._action = ctk.CTkFrame(self, fg_color="transparent")
@@ -638,9 +845,11 @@ class App(_Root):
     def _enter_setup(self) -> None:
         self._result = None
         self._cancel = None
-        # Reset any previous run's per-file statuses back to pre-flight.
+        # Reset any previous run's per-file statuses back to pre-flight, under
+        # whatever the current settings are.
+        strict = bool(self._strict.get())
         for path in list(self._files):
-            self._files[path] = calist.classify_file(path)
+            self._files[path] = calist.classify_file(path, strict)
         self._filter.set("All")
         self._show_action(self._idle)
         self._set_inputs_enabled(True)
@@ -653,8 +862,8 @@ class App(_Root):
         that isn't the one actually happening.
         """
         state = "normal" if enabled else "disabled"
-        for widget in (self._btn_change, self._switch_dedup, self._btn_clear,
-                       self._btn_slim_folder, self._btn_slim_files):
+        for widget in (self._btn_change, self._switch_dedup, self._switch_strict,
+                       self._btn_clear, self._btn_slim_folder, self._btn_slim_files):
             widget.configure(state=state)
 
     def _enter_working(self, total: int) -> None:
@@ -714,6 +923,7 @@ class App(_Root):
     def _add_paths(self, paths: list[str]) -> None:
         """Classify and absorb a batch of paths; folders are scanned."""
         added = 0
+        strict = bool(self._strict.get())
         for raw in paths:
             path = Path(raw)
             if path.is_dir():
@@ -723,12 +933,12 @@ class App(_Root):
                             and found.name.lower() != calist.OUTPUT_NAME.lower()):
                         key = str(found)
                         if key not in self._files:
-                            self._files[key] = calist.classify_file(key)
+                            self._files[key] = calist.classify_file(key, strict)
                             added += 1
             elif path.is_file():
                 key = str(path)
                 if key not in self._files:
-                    self._files[key] = calist.classify_file(key)
+                    self._files[key] = calist.classify_file(key, strict)
                     added += 1
 
         if added:
@@ -788,8 +998,21 @@ class App(_Root):
 
     def _remember(self) -> None:
         self._settings.update(template=self._template.get(),
-                              deduplicate=bool(self._dedup.get()))
+                              deduplicate=bool(self._dedup.get()),
+                              strict_names=bool(self._strict.get()))
         save_settings(self._settings)
+
+    def _on_strict_toggled(self) -> None:
+        """Re-check every loaded name against the new setting, immediately.
+
+        Cheap enough to do inline — the format check is a single precompiled
+        match, so even a few hundred devices re-resolve in well under a
+        millisecond and the table updates on the same click.
+        """
+        self._remember()
+        calist.log.info("Filename format check %s",
+                        "on" if self._strict.get() else "off")
+        self._enter_setup()
 
     # ── rendering ────────────────────────────────────────────────────────────
 
@@ -923,6 +1146,7 @@ class App(_Root):
         files = sorted(self._files)
         template = self._template.get()
         deduplicate = bool(self._dedup.get())
+        strict_names = bool(self._strict.get())
 
         total = len(files)
         cancel = threading.Event()
@@ -939,7 +1163,7 @@ class App(_Root):
             try:
                 result = calist.process_files(
                     files, template, deduplicate=deduplicate,
-                    on_file=on_file, cancel=cancel,
+                    strict_names=strict_names, on_file=on_file, cancel=cancel,
                 )
             except Exception as exc:                   # never die silently
                 calist.log.exception("Unexpected failure: %s", exc)
@@ -1048,6 +1272,33 @@ class App(_Root):
             self._drawer.grid_forget()
             self._btn_details.configure(text="Details")
 
+    def _watch_for_new_day(self) -> None:
+        """Re-lock once the calendar date moves on.
+
+        Checked while the app sits open, but never during a build: taking the
+        window away mid-run would throw away the user's work and protects
+        nothing, since the run was already authorised this morning.
+        """
+        if not access.is_unlocked_today(self._settings) and self._cancel is None:
+            calist.log.warning("A new day has started — the access code is needed again.")
+            self.withdraw()
+            if unlock(self):
+                self.deiconify()
+                self.lift()
+            else:
+                self.destroy()
+                return
+
+        self.after(NEW_DAY_CHECK_MS, self._watch_for_new_day)
+
+    def _show_about(self) -> None:
+        messagebox.showinfo(
+            "About Calist",
+            f"Calist — compile device inspection forms into one equipment register.\n\n"
+            f"Built by {AUTHOR_NAME}\n{AUTHOR_EMAIL}\n\n"
+            f"Every register Calist produces is signed with this attribution.",
+            parent=self)
+
     def _on_close(self) -> None:
         if self._cancel is not None and not self._cancel.is_set():
             if not messagebox.askokcancel(
@@ -1059,8 +1310,28 @@ class App(_Root):
         self.destroy()
 
 
+def unlock(app: "App") -> bool:
+    """Show the lock screen unless today's code has already been entered.
+
+    Returns False when the user closed it without unlocking, which means the
+    app should not open at all.
+    """
+    if access.is_unlocked_today(app._settings):
+        return True
+
+    dialog = LockDialog(app, app._settings)
+    app.wait_window(dialog)
+
+    # Keep whatever the dialog recorded — the unlock stamp on success, the
+    # failure count and cooldown otherwise, so closing the window is not a way
+    # to shed a penalty.
+    app._settings.update(dialog.state_dict)
+    save_settings(app._settings)
+    return dialog.result
+
+
 def run() -> None:
-    """Launch the app."""
+    """Launch the app, behind the daily lock."""
     # Match Tk's coordinate space to physical pixels so the window is crisp on
     # scaled displays.
     if sys.platform == "win32":
@@ -1072,7 +1343,16 @@ def run() -> None:
 
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
-    App().mainloop()
+
+    app = App()
+    app.withdraw()                     # stay hidden until the code is accepted
+    if not unlock(app):
+        app.destroy()
+        return
+
+    app.deiconify()
+    app.lift()
+    app.mainloop()
 
 
 if __name__ == "__main__":

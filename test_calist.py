@@ -213,6 +213,67 @@ def test_classify_does_not_open_the_file():
     assert outcome.device_name == "ECG"
 
 
+# ── filename format check ─────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("stem", [
+    "G302-AGH001-0425",       # the reference example
+    "G302-AGH001-0426",       # a 2026 date
+    "A1-BB007-1225",          # shortest site code, December
+    "GH1234-VAH012-0125",     # longer codes, January
+    "g302-agh001-0425",       # case does not matter
+])
+def test_accepts_well_formed_names(stem):
+    assert calist.check_filename_format(stem) is None
+
+
+@pytest.mark.parametrize("stem, expect", [
+    ("G302-AGH001", "3 parts"),           # too few parts
+    ("G302-AGH001-0425-X", "3 parts"),    # too many
+    ("302-AGH001-0425", "site code"),     # site must start with a letter
+    ("G-AGH001-0425", "site code"),       # site must end with digits
+    ("G302-AGH-0425", "device code"),     # device must end with digits
+    ("G302-001-0425", "device code"),     # device must start with letters
+    ("G302-AGH001-425", "4 digits"),      # date too short
+    ("G302-AGH001-04255", "4 digits"),    # date too long
+    ("G302-AGH001-ab25", "4 digits"),     # date not numeric
+    ("G302-AGH001-1325", "month"),        # month 13
+    ("G302-AGH001-0025", "month"),        # month 00
+])
+def test_rejects_malformed_names_and_says_why(stem, expect):
+    problem = calist.check_filename_format(stem)
+    assert problem is not None, stem
+    assert expect in problem, f"{stem!r} -> {problem!r}"
+
+
+def test_strict_mode_is_off_by_default():
+    """An old-style name stays acceptable unless the caller asks otherwise."""
+    assert calist.classify_file("Clinic-AGH001.xlsx").status == calist.READY
+
+
+def test_strict_mode_flags_a_bad_name():
+    outcome = calist.classify_file("Clinic-AGH001.xlsx", strict_names=True)
+    assert outcome.status == calist.BAD_FORMAT
+    assert outcome.is_problem
+
+
+def test_strict_mode_passes_a_good_name_through_to_the_device_lookup():
+    outcome = calist.classify_file("G302-AGH001-0425.xlsx", strict_names=True)
+    assert outcome.status == calist.READY
+    assert outcome.device_code == "AGH"
+    assert outcome.rows == 2
+
+
+def test_format_is_checked_before_the_device_code():
+    """With strict on, a malformed name reports the format, not the code."""
+    outcome = calist.classify_file("nonsense-ZZZ999.xlsx", strict_names=True)
+    assert outcome.status == calist.BAD_FORMAT
+
+
+def test_house_format_still_yields_the_right_device_code():
+    assert calist.extract_device_code("G302-AGH001-0425.xlsx") == "AGH"
+    assert calist.extract_device_code("G302-VAH012-1226.xlsx") == "VAH"
+
+
 # ── end-to-end ────────────────────────────────────────────────────────────────
 
 def _form(path, cells):
@@ -318,6 +379,75 @@ def test_refuses_to_overwrite_the_template(tmp_path):
     assert not result.succeeded
     assert "template" in (result.error or "").lower()
     assert template.stat().st_size > 0
+
+
+def test_strict_names_skips_badly_named_files_in_a_run(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    template = tpl_dir / "Device List.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    for col, name in enumerate(["No."] + calist.FIELDS, start=1):
+        ws.cell(row=3, column=col, value=name)
+    wb.save(template)
+
+    good = _form(src / "G302-AC001-0425.xlsx",
+                 {"E17": "Zoll", "E15": "R-Series", "K15": "SN-1",
+                  "K17": "ER", "E13": "01/01/2024", "G24": "Working"})
+    bad = _form(src / "Clinic-AC002.xlsx",
+                {"E17": "Zoll", "E15": "R-Series", "K15": "SN-2",
+                 "K17": "ER", "E13": "01/01/2024", "G24": "Working"})
+
+    loose = calist.process_files([good, bad], str(template))
+    assert loose.files_read == 2
+
+    strict = calist.process_files([good, bad], str(template), strict_names=True)
+    assert strict.files_read == 1
+    assert [o.status for o in strict.problems] == [calist.BAD_FORMAT]
+    assert strict.rows_written == 1
+
+
+def test_second_row_code_survives_the_house_format():
+    """G302-AGH001-0425 must become G302-AGCB001-0425, not mangle the rest."""
+    parent = {"Code": "G302-AGH001-0425", "Status": "OK", "Status2": "Faulty",
+              "_row_order": 0}
+    child = calist.build_second_row(
+        parent, {"device_name": "NIBP", "code_replace": ("AGH", "AGCB")})
+    assert child["Code"] == "G302-AGCB001-0425"
+
+
+def test_register_is_signed_with_the_author(workspace):
+    """Credit must travel with the file, not just live in the app."""
+    files, template = workspace
+    result = calist.process_files(files, template)
+
+    wb = load_workbook(result.output_path)
+    ws = wb.active
+    footer_row = calist.TEMPLATE_START_ROW + result.rows_written + 1
+    footer = ws.cell(row=footer_row, column=calist.TEMPLATE_START_COL).value
+    creator = wb.properties.creator
+    wb.close()
+
+    assert footer and calist.AUTHOR_NAME in footer
+    assert calist.AUTHOR_EMAIL in footer
+    assert "Calist" in footer
+    assert calist.AUTHOR_NAME in creator          # File -> Properties in Excel
+
+
+def test_attribution_sits_clear_of_the_data(workspace):
+    """A blank row between the last record and the signature."""
+    files, template = workspace
+    result = calist.process_files(files, template)
+
+    wb = load_workbook(result.output_path)
+    ws = wb.active
+    last_data = calist.TEMPLATE_START_ROW + result.rows_written - 1
+    gap = ws.cell(row=last_data + 1, column=calist.TEMPLATE_START_COL).value
+    wb.close()
+
+    assert gap in (None, ""), "the signature must not touch the last record"
 
 
 def test_written_rows_land_where_the_template_expects_them(workspace):

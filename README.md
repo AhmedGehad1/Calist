@@ -12,7 +12,7 @@
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Device types](https://img.shields.io/badge/device%20types-57-brightgreen)
-![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
 
 <img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="880">
@@ -46,7 +46,7 @@ Calist knows all 57 layouts. Point it at the folder and it does the round in abo
 
 ## Contents
 
-[Download](#download) · [Features](#features) · [How it works](#how-it-works) ·
+[Download](#download) · [Features](#features) · [Access](#access) · [How it works](#how-it-works) ·
 [Performance](#performance) · [Filename convention](#filename-convention) ·
 [The device table](#the-device-table) · [Two-row devices](#two-row-devices) ·
 [Duplicate serials](#duplicate-serial-numbers) · [Headless use](#headless-use) ·
@@ -63,6 +63,9 @@ Calist knows all 57 layouts. Point it at the folder and it does the round in abo
 | **The destination is never a surprise** | The *Saves to* row shows exactly where the register will land, before you commit — and warns if a register is already there. |
 | **Handles two-row devices** | A patient monitor and its NIBP module share a chassis but need separate lines. Calist generates the second row and sorts it beneath its parent. |
 | **Smart duplicate removal** | Optional. Drops repeated serials, but knows a device and its own sub-module legitimately share one. |
+| **Filename discipline, optionally enforced** | Flip one switch to require the `G302-AGH001-0425` house format. Anything that breaks it is flagged with the exact reason — wrong month, missing site code, wrong number of parts. |
+| **Daily access code** | The app asks for a four-digit code that changes every day. Ask the author for today's. |
+| **Signed output** | Every register carries the author's name and contact, in a footer line and in the file's Excel properties. |
 | **Nothing to set up** | The register template ships inside the executable, so a freshly downloaded copy works on first launch. Swap in your own whenever you like. |
 | **Remembers your setup** | Template, last folder and preferences persist between sessions. |
 | **Old and new Excel** | `.xlsx`, `.xlsm` via openpyxl; legacy `.xls` via xlrd. |
@@ -118,6 +121,17 @@ lazily and PyInstaller's static analysis cannot see it, and `collect_data_files(
 because CustomTkinter loads its themes and fonts from disk at runtime.
 
 </details>
+
+## Access
+
+Calist asks for a four-digit code on first use each day. It changes daily, works offline, and once
+entered the app stays open for the rest of that calendar day — crossing midnight asks again.
+
+<p align="center">
+  <img src="docs/ui-0-lock.png" alt="Calist lock screen" width="330">
+</p>
+
+**Ask Ahmed Gehad ([ahmedgehad2112@gmail.com](mailto:ahmedgehad2112@gmail.com)) for today's code.**
 
 ## How it works
 
@@ -198,6 +212,7 @@ Measured on 300 forms spanning five different device layouts, on a normal deskto
 |---|---|
 | Full run, 300 forms → 360 rows | **~5.5 seconds** (≈55 forms/sec) |
 | Pre-flight validation, 300 filenames | **under 5 ms** (~14 µs each) |
+| Filename format check, per name | **~0.7 µs** (1.5 million/sec) |
 
 Pre-flight costs so little because it never opens a workbook — it resolves the filename against the
 device table and nothing more. That's what makes validating-on-add practical even for a large folder.
@@ -214,6 +229,38 @@ Clinic-AGH001.xlsx
 
 If there's no `-`, the whole name is used (`VNT023.xlsx` → `VNT`). A file whose code isn't in the
 device table is **skipped with an error** rather than silently producing a junk row.
+
+### Enforcing the house format
+
+By default any filename is accepted as long as a device code can be read from it. Switch on
+**Accept only filenames like G302-AGH001-0425** and the full house format is required:
+
+```
+G302  -  AGH001  -  0425
+ │         │          └── MMYY — month 01-12, then a two-digit year (0425 = April 2025)
+ │         └───────────── device code and unit number (AGH001 = patient monitor 1)
+ └───────────────────────  site code: letters, then digits
+```
+
+Anything that breaks it is flagged **before you build**, with the specific reason rather than a
+blanket "invalid":
+
+| Filename | Reported as |
+|---|---|
+| `Clinic-AGH005` | expected 3 parts like G302-AGH001-0425, found 2 |
+| `302-AC006-0425` | site code '302' should be letters then digits, like G302 |
+| `G302-AGH-0425` | device code 'AGH' should be letters then digits, like AGH001 |
+| `G302-AGH007-425` | date '425' should be 4 digits (MMYY), like 0425 |
+| `G302-AGH004-1325` | month '13' in '1325' is not between 01 and 12 |
+
+The check is a single precompiled match on the accepting path — about **0.7 µs per name**, so 300
+files re-validate in under a millisecond and the table updates on the same click you toggle. The
+per-part diagnosis above only runs for names that already failed, so a correctly named folder never
+pays for it.
+
+<p align="center">
+  <img src="docs/ui-5-format.png" alt="Filename format check catching four badly named files" width="820">
+</p>
 
 ## The device table
 
@@ -329,8 +376,16 @@ for problem in result.problems:
     print(problem.filename, problem.detail)
 ```
 
-`process_files` also takes `on_file=` for per-file progress and `cancel=` (a `threading.Event`) to
-stop a long run — a cancelled run writes nothing.
+`process_files` also takes `strict_names=True` to enforce the house filename format, `on_file=` for
+per-file progress, and `cancel=` (a `threading.Event`) to stop a long run — a cancelled run writes
+nothing.
+
+```python
+from calist import check_filename_format
+
+check_filename_format("G302-AGH001-0425")   # None — it's fine
+check_filename_format("G302-AGH001-1325")   # "month '13' in '1325' is not between 01 and 12"
+```
 
 To check what a filename *would* resolve to, without opening it:
 
@@ -348,10 +403,10 @@ pip install pytest
 python -m pytest
 ```
 
-35 tests, run in CI against Python 3.10, 3.11 and 3.12. They cover the logic with no I/O — filename
-parsing, value handling, ordering, de-duplication, second-row generation and pre-flight
-classification — plus end-to-end runs against workbooks built on the fly, and integrity checks over
-the device table itself.
+91 tests, run in CI against Python 3.10, 3.11 and 3.12. They cover the logic with no I/O — filename
+parsing and format validation, value handling, ordering, de-duplication, second-row generation,
+pre-flight classification and the daily access code — plus end-to-end runs against workbooks built
+on the fly, and integrity checks over the device table itself.
 
 One of those asserts that every two-row device's names are covered by the shared-serial exemption,
 so renaming a device can't silently break de-duplication.
@@ -363,8 +418,10 @@ The suite imports `calist` only, never `ui`, so it needs no display and no GUI t
 ```
 calist.py                    the pipeline — imports no GUI toolkit
 ui.py                        the desktop interface (customtkinter)
+access.py                    the daily access code — pure, standalone
 device_config.py             the 57 device layouts and the form() helper
-test_calist.py               the test suite
+test_calist.py               pipeline tests
+test_access.py               access-code tests
 template/Device List.xlsx    reference register template
 ```
 
@@ -387,6 +444,13 @@ into every historical register, so it should be a considered call rather than a 
 Because the output lands among the source files, selecting the same folder twice will feed the
 previous run's output back in. Its code resolves to `DEVICE`, which isn't in the table, so it's
 skipped with an error rather than corrupting the register.
+
+## Author
+
+Built by **Ahmed Gehad** — [ahmedgehad2112@gmail.com](mailto:ahmedgehad2112@gmail.com)
+
+Every register Calist produces is signed with this attribution, in a footer line and in the
+workbook's document properties.
 
 ## License
 

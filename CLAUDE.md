@@ -11,7 +11,7 @@ inspection Excel forms and compiles them into one flat equipment register.
 
 ```powershell
 python calist.py                # launch the app
-python -m pytest                # run the test suite (35 tests)
+python -m pytest                # run the test suite (91 tests)
 python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 ```
@@ -20,12 +20,17 @@ pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
 ## Architecture
 
-Three modules, strictly one direction:
+Four modules, strictly one direction:
 
 ```
 ui.py  ──imports──>  calist.py  ──imports──>  device_config.py
 (customtkinter)      (pipeline)               (pure data)
+   │
+   └──imports──>  access.py     (daily PIN gate — pure, standalone)
 ```
+
+`access.py` imports nothing from the rest of the app, so the gate is testable without a display and
+cannot be broken by a pipeline change.
 
 **`calist.py` must never import a GUI toolkit.** `main()` imports `ui` lazily inside the function
 body, so `python calist.py` still launches the app while `import calist` stays GUI-free — which is
@@ -56,10 +61,30 @@ The pipeline is a chain of small functions orchestrated by
 
 ### Pre-flight
 
-[`classify_file()`](calist.py#L156) resolves a filename to a device **without opening the workbook** —
-extension check, code extraction, config lookup. The UI runs it on every file the moment it is added,
-which is how an unrecognised code surfaces before a long run instead of after it. It must stay
-I/O-free; a test asserts it works on a path that does not exist.
+`classify_file(path, strict_names=False)` resolves a filename to a device **without opening the
+workbook** — extension check, optional format check, code extraction, config lookup. The UI runs it
+on every file the moment it is added, which is how a bad name or an unrecognised code surfaces
+before a long run instead of after it. It must stay I/O-free; a test asserts it works on a path that
+does not exist.
+
+### Filename format check (`strict_names`)
+
+Optional, off by default, surfaced as a switch next to the dedup one. Enforces
+`G302-AGH001-0425` — site code (letters then digits), device code and number, then MMYY with the
+month range-checked.
+
+The performance shape is deliberate and worth preserving:
+
+- `check_filename_format()` is **one precompiled `_NAME_RE.match()`** on the accepting path — no
+  splitting, no allocation. ~0.7 µs, so 300 names re-validate in ~0.2 ms and the table can refresh
+  on the same click that flips the switch.
+- `_explain_bad_filename()` does the per-part diagnosis and is **only reached for names that already
+  failed**. A correctly named folder never pays for it. Keep it that way — moving the diagnosis onto
+  the hot path would make toggling feel sluggish on a large folder.
+
+With the switch on, the format is checked **before** the device lookup: the user has asked for that
+shape specifically, so a malformed name is the finding worth reporting even when a device code could
+still be salvaged. `test_format_is_checked_before_the_device_code` pins this.
 
 ### Threading rules (both of these have already caused bugs)
 
@@ -151,6 +176,50 @@ Flagged in `device_config.py` and the README, unresolved — they need checking 
 Device names are reproduced verbatim in output, spelling slips included (`Protien Analyzer`,
 `Tornique`). Correcting them changes the text written into every register, so treat it as a deliberate
 data change, not a typo fix.
+
+## Daily PIN gate (`access.py`)
+
+The app is locked until the day's four-digit code is entered. The code is derived from the local
+date, so nothing is stored and nothing is distributed:
+
+```
+base = day*17 + month*31 + year*11 + SECRET_KEY   (8374)
+pin  = (base * base // 10) % 10000, zero-padded
+```
+
+**The `// 10` is not cosmetic.** Taking the last four digits of a square straight off reaches only
+1044 of the 10000 codes — the final digits of a square cannot be arbitrary — and left 38 codes in
+2026 repeating on a second date. Shifting one digit widens that to 5784 and halves the repeats to
+19. `test_the_shifted_digit_is_what_widens_the_keyspace` and
+`test_codes_rarely_repeat_within_a_year` both fail if it is dropped.
+
+Unlock state rides in the same `settings.json` the UI already writes, as `unlocked_on` holding an
+ISO date. That gives the midnight reset for free — a date that is not today means locked, and so
+does a **missing** key, which is why deleting the settings file locks the app rather than opening
+it. `test_missing_state_is_locked_not_open` pins that direction.
+
+Three things worth not undoing:
+
+- **Rate limiting is load-bearing.** Even shifted, 5784 of 10000 values are reachable, so unlimited
+  guessing would still fall eventually. After 5 failures a cooldown starts at 30s and doubles,
+  capped at 15 min, and it is **persisted** — closing the dialog must not shed it, and a correct
+  code entered during a cooldown is still refused.
+- **`App.__init__` schedules the day-watcher, it does not call it.** Calling it there raises a second
+  lock prompt behind the one `run()` puts up.
+- **The watcher never re-locks mid-run** (`self._cancel is None`). Taking the window away during a
+  build would lose the user's work and protect nothing, since the run was authorised that morning.
+
+Limits, so nobody mistakes this for more than it is: the formula is in the source and the repo is
+public, and the system clock is the only authority on the date. It raises the bar for casual use; it
+is not a licensing system.
+
+## Attribution
+
+`AUTHOR_NAME` / `AUTHOR_EMAIL` / `ATTRIBUTION` in [calist.py](calist.py). `stamp_attribution()`
+writes a signature line one blank row below the last record and sets the workbook's document
+properties, so credit travels with the register rather than living only in the app. This is the one
+place output deliberately differs from the pre-lock builds — earlier work verified register output
+byte-identical twice, so a diff here is expected, not a regression.
 
 ## `ui.py`
 
