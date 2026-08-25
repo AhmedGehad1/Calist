@@ -128,7 +128,7 @@ Calist asks for a four-digit code on first use each day. It changes daily, works
 entered the app stays open for the rest of that calendar day — crossing midnight asks again.
 
 <p align="center">
-  <img src="docs/ui-0-lock.png" alt="Calist lock screen" width="330">
+  <img src="docs/ui-0-lock.png" alt="Calist lock screen" width="760">
 </p>
 
 **Ask Ahmed Gehad ([ahmedgehad2112@gmail.com](mailto:ahmedgehad2112@gmail.com)) for today's code.**

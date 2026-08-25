@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from datetime import date
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -274,52 +275,58 @@ else:
 # Lock screen
 # ──────────────────────────────────────────────────────────────────────────────
 
-class LockDialog(ctk.CTkToplevel):
-    """Asks for the day's PIN. Modal, and the only way past it is the code.
+class LockPanel(ctk.CTkFrame):
+    """Asks for the day's PIN, as a panel that covers the whole window.
 
-    Owns no persistence: it reports the updated settings dict back through
-    ``result`` and ``state``, and the caller decides what to save.
+    Deliberately NOT a Toplevel over a withdrawn root. CustomTkinter's CTk
+    tracks whether its window has ever been shown, and calling withdraw()
+    before the first mainloop() sets a flag that makes its own first-show
+    routine hide the window and never bring it back — the app ends up alive but
+    invisible. Keeping one always-visible root and swapping what is inside it
+    sidesteps that entirely, and removes the startup flicker as a bonus.
+
+    Owns no persistence: it reports back through ``result`` and ``state_dict``,
+    and the caller decides what to save.
     """
 
     DOTS = 4
 
-    def __init__(self, master, state: dict):
-        super().__init__(master)
+    def __init__(self, master, state: dict, on_done):
+        super().__init__(master, fg_color=BG, corner_radius=0)
 
         self.state_dict = dict(state)
         self.result = False
+        self._on_done = on_done
         self._entry = ""
-
-        self.title("Calist")
-        self.geometry("400x580")
-        self.resizable(False, False)
-        self.configure(fg_color=BG)
-        self.protocol("WM_DELETE_WINDOW", self._give_up)
 
         self._build()
         self._refresh_dots()
         self._tick_cooldown()
 
-        # Modal: hold focus until this is answered.
-        self.transient(master)
-        self.grab_set()
-        self.bind("<Key>", self._on_key)
-        self.focus_force()
+    def take_focus(self) -> None:
+        """Route typing here without stealing focus from the whole desktop."""
+        self.focus_set()
+        self.winfo_toplevel().bind("<Key>", self._on_key)
+
+    def release_focus(self) -> None:
+        self.winfo_toplevel().unbind("<Key>")
 
     # ── layout ───────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(9, weight=1)          # centre the stack
 
         ctk.CTkLabel(self, text="Calist", text_color=TEXT,
                      font=ctk.CTkFont(FONT, 26, "bold")
-                     ).grid(row=0, column=0, pady=(38, 2))
+                     ).grid(row=1, column=0, pady=(0, 2))
         ctk.CTkLabel(self, text="Enter today's access code", text_color=MUTED,
-                     font=ctk.CTkFont(FONT, 13)).grid(row=1, column=0)
+                     font=ctk.CTkFont(FONT, 13)).grid(row=2, column=0)
 
         # PIN dots
         self._dots = ctk.CTkFrame(self, fg_color="transparent")
-        self._dots.grid(row=2, column=0, pady=(26, 6))
+        self._dots.grid(row=3, column=0, pady=(26, 6))
         self._dot_widgets = []
         for i in range(self.DOTS):
             dot = ctk.CTkFrame(self._dots, width=18, height=18, corner_radius=9,
@@ -331,11 +338,11 @@ class LockDialog(ctk.CTkToplevel):
 
         self._message = ctk.CTkLabel(self, text="", text_color=DANGER,
                                      font=ctk.CTkFont(FONT, 12))
-        self._message.grid(row=3, column=0, pady=(6, 10))
+        self._message.grid(row=4, column=0, pady=(6, 10))
 
         # Keypad
         pad = ctk.CTkFrame(self, fg_color="transparent")
-        pad.grid(row=4, column=0)
+        pad.grid(row=5, column=0)
         keys = [("1", 0, 0), ("2", 0, 1), ("3", 0, 2),
                 ("4", 1, 0), ("5", 1, 1), ("6", 1, 2),
                 ("7", 2, 0), ("8", 2, 1), ("9", 2, 2),
@@ -356,9 +363,9 @@ class LockDialog(ctk.CTkToplevel):
         self._hint = ctk.CTkLabel(
             self, text=f"The code changes daily. Ask {AUTHOR_NAME} for today's.",
             text_color=FAINT, font=ctk.CTkFont(FONT, 11))
-        self._hint.grid(row=5, column=0, pady=(16, 2))
+        self._hint.grid(row=6, column=0, pady=(20, 2))
         ctk.CTkLabel(self, text=AUTHOR_EMAIL, text_color=FAINT,
-                     font=ctk.CTkFont(FONT, 11)).grid(row=6, column=0, pady=(0, 20))
+                     font=ctk.CTkFont(FONT, 11)).grid(row=7, column=0)
 
     # ── entry ────────────────────────────────────────────────────────────────
 
@@ -388,8 +395,6 @@ class LockDialog(ctk.CTkToplevel):
             self._press(event.char)
         elif event.keysym in ("BackSpace", "Delete"):
             self._press("<")
-        elif event.keysym == "Escape":
-            self._give_up()
 
     def _submit(self) -> None:
         if len(self._entry) != self.DOTS or self._locked_out():
@@ -398,8 +403,8 @@ class LockDialog(ctk.CTkToplevel):
         if access.verify_pin(self._entry):
             self.state_dict = access.mark_unlocked(self.state_dict)
             self.result = True
-            self.grab_release()
-            self.destroy()
+            self.release_focus()
+            self._on_done(self)
             return
 
         self.state_dict = access.record_failure(self.state_dict)
@@ -432,11 +437,6 @@ class LockDialog(ctk.CTkToplevel):
                 text_color=WARNING)
             self.after(500, self._tick_cooldown)
 
-    def _give_up(self) -> None:
-        self.result = False
-        self.grab_release()
-        self.destroy()
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Application
@@ -459,6 +459,8 @@ class App(_Root):
         self._cancel: threading.Event | None = None
         self._events: queue.Queue[tuple] = queue.Queue()
         self._result: RunResult | None = None
+        self._lock: LockPanel | None = None
+        self._hidden_while_locked: list = []
         self._started_at = 0.0
         self._log_open = False
 
@@ -506,6 +508,7 @@ class App(_Root):
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 14))
         bar.grid_columnconfigure(0, weight=1)
+        self._header = bar
 
         ctk.CTkLabel(bar, text="Calist", text_color=TEXT,
                      font=ctk.CTkFont(FONT, 26, "bold")).grid(row=0, column=0, sticky="w")
@@ -690,6 +693,7 @@ class App(_Root):
                              border_width=1, border_color=BORDER)
         panel.grid(row=3, column=0, sticky="ew", padx=28, pady=(14, 0))
         panel.grid_columnconfigure(1, weight=1)
+        self._settings_panel = panel
 
         # Template row
         ctk.CTkLabel(panel, text="Template", text_color=MUTED, width=76, anchor="w",
@@ -1272,22 +1276,56 @@ class App(_Root):
             self._drawer.grid_forget()
             self._btn_details.configure(text="Details")
 
+    # ── the lock ─────────────────────────────────────────────────────────────
+
+    def _main_widgets(self) -> tuple:
+        return (self._header, self._intake, self._table_wrap,
+                self._settings_panel, self._action, self._drawer)
+
+    def show_lock(self) -> None:
+        """Cover the window with the PIN panel and take the app out of reach.
+
+        The main widgets are removed from the layout, not just hidden behind
+        the panel, so nothing back there can be reached by tabbing to it.
+        """
+        if getattr(self, "_lock", None) is not None:
+            return
+
+        self._hidden_while_locked = [w for w in self._main_widgets()
+                                     if w.winfo_manager()]
+        for widget in self._hidden_while_locked:
+            widget.grid_remove()
+
+        self._lock = LockPanel(self, self._settings, self._on_unlocked)
+        self._lock.grid(row=0, column=0, rowspan=6, sticky="nsew")
+        self.grid_rowconfigure(0, weight=1)
+        self._lock.take_focus()
+
+    def _on_unlocked(self, panel: "LockPanel") -> None:
+        self._settings.update(panel.state_dict)
+        save_settings(self._settings)
+
+        panel.destroy()
+        self._lock = None
+        for widget in self._hidden_while_locked:
+            widget.grid()
+        self._hidden_while_locked = []
+
+        self.grid_rowconfigure(0, weight=0)
+        self._refresh_all()
+        calist.log.info("Unlocked for %s", date.today().isoformat())
+
     def _watch_for_new_day(self) -> None:
         """Re-lock once the calendar date moves on.
 
         Checked while the app sits open, but never during a build: taking the
-        window away mid-run would throw away the user's work and protects
+        interface away mid-run would throw away the user's work and protects
         nothing, since the run was already authorised this morning.
         """
-        if not access.is_unlocked_today(self._settings) and self._cancel is None:
+        if (self._lock is None and self._cancel is None
+                and not access.is_unlocked_today(self._settings)):
             calist.log.warning("A new day has started — the access code is needed again.")
-            self.withdraw()
-            if unlock(self):
-                self.deiconify()
-                self.lift()
-            else:
-                self.destroy()
-                return
+            self.show_lock()
 
         self.after(NEW_DAY_CHECK_MS, self._watch_for_new_day)
 
@@ -1310,26 +1348,6 @@ class App(_Root):
         self.destroy()
 
 
-def unlock(app: "App") -> bool:
-    """Show the lock screen unless today's code has already been entered.
-
-    Returns False when the user closed it without unlocking, which means the
-    app should not open at all.
-    """
-    if access.is_unlocked_today(app._settings):
-        return True
-
-    dialog = LockDialog(app, app._settings)
-    app.wait_window(dialog)
-
-    # Keep whatever the dialog recorded — the unlock stamp on success, the
-    # failure count and cooldown otherwise, so closing the window is not a way
-    # to shed a penalty.
-    app._settings.update(dialog.state_dict)
-    save_settings(app._settings)
-    return dialog.result
-
-
 def run() -> None:
     """Launch the app, behind the daily lock."""
     # Match Tk's coordinate space to physical pixels so the window is crisp on
@@ -1344,14 +1362,11 @@ def run() -> None:
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
 
+    # One window, shown once, never withdrawn — see LockPanel for why that
+    # matters with CustomTkinter.
     app = App()
-    app.withdraw()                     # stay hidden until the code is accepted
-    if not unlock(app):
-        app.destroy()
-        return
-
-    app.deiconify()
-    app.lift()
+    if not access.is_unlocked_today(app._settings):
+        app.show_lock()
     app.mainloop()
 
 

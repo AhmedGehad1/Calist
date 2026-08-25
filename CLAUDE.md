@@ -198,7 +198,23 @@ ISO date. That gives the midnight reset for free — a date that is not today me
 does a **missing** key, which is why deleting the settings file locks the app rather than opening
 it. `test_missing_state_is_locked_not_open` pins that direction.
 
-Three things worth not undoing:
+### Never withdraw the CTk root before the first mainloop
+
+The lock is a **panel inside the main window** (`LockPanel`, shown by `App.show_lock()`), not a
+Toplevel over a hidden root. That is not a style choice — the obvious version is broken.
+
+CustomTkinter's `CTk.withdraw()` sets `_withdraw_called_before_window_exists` when the window has
+never been shown. `CTk.mainloop()` then takes its first-show branch, which calls
+`_windows_set_titlebar_color()`; with `_window_exists` still False that hides the window and does
+not restore it (the saved state is `None`), and the same flag stops mainloop calling `deiconify()`.
+Result: the process runs with a permanently invisible window. It looks exactly like the app opening
+and instantly closing.
+
+So: one root, created once, never withdrawn. `show_lock()` grid-removes the main widgets (removing
+them from the tab order too, not merely covering them) and `_on_unlocked()` puts back exactly what
+it took away. `run()` is three lines and calls no window-state methods at all.
+
+Three more things worth not undoing:
 
 - **Rate limiting is load-bearing.** Even shifted, 5784 of 10000 values are reachable, so unlimited
   guessing would still fall eventually. After 5 failures a cooldown starts at 30s and doubles,
