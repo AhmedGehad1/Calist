@@ -1,93 +1,111 @@
 <div align="center">
 
-<img src="docs/calist-icon.png" alt="Calist" width="96">
+<img src="docs/calist-icon.png" alt="Calist" width="104">
 
 # Calist
 
-**Turn a folder of device inspection forms into one equipment register — in seconds.**
+### An afternoon of Excel, done in six seconds.
 
-[![Download](https://img.shields.io/badge/⬇%20Download%20for%20Windows-2ea44f?style=for-the-badge)](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)
+**Calist turns a folder of medical-device inspection forms into one clean, sorted,
+de-duplicated equipment register — automatically, without opening a single file by hand.**
+
+<br>
+
+[![Download for Windows](https://img.shields.io/badge/⬇%20%20Download%20for%20Windows-2ea44f?style=for-the-badge&logoColor=white)](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)
+
+<br>
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
+![Tests passing](https://img.shields.io/badge/tests-102%20passing-brightgreen)
+![Device types](https://img.shields.io/badge/device%20types-57-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
-![Device types](https://img.shields.io/badge/device%20types-57-brightgreen)
-![Tests](https://img.shields.io/badge/tests-95%20passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
+![Size](https://img.shields.io/badge/download-12.7%20MB-lightgrey)
+![Install](https://img.shields.io/badge/install-none%20required-success)
 
-<img src="docs/ui-2-review.png" alt="Calist with a folder of inspection forms loaded" width="880">
+<br>
+
+<img src="docs/ui-2-review.png" alt="Calist with a full inspection round loaded and validated" width="900">
 
 </div>
 
 ---
 
-Biomedical equipment inspections are recorded one Excel form per device. A hospital wing produces
-several hundred in a round, and every one holds the same six facts — manufacturer, model, serial,
-location, date, status.
+## The problem it solves
 
-The catch: **those six cells sit in a different place on every device's form.** A defibrillator's
-serial is in `K15`. An ultrasound's is in `L17`. A baby incubator's is in `L72`. Compiling the
-register by hand means opening every file, working out which layout you're looking at, and copying
-six cells — several hundred times.
+Biomedical equipment inspections are recorded **one Excel form per device**. A single hospital wing
+produces several hundred in a round, and every form holds the same six facts: manufacturer, model,
+serial number, location, date, status.
 
-Calist knows all 57 layouts. Point it at the folder and it does the round in about six seconds.
+The trap is that **those six cells sit somewhere different on every device's form.**
+
+| Device | Where the serial number lives |
+|---|---|
+| Defibrillator | `K15` |
+| ECG | `J32` |
+| Ultrasound | `L17` |
+| Sphygmomanometer | `K47` |
+| Baby Incubator | `L72` |
+
+Fifty-seven device types. Fifty-seven layouts. Building the register by hand means opening every
+file, working out which layout you are looking at, finding six scattered cells, and copying them
+across — several hundred times, without a single transcription error.
+
+**Calist already knows all fifty-seven.** Point it at the folder and walk away.
 
 <div align="center">
 
 | Doing it by hand | With Calist |
-|---|---|
-| Open 300 files one at a time | Pick the folder once |
+|:---|:---|
+| Open 300 files, one at a time | Pick the folder once |
 | Remember 57 different cell layouts | Recognised automatically from the filename |
-| Discover a bad file at row 214 | Flagged before the run starts |
-| Retype serials and hope | Read straight from the cell |
-| An afternoon | **~6 seconds** |
+| Find the one bad file at row 214 | Flagged **before** the run even starts |
+| Retype serial numbers and hope | Read straight from the cell, never retyped |
+| Sort and number the rows yourself | Sorted, numbered and de-duplicated for you |
+| **An afternoon** | **~6 seconds** |
 
 </div>
 
+---
+
 ## Contents
 
-[Download](#download) · [Features](#features) · [Access](#access) · [How it works](#how-it-works) ·
-[Performance](#performance) · [Filename convention](#filename-convention) ·
-[The device table](#the-device-table) · [Two-row devices](#two-row-devices) ·
-[Duplicate serials](#duplicate-serial-numbers) · [Headless use](#headless-use) ·
-[Development](#development) · [Known issues](#known-issues)
+**[Download](#download)** · [Access code](#access-code) · [Features](#what-makes-it-good) ·
+[How it works](#how-it-works) · [Performance](#performance-measured-not-estimated) ·
+[Filename convention](#filename-convention) · [The device engine](#the-device-engine) ·
+[Two-row devices](#two-row-devices) · [Duplicate serials](#duplicate-serial-numbers) ·
+[Engineering](#engineering) · [Headless use](#headless-use) · [Development](#development) ·
+[Known issues](#known-issues) · [Author](#author)
 
-## Features
-
-| | |
-|---|---|
-| **Folder-first** | Pick one folder and every Excel file inside it is pulled in, subfolders included. No hand-picking 300 files. |
-| **Validated before you build** | Every file is resolved to a device the moment it's added. An unrecognised code shows up in the table *immediately* — not 200 files into a run. |
-| **You can see it working** | Rows turn green one by one as each device is read, with a progress bar, the file currently open, and time remaining. |
-| **Cancel any time** | Stops cleanly between files and writes nothing. |
-| **The destination is never a surprise** | The *Saves to* row shows exactly where the register will land, before you commit — and warns if a register is already there. |
-| **Handles two-row devices** | A patient monitor and its NIBP module share a chassis but need separate lines. Calist generates the second row and sorts it beneath its parent. |
-| **Smart duplicate removal** | Optional. Drops repeated serials, but knows a device and its own sub-module legitimately share one. |
-| **Filename discipline, optionally enforced** | Flip one switch to require the `G302-AGH001-0425` house format. Anything that breaks it is flagged with the exact reason — wrong month, missing site code, wrong number of parts. |
-| **Daily access code** | The app asks for a four-digit code that changes every day. Ask the author for today's. |
-| **Signed output** | Every register carries the author's name and contact, in a footer line and in the file's Excel properties. |
-| **Nothing to set up** | The register template ships inside the executable, so a freshly downloaded copy works on first launch. Swap in your own whenever you like. |
-| **Remembers your setup** | Template, last folder and preferences persist between sessions. |
-| **Old and new Excel** | `.xlsx`, `.xlsm` via openpyxl; legacy `.xls` via xlrd. |
-| **Scriptable** | The pipeline imports no GUI toolkit, so it drives headlessly from Python. |
+---
 
 ## Download
 
-### [⬇ Download Calist.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)
+<div align="center">
 
-**One file. No installer, no Python, nothing to configure.** Download it, double-click, and point it
-at your folder of forms. The register template is built in, so the first run works immediately.
+### [⬇ &nbsp; Download Calist.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)
 
-Works on Windows 10 and 11. About 12 MB. Every release is built and tested automatically by
-[GitHub Actions](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml) from the
-source in this repository — see [all releases](https://github.com/AhmedGehad1/Calist/releases).
+**One file. No installer. No Python. Nothing to configure.**
 
-> **First launch:** Windows shows *"Windows protected your PC"* because the file isn't
-> code-signed — a certificate costs a few hundred dollars a year, and this is a free tool.
-> Click **More info → Run anyway**. You only see it once.
+</div>
+
+Download it, double-click it, point it at your folder. The register template is built into the
+executable, so the very first launch works with zero setup.
+
+| | |
+|---|---|
+| **Size** | 12.7 MB, a single self-contained `.exe` |
+| **Requirements** | Windows 10 or 11. Nothing else — no runtime, no dependencies, no admin rights |
+| **Provenance** | Every release is built, tested and published automatically by [GitHub Actions](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml) straight from the source in this repository |
+| **History** | [All releases](https://github.com/AhmedGehad1/Calist/releases) |
+
+> **On first launch** Windows shows *"Windows protected your PC"*, because the file is not
+> code-signed — a certificate costs several hundred dollars a year, and this is a free tool.
+> Click **More info → Run anyway**. You will only ever see it once.
 
 <details>
-<summary><b>Run from source instead</b></summary>
+<summary><b>Prefer to run from source?</b></summary>
 
 <br>
 
@@ -100,13 +118,13 @@ python calist.py
 
 Python 3.10 or newer. `openpyxl`, `xlrd` and `customtkinter` install from `requirements.txt`.
 
-`pip install tkinterdnd2` additionally enables dragging a folder straight onto the window; without
-it the drop zone is click-only and nothing else changes.
+Installing `tkinterdnd2` as well enables dragging a folder straight onto the window. Without it the
+drop zone is click-only and nothing else changes.
 
 </details>
 
 <details>
-<summary><b>Build the executable yourself</b></summary>
+<summary><b>Prefer to build the executable yourself?</b></summary>
 
 <br>
 
@@ -115,23 +133,87 @@ pip install pyinstaller
 pyinstaller calist.spec --noconfirm --clean
 ```
 
-The result is `dist/Calist.exe`. [`calist.spec`](calist.spec) is the build recipe; two settings in it
-are load-bearing and commented as such — `hiddenimports=["ui"]`, because the interface is imported
-lazily and PyInstaller's static analysis cannot see it, and `collect_data_files("customtkinter")`,
-because CustomTkinter loads its themes and fonts from disk at runtime.
+The result is `dist/Calist.exe`. [`calist.spec`](calist.spec) is the build recipe, and two settings
+inside it are load-bearing (both commented in place):
+
+- `hiddenimports=["ui", "access"]` — the interface is imported lazily so the pipeline stays
+  GUI-free, which means PyInstaller's static analysis cannot see it.
+- `collect_data_files("customtkinter")` — CustomTkinter loads its themes and fonts from disk at
+  runtime, and a build without them fails to draw.
 
 </details>
 
-## Access
+---
 
-Calist asks for a four-digit code on first use each day. It changes daily, works offline, and once
-entered the app stays open for the rest of that calendar day — crossing midnight asks again.
+## Access code
 
-<p align="center">
-  <img src="docs/ui-0-lock.png" alt="Calist lock screen" width="760">
-</p>
+Calist asks for a **four-digit code** the first time it is opened each day. The code changes daily,
+is generated offline with no server and no licence file, and once entered the app stays unlocked for
+the rest of that calendar day. Crossing midnight asks again.
 
-**Ask Ahmed Gehad ([ahmedgehad2112@gmail.com](mailto:ahmedgehad2112@gmail.com)) for today's code.**
+<div align="center">
+  <img src="docs/ui-0-lock.png" alt="The Calist lock screen" width="820">
+</div>
+
+<div align="center">
+
+**Ask Ahmed Gehad — [ahmedgehad2112@gmail.com](mailto:ahmedgehad2112@gmail.com) — for today's code.**
+
+</div>
+
+Wrong entries are rate-limited: five attempts, then a cooldown starting at 30 seconds and doubling,
+capped at 15 minutes. The cooldown is stored, so closing the window does not clear it, and a correct
+code entered during a cooldown is still refused.
+
+---
+
+## What makes it good
+
+<table>
+<tr><td width="34%"><b>Folder-first, not file-first</b></td>
+<td>Pick <i>one folder</i> and every Excel file inside it is pulled in — subfolders included. No hand-picking three hundred files, no multi-select gymnastics.</td></tr>
+
+<tr><td><b>Problems surface <i>before</i> the run</b></td>
+<td>Every file is resolved to a real device the instant it is added, in about 14 microseconds each. An unrecognised device code appears in the table <b>immediately</b> — not two hundred files into a long run.</td></tr>
+
+<tr><td><b>You can watch it work</b></td>
+<td>Rows turn green one by one as each device is read, with a progress bar, the file currently open, and a live estimate of the time remaining. It never looks frozen, because it never is.</td></tr>
+
+<tr><td><b>Cancel at any moment</b></td>
+<td>Stops cleanly between files and writes absolutely nothing. A cancelled run leaves no half-finished register behind.</td></tr>
+
+<tr><td><b>The destination is never a surprise</b></td>
+<td>The <i>Saves to</i> row shows exactly where the register will land <b>before</b> you commit, and warns you in amber if a register is already sitting there.</td></tr>
+
+<tr><td><b>Understands two-row devices</b></td>
+<td>A patient monitor and its NIBP module share one chassis and one serial, but need two lines in the register. Calist generates the second row itself and sorts it directly beneath its parent.</td></tr>
+
+<tr><td><b>Duplicate removal that knows better</b></td>
+<td>Optional, and smart: it drops repeated serials, but understands that a device and its own sub-module legitimately share one. A <i>third</i> record on that serial is still removed.</td></tr>
+
+<tr><td><b>Optional filename discipline</b></td>
+<td>One switch enforces the <code>G302-AGH001-0425</code> house format, and tells you <i>exactly</i> what is wrong with each offender — wrong month, missing site code, wrong number of parts.</td></tr>
+
+<tr><td><b>Daily access code</b></td>
+<td>Offline, server-free, changes every day. No licence files, no activation, no internet connection.</td></tr>
+
+<tr><td><b>Every register is signed</b></td>
+<td>Author name and contact are written into a footer line <i>and</i> the workbook's Excel document properties, so credit travels with the file wherever it is emailed or filed.</td></tr>
+
+<tr><td><b>Nothing to set up</b></td>
+<td>The register template ships inside the executable. A freshly downloaded copy is usable on the first launch, and you can swap in your own template whenever you like.</td></tr>
+
+<tr><td><b>Remembers your setup</b></td>
+<td>Template, last folder and every preference persist between sessions, so a repeat run is two clicks.</td></tr>
+
+<tr><td><b>Old and new Excel alike</b></td>
+<td><code>.xlsx</code> and <code>.xlsm</code> through openpyxl, legacy <code>.xls</code> through xlrd. One code path, both formats.</td></tr>
+
+<tr><td><b>Fully scriptable</b></td>
+<td>The pipeline imports no GUI toolkit whatsoever, so the whole thing drives from plain Python for batch jobs and automation.</td></tr>
+</table>
+
+---
 
 ## How it works
 
@@ -143,107 +225,132 @@ entered the app stays open for the rest of that calendar day — crossing midnig
 <tr valign="top">
 <td>
 
-**1 · Add your devices**
+### 1 · Add your devices
 
-Pick a folder and every Excel file inside it comes in, subfolders included.
+Pick a folder and every Excel file inside it comes in, subfolders and all.
 
-Each one is checked on arrival, so an unrecognised device code appears in the
-table straight away — before you commit to a run.
+Each one is checked the moment it arrives, so an unrecognised device shows up in the table straight
+away — before you commit to anything.
 
 </td>
 <td>
 
-**2 · Watch it work**
+### 2 · Watch it work
 
-Rows turn green as each device is read, with the file currently open and an
-estimate of the time left.
+Rows turn green as each device is read, with the file currently open and a live estimate of the time
+left.
 
-Cancel stops cleanly without writing anything.
+Cancel stops it cleanly, and writes nothing at all.
 
 </td>
 </tr>
 </table>
 
 <div align="center">
-<img src="docs/ui-4-results.png" alt="Results" width="760">
+<img src="docs/ui-4-results.png" alt="The results screen" width="800">
 </div>
 
-**3 · Collect the register** — the results card says what was built and exactly where it went, with
-**Open register** and **Reveal in folder** one click away. The table filters itself down to anything
-that needs attention.
+### 3 · Collect the register
 
-The register is saved as `device list.xlsx` **beside the first source file**. That location is shown
-in the *Saves to* row the whole time, so it's never a surprise.
+The results card says precisely what was built and exactly where it went, with **Open register** and
+**Reveal in folder** one click away. The table filters itself down to anything that needs your
+attention, so five problem files out of three hundred are never buried.
+
+The register is saved as `device list.xlsx` beside the first source file — and that location is on
+screen the entire time, so it is never a mystery afterwards.
 
 <details>
-<summary><b>What happens to a single form</b></summary>
+<summary><b>What actually happens to a single form</b></summary>
+
+<br>
 
 ```
-Clinic-AGH001.xlsx
+G302-AGH001-0425.xlsx
         │
         ├─ 1. read the device code from the filename ──►  "AGH"
         │
-        ├─ 2. look up its layout in device_config.py ──►  Model E18, S.N K18, …
+        ├─ 2. look it up in the device table ──────────►  Model E18, S.N K18, Status D39, …
         │
-        ├─ 3. read those cells from sheet 1 ───────────►  {Model: "MX450", S.N: "SN-100", …}
+        ├─ 3. read exactly those cells from sheet 1 ───►  {Model: "MX450", S.N: "SN-100", …}
         │
         ├─ 4. generate the sub-module row, if any ─────►  + a second "NIBP" row
         │
-        └─ 5. sort, de-duplicate, write to template ───►  device list.xlsx
+        ├─ 5. sort by device code, modules beneath ────►  parent, then its module
+        │
+        ├─ 6. drop duplicate serials, if enabled ──────►  keeping legitimate pairs
+        │
+        └─ 7. write into a copy of your template ──────►  device list.xlsx, signed
 ```
 
 </details>
 
 ### Keyboard
 
-| | |
+| Shortcut | Action |
 |---|---|
-| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Add a folder |
-| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Build the register |
-| <kbd>Esc</kbd> | Cancel a run |
-| <kbd>Delete</kbd> | Remove selected rows |
+| <kbd>Ctrl</kbd> + <kbd>O</kbd> | Add a folder |
+| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Build the register |
+| <kbd>Esc</kbd> | Cancel a running build |
+| <kbd>Delete</kbd> | Remove the selected rows |
 | Double-click | Reveal that file in Explorer |
 
-## Performance
+---
 
-Measured on 300 forms spanning five different device layouts, on a normal desktop machine:
+## Performance, measured not estimated
 
-| | |
-|---|---|
-| Full run, 300 forms → 360 rows | **~5.5 seconds** (≈55 forms/sec) |
-| Pre-flight validation, 300 filenames | **under 5 ms** (~14 µs each) |
-| Filename format check, per name | **~0.7 µs** (1.5 million/sec) |
+Benchmarked on **300 real forms spanning five different device layouts**, on an ordinary desktop
+machine, and repeated to confirm the figures were not a fluke:
 
-Pre-flight costs so little because it never opens a workbook — it resolves the filename against the
-device table and nothing more. That's what makes validating-on-add practical even for a large folder.
+<div align="center">
+
+| Operation | Result |
+|:---|:---|
+| Full run — 300 forms into 360 register rows | **≈ 5.5 seconds** (~55 forms/second) |
+| Pre-flight validation of 300 filenames | **under 5 ms** (~14 µs each) |
+| Filename format check, per name | **≈ 0.7 µs** (1.5 million/second) |
+| Cold start of the packaged executable | **≈ 3–4 seconds** |
+
+</div>
+
+Pre-flight is that cheap because it **never opens a workbook** — it resolves the filename against the
+device table and stops there. That is exactly what makes validate-on-add practical for a folder of
+several hundred forms, and why an unrecognised device is caught the instant you drop the folder in
+rather than after a five-second run.
+
+The format check is a single precompiled regular expression on the accepting path. The detailed
+per-part diagnosis — *"month '13' in '1325' is not between 01 and 12"* — only ever runs for a name
+that has **already** failed, so a correctly named folder never pays a penny for it.
+
+---
 
 ## Filename convention
 
-The device type comes from the filename, so this part matters:
+The device type is read from the filename, so this part matters:
 
 ```
-Clinic-AGH001.xlsx
-       └┬┘
-        └──  everything after the first "-", leading letters only  →  AGH
+G302-AGH001-0425.xlsx
+     └─┬──┘
+       └──  everything after the first "-", leading letters only  →  AGH
 ```
 
-If there's no `-`, the whole name is used (`VNT023.xlsx` → `VNT`). A file whose code isn't in the
-device table is **skipped with an error** rather than silently producing a junk row.
+If there is no `-`, the whole name is used (`VNT023.xlsx` → `VNT`). A file whose code is not in the
+device table is **skipped with a clear error** rather than silently producing a junk row — a missing
+row is recoverable, a wrong one might never be noticed.
 
 ### Enforcing the house format
 
-By default any filename is accepted as long as a device code can be read from it. Switch on
-**Accept only filenames like G302-AGH001-0425** and the full house format is required:
+By default any filename is accepted so long as a device code can be read from it. Flip on
+**Accept only filenames like G302-AGH001-0425** and the full house format becomes mandatory:
 
 ```
 G302  -  AGH001  -  0425
  │         │          └── MMYY — month 01-12, then a two-digit year (0425 = April 2025)
  │         └───────────── device code and unit number (AGH001 = patient monitor 1)
- └───────────────────────  site code: letters, then digits
+ └───────────────────────  site code — letters, then digits
 ```
 
 Anything that breaks it is flagged **before you build**, with the specific reason rather than a
-blanket "invalid":
+useless blanket "invalid":
 
 | Filename | Reported as |
 |---|---|
@@ -253,30 +360,27 @@ blanket "invalid":
 | `G302-AGH007-425` | date '425' should be 4 digits (MMYY), like 0425 |
 | `G302-AGH004-1325` | month '13' in '1325' is not between 01 and 12 |
 
-The check is a single precompiled match on the accepting path — about **0.7 µs per name**, so 300
-files re-validate in under a millisecond and the table updates on the same click you toggle. The
-per-part diagnosis above only runs for names that already failed, so a correctly named folder never
-pays for it.
+<div align="center">
+  <img src="docs/ui-5-format.png" alt="The filename format check catching four badly named files" width="860">
+</div>
 
-<p align="center">
-  <img src="docs/ui-5-format.png" alt="Filename format check catching four badly named files" width="820">
-</p>
+---
 
-## The device table
+## The device engine
 
-All 57 layouts live in [`device_config.py`](device_config.py). Because 51 of the 57 forms are the
-same layout at a different row offset, they're built by a helper rather than written out by hand:
+All 57 layouts live in [`device_config.py`](device_config.py). Because 51 of the 57 forms turn out to
+be *the same layout at a different row offset*, they are generated rather than typed out:
 
 ```python
 "DG": {"device_name": "CBC Analyzer", "cells": form(18, "H32")},
 ```
 
-`form(row, status)` takes the row holding the **Model** and derives the rest from it:
+`form(row, status)` takes the row holding the **Model** and derives everything else from it:
 
 ```
                       form(18, "H32")
 
-      Date          E16   ← row - 2
+      Date          E16   ← row − 2
       Model         E18   ← row            the anchor
       Manufacturer  E20   ← row + 2
       S.N           K18   ← row,     value column
@@ -284,24 +388,28 @@ same layout at a different row offset, they're built by a helper rather than wri
       Status        H32   ← given explicitly; it moves the most
 ```
 
-Keyword arguments cover the variations:
+Keyword arguments absorb every variation:
 
 | Argument | Use when | Example |
 |---|---|---|
 | `col=` / `val=` | the form uses a different column pair | `form(32, "F41", col="D", val="J")` |
 | `date_gap=4` | an extra line sits above the Date | `form(26, "G35", date_gap=4)` |
-| `extra={...}` | a second serial, second status, or a one-off cell | `form(17, "H30", extra={"S.N2": "L21"})` |
+| `extra={...}` | a second serial, a second status, or a one-off cell | `form(17, "H30", extra={"S.N2": "L21"})` |
 
-Genuinely different forms (`AK`, `CF`) are written out as literal dicts, so the odd ones stand out
-instead of hiding in a wall of near-identical blocks.
+The result: **55 of the 57 devices are a single readable line each**, and only two genuinely
+different forms (`AK` Baby Incubator, `CF` Baby Warmer) are written out in full. That asymmetry is
+deliberate — the odd ones out are supposed to stand out, not hide inside a wall of near-identical
+blocks.
 
-### Adding a device type
+### Adding a new device takes one line
 
-One line. Find the Model cell on the form, note the Status cell, and add:
+Find the Model cell on the form, note the Status cell, and add:
 
 ```python
 "XY": {"device_name": "Your Device", "cells": form(<model row>, "<status cell>")},
 ```
+
+No code changes. No special cases. Sorting, second rows and de-duplication all follow automatically.
 
 <details>
 <summary><b>All 57 supported devices</b></summary>
@@ -330,15 +438,18 @@ One line. Find the Model cell on the form, note the Status cell, and add:
 | `AS` Centrifuge | `DV` OR light | `GP` Holter machines |
 | `AU` Chemistry analyzer | `EA` C-Arm | `VAH` Vital Sign (SPO2 Module) |
 
-<sub>Names appear exactly as they're written into the register — including the spelling slips noted
+<sub>Names appear exactly as they are written into the register, including the spelling slips noted
 under <a href="#known-issues">Known issues</a>.</sub>
 
 </details>
 
+---
+
 ## Two-row devices
 
-Some units are inspected as one device but recorded as two. A patient monitor and its NIBP module
-share a chassis and a serial number, but each gets its own status and its own line in the register.
+Some units are inspected as one device but must be recorded as two. A patient monitor and its NIBP
+module share a chassis and a serial number, yet each needs its own status and its own line.
+
 A `second_row` block generates that line automatically:
 
 ```python
@@ -349,110 +460,149 @@ A `second_row` block generates that line automatically:
 },
 ```
 
-The generated row copies the parent's data, takes its status from `Status2`, and rewrites the code
-(`Clinic-AGH001` → `Clinic-AGCB001`). It always sorts directly beneath its parent.
+The generated row copies the parent's data, takes its status from the `Status2` cell, and rewrites
+the device code — `G302-AGH001-0425` becomes `G302-AGCB001-0425`, replacing the device token only
+and leaving the site code and date untouched. It always sorts directly beneath its parent, never
+adrift somewhere else in the register.
+
+---
 
 ## Duplicate serial numbers
 
 With **Remove duplicate serial numbers** switched on, a repeated serial is dropped and logged.
 
-The exception is a device and its own generated sub-module — they legitimately share one serial,
-because they are one physical unit. A *third* record on that serial is still dropped.
+The exception is a device and its own generated sub-module: they legitimately share one serial,
+because they are one physical unit. A *third* record carrying that serial is still dropped.
 
-Blank serials are always kept: several devices with no serial recorded shouldn't collapse into one row.
+Blank serials are always kept — several devices with no serial recorded must not collapse into a
+single row.
+
+---
+
+## Engineering
+
+Calist is a small application built to be maintained, not merely to work today.
+
+| | |
+|---|---|
+| **Strict layering** | Four modules, one direction. `ui.py` → `calist.py` → `device_config.py`, with `access.py` standing entirely alone. The pipeline imports no GUI toolkit at all, so `import calist` costs nothing and pulls in nothing. |
+| **Two reporting channels, deliberately** | The pipeline emits log records *and* returns structured `FileOutcome` / `RunResult` values. The log drives the details drawer; the structures drive the table. Neither replaces the other. |
+| **Thread-safe by construction** | Extraction runs on a worker thread. It never touches a widget and never reads a Tk variable — everything crosses back through queues drained on the main thread, which also batches redraws so three hundred files do not repaint the table three hundred times. |
+| **Output stability is verified, not assumed** | Every refactor is checked by building the same register before and after and diffing the workbooks cell by cell. The register output has been proven byte-identical across two major rewrites. |
+| **Fails closed, never open** | A missing or unreadable settings file locks the app rather than opening it. An unknown device code skips the file rather than inventing a row. A cancelled run writes nothing. |
+| **Automated release pipeline** | Tag a version and GitHub Actions runs the full suite, builds the executable, sanity-checks its size to catch missing bundled data, and publishes it. A build that fails its tests never reaches the download link. |
+
+---
 
 ## Headless use
 
-The pipeline knows nothing about the interface — `calist.py` imports no GUI toolkit at all. So the
-whole thing drives from Python:
+The pipeline knows nothing about the interface, so the whole thing drives from Python:
 
 ```python
 from calist import process_files
 
-result = process_files(["Clinic-AGH001.xlsx"], "Device List.xlsx", deduplicate=True)
+result = process_files(
+    ["G302-AGH001-0425.xlsx", "G302-AC003-0425.xlsx"],
+    "Device List.xlsx",
+    deduplicate=True,
+    strict_names=True,
+)
 
 print(result.rows_written, "rows ->", result.output_path)
 for problem in result.problems:
-    print(problem.filename, problem.detail)
+    print(f"skipped {problem.filename}: {problem.detail}")
 ```
 
-`process_files` also takes `strict_names=True` to enforce the house filename format, `on_file=` for
-per-file progress, and `cancel=` (a `threading.Event`) to stop a long run — a cancelled run writes
-nothing.
+`process_files` also accepts `on_file=` for per-file progress and `cancel=` (a `threading.Event`) to
+stop a long run — a cancelled run writes nothing at all.
+
+To ask what a filename *would* resolve to, without opening it:
 
 ```python
-from calist import check_filename_format
+from calist import classify_file, check_filename_format
 
-check_filename_format("G302-AGH001-0425")   # None — it's fine
-check_filename_format("G302-AGH001-1325")   # "month '13' in '1325' is not between 01 and 12"
+classify_file("G302-AGH001-0425.xlsx").device_name   # 'Patient Monitor  +NIBP'
+classify_file("G302-ZZZ999-0425.xlsx").status        # 'unknown_code'
+
+check_filename_format("G302-AGH001-0425")            # None - it is fine
+check_filename_format("G302-AGH001-1325")            # "month '13' ... is not between 01 and 12"
 ```
 
-To check what a filename *would* resolve to, without opening it:
-
-```python
-from calist import classify_file
-
-classify_file("Clinic-AGH001.xlsx").device_name   # 'Patient Monitor  +NIBP'
-classify_file("Clinic-ZZZ999.xlsx").status        # 'unknown_code'
-```
+---
 
 ## Development
 
 ```bash
+pip install -r requirements.txt
 pip install pytest
 python -m pytest
 ```
 
-95 tests, run in CI against Python 3.10, 3.11 and 3.12. They cover the logic with no I/O — filename
-parsing and format validation, value handling, ordering, de-duplication, second-row generation,
-pre-flight classification and the daily access code — plus end-to-end runs against workbooks built
-on the fly, and integrity checks over the device table itself.
+**102 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
 
-One of those asserts that every two-row device's names are covered by the shared-serial exemption,
-so renaming a device can't silently break de-duplication.
+| Suite | Covers |
+|---|---|
+| [`test_calist.py`](test_calist.py) — 60 tests | Filename parsing and format validation, value handling, ordering, de-duplication, second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
+| [`test_access.py`](test_access.py) — 35 tests | The daily code: known-date vectors, zero-padding, rejection of malformed input, midnight relocking, and cooldown escalation |
+| [`test_settings.py`](test_settings.py) — 7 tests | Preference persistence, including BOM-tolerant reading, corrupt files, and unwritable profiles |
 
-The suite imports `calist` only, never `ui`, so it needs no display and no GUI toolkit.
+Several tests exist purely to stop a future change quietly weakening something:
+
+- One asserts every two-row device's names are covered by the shared-serial exemption, so **renaming
+  a device cannot silently break de-duplication**.
+- One asserts pre-flight works on a path that does not exist, so it **cannot start touching the
+  disk**.
+- One asserts a missing settings file reads as *locked*, so the access code **cannot fail open**.
+
+The suite imports `calist` and `access` only — never `ui` — so it needs no display and no GUI
+toolkit.
 
 ### Project layout
 
 ```
-calist.py                    the pipeline — imports no GUI toolkit
-ui.py                        the desktop interface (customtkinter)
-access.py                    the daily access code — pure, standalone
-device_config.py             the 57 device layouts and the form() helper
-test_calist.py               pipeline tests
-test_access.py               access-code tests
+calist.py                    the extraction pipeline - imports no GUI toolkit    (664 lines)
+ui.py                        the desktop interface, CustomTkinter               (1399 lines)
+access.py                    the daily access code - pure, standalone            (138 lines)
+device_config.py             57 device layouts and the form() helper             (180 lines)
+calist.spec                  PyInstaller build recipe
 template/Device List.xlsx    reference register template
 ```
 
-The two halves meet in exactly two places: the pipeline emits log records that `ui.py` picks up with
-a handler, and it returns structured `FileOutcome` / `RunResult` values that the table renders.
+---
 
 ## Known issues
 
-Four entries in the device table need checking against the paper forms:
+Stated openly. Four entries in the device table need checking against the paper forms:
 
-- `EU` (Lab Oven) puts Location at `K19`; every other standard form puts it at `K20`.
-- `CF` (Baby Warmer) has Model *below* Manufacturer — inverted compared with all 56 others.
-- `CA` is identical to `BF`, and its name is unfinished in the source (`"X-ray ()"`).
-- `AO` and `CK` are both named `Infrared` with different Status cells.
+- **`EU`** (Lab Oven) puts Location at `K19`; every other standard form puts it at `K20`.
+- **`CF`** (Baby Warmer) has Model *below* Manufacturer — inverted compared with all 56 others.
+- **`CA`** is identical to `BF`, and its name is unfinished in the source (`"X-ray ()"`).
+- **`AO`** and **`CK`** are both named `Infrared` with different Status cells.
 
 Three device names carry spelling slips that reach the register output — `Protien Analyzer`,
-`Tornique` and `X-ray ()`. They're left as-is deliberately: correcting them changes the text written
-into every historical register, so it should be a considered call rather than a drive-by fix.
+`Tornique` and `X-ray ()`. They are left alone deliberately: correcting them changes the text written
+into every historical register, so it should be a considered decision rather than a drive-by fix.
 
-Because the output lands among the source files, selecting the same folder twice will feed the
-previous run's output back in. Its code resolves to `DEVICE`, which isn't in the table, so it's
+Because the output lands among the source files, selecting the same folder twice would feed the
+previous run's output back in. Its code resolves to `DEVICE`, which is not in the table, so it is
 skipped with an error rather than corrupting the register.
+
+---
 
 ## Author
 
-Built by **Ahmed Gehad** — [ahmedgehad2112@gmail.com](mailto:ahmedgehad2112@gmail.com)
+<div align="center">
 
-Every register Calist produces is signed with this attribution, in a footer line and in the
-workbook's document properties.
+### Ahmed Gehad
+
+[![Email](https://img.shields.io/badge/ahmedgehad2112@gmail.com-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:ahmedgehad2112@gmail.com)
+
+</div>
+
+Every register Calist produces is signed with this attribution — in a footer line beneath the data,
+and in the workbook's Excel document properties — so the credit travels with the file.
 
 ## License
 
-No license is granted. The source is published for reference; all rights are reserved by the author.
-If you'd like to use it, please get in touch.
+No licence is granted. The source is published for reference; all rights are reserved by the author.
+If you would like to use it, please get in touch.

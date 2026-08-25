@@ -87,9 +87,15 @@ NEW_DAY_CHECK_MS = 30_000
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_settings() -> dict:
-    """Best-effort read of remembered preferences; never raises."""
+    """Best-effort read of remembered preferences; never raises.
+
+    Read as utf-8-sig, not utf-8: Notepad and Windows PowerShell both write a
+    UTF-8 BOM, and a BOM makes json.loads raise. That would be swallowed here
+    and silently reset every saved preference. utf-8-sig strips a BOM when
+    present and is identical to utf-8 when it is not.
+    """
     try:
-        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
 
