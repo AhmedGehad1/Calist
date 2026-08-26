@@ -1,13 +1,24 @@
 name: release
 
-# Push a version tag and this builds the Windows executable and publishes it
-# as a GitHub Release, giving a permanent download link:
+# Push a version tag and this builds Calist and publishes it as a GitHub
+# Release, giving permanent download links:
 #
-#   git tag v1.0.0
-#   git push origin v1.0.0
+#   git tag v1.2.0
+#   git push origin v1.2.0
 #
 # It can also be run by hand from the Actions tab (workflow_dispatch), which
-# produces a build artifact without creating a release.
+# produces build artifacts without creating a release.
+#
+# Two shapes are published on purpose:
+#
+#   Calist.exe          one file, self-extracting, convenient
+#   Calist-windows.zip  a folder build that does NOT self-extract
+#
+# The zip exists because antivirus heuristics flag one-file PyInstaller builds:
+# unpacking a payload into %TEMP% and running it is what packed malware does.
+# The folder build never does that, so it is the one that gets through. Both
+# asset names are kept stable across releases, because the
+# releases/latest/download/<name> permalinks are built from them.
 
 on:
   push:
@@ -39,10 +50,31 @@ jobs:
           pip install pytest
           python -m pytest -q
 
-      - name: Build Calist.exe
+      # The version in the executable's Properties tab comes from calist.py.
+      # Refuse to build a tag that disagrees with it, rather than shipping a
+      # v1.3.0 download that describes itself as 1.2.0.
+      - name: Check the tag matches calist.__version__
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: python
+        run: |
+          import os, re, sys, pathlib
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          src = pathlib.Path("calist.py").read_text(encoding="utf-8")
+          declared = re.search(r'^__version__ = "([^"]+)"', src, re.M).group(1)
+          if tag != declared:
+              sys.exit(f"::error::tag v{tag} but calist.__version__ is "
+                       f"{declared} - bump one of them so they agree")
+          print(f"tag and __version__ agree on {tag}")
+
+      - name: Build Calist.exe (one file)
         run: pyinstaller calist.spec --noconfirm --clean
 
-      - name: Check the build looks sane
+      - name: Build the folder version
+        env:
+          CALIST_ONEDIR: "1"
+        run: pyinstaller calist.spec --noconfirm --workpath build/onedir
+
+      - name: Check both builds look sane
         shell: pwsh
         run: |
           $exe = "dist/Calist.exe"
@@ -52,36 +84,90 @@ jobs:
           # A build missing its bundled data lands well under this.
           if ($mb -lt 8) { throw "Calist.exe is only $mb MB - data files are probably missing" }
 
-      - name: Upload build artifact
+          if (-not (Test-Path "dist/Calist/Calist.exe")) { throw "the folder build was not produced" }
+          if (-not (Test-Path "dist/Calist/_internal")) { throw "the folder build has no _internal payload" }
+
+          # An empty version resource is the heuristic red flag this release
+          # exists to remove; fail loudly rather than shipping one again.
+          $v = (Get-Item $exe).VersionInfo
+          Write-Output "version resource: '$($v.ProductName)' $($v.ProductVersion) by '$($v.CompanyName)'"
+          if (-not $v.ProductName) { throw "Calist.exe has no version resource" }
+          if (-not $v.CompanyName) { throw "Calist.exe has no CompanyName" }
+
+      - name: Package the folder build
+        shell: pwsh
+        run: Compress-Archive -Path dist/Calist -DestinationPath dist/Calist-windows.zip -CompressionLevel Optimal
+
+      # Published in the release notes so a cautious colleague - or an IT
+      # department asked to allowlist the download - can verify exactly which
+      # bytes they have.
+      - name: Compute checksums
+        shell: pwsh
+        run: |
+          $lines = foreach ($f in "dist/Calist.exe", "dist/Calist-windows.zip") {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            "$h  $([System.IO.Path]::GetFileName($f))"
+          }
+          $lines | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Calist-windows
-          path: dist/Calist.exe
+          path: |
+            dist/Calist.exe
+            dist/Calist-windows.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Calist.exe
+          files: |
+            dist/Calist.exe
+            dist/Calist-windows.zip
+            dist/SHA256SUMS.txt
           draft: false
           generate_release_notes: true
           body: |
             ## Download
 
-            **[Calist.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)**
-            — one file, no installer, no Python needed. Windows 10 or 11.
+            | | |
+            |---|---|
+            | **[Calist.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)** | One file. Double-click and go. |
+            | **[Calist-windows.zip](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist-windows.zip)** | Unzip, run `Calist.exe` inside. **Use this if Windows blocks the single file.** |
 
-            Download it, double-click, point it at your folder of inspection forms.
-            The register template is built in, so there is nothing to set up first.
+            No installer, no Python needed. Windows 10 or 11. The register
+            template is built in, so there is nothing to set up first.
 
             ## Access code
 
             Calist asks for a four-digit code on first use each day. It changes
-            daily and works offline. Once entered, the app stays open for the rest
-            of that calendar day.
+            daily and works offline. Once entered, the app stays open for the
+            rest of that calendar day.
 
             **Ask Ahmed Gehad (ahmedgehad2112@gmail.com) for today's code.**
 
-            > Windows may show a "Windows protected your PC" screen the first time,
-            > because the file is not code-signed. Click **More info → Run anyway**.
+            ## If Windows or your antivirus blocks the download
+
+            Calist is not signed with a code-signing certificate, and unsigned
+            programs that were downloaded a handful of times have no reputation
+            for Windows to weigh. Some scanners react to how the single-file
+            build unpacks itself at launch and report something like
+            `Trojan:Win32/Sabsik.FL.A!ml` — the `!ml` means a machine-learning
+            guess rather than an actual match. It is a false positive.
+
+            Two things help:
+
+            1. **Download the ZIP instead.** The folder build does not unpack
+               itself at launch, which is the behaviour being reacted to.
+            2. **Verify what you downloaded** against `SHA256SUMS.txt` below:
+
+               ```powershell
+               Get-FileHash .\Calist.exe -Algorithm SHA256
+               ```
+
+            Every release is built by GitHub Actions from the tagged, public
+            source in this repository — the build log is on the Actions tab.

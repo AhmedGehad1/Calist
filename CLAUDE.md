@@ -14,6 +14,10 @@ python calist.py                # launch the app
 python -m pytest                # run the test suite (102 tests)
 python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
+
+pyinstaller calist.spec --noconfirm              # -> dist/Calist.exe (one file)
+$env:CALIST_ONEDIR=1; pyinstaller calist.spec    # -> dist/Calist/    (folder)
+python docs/make_icon.py                         # redraw the app icon
 ```
 
 `xlrd` 2.x reads **only** `.xls`; `.xlsx`/`.xlsm` go through `openpyxl`.
@@ -262,6 +266,54 @@ repeat run.
   installed here.
 - Template, last folder and the dedup switch persist to `%APPDATA%\Calist\settings.json`; both read
   and write are best-effort and must never raise.
+
+## Packaging (`calist.spec`) and the antivirus problem
+
+Windows Defender flagged the v1.1.x download as **`Trojan:Win32/Sabsik.FL.A!ml`**. The `!ml` suffix
+means a machine-learning verdict rather than a signature match — a false positive, and a well-known
+one for PyInstaller. Three properties of that build drove it. Undoing any of the first two brings it
+back:
+
+1. **A one-file build self-extracts.** It unpacks into `%TEMP%\_MEIxxxx` at launch and executes from
+   there, which is what packed malware does and is the heaviest single signal. So the spec builds
+   **two shapes**, and both are published: `pyinstaller calist.spec` gives the one-file
+   `dist/Calist.exe`, and `CALIST_ONEDIR=1 pyinstaller calist.spec` gives the folder
+   `dist/Calist/`, which is zipped as `Calist-windows.zip` and is the one that gets through.
+2. **The executable carried no version resource at all** — every field empty. The spec now generates
+   one, ASCII-only (Explorer, Task Manager and the SmartScreen prompt read it back, and a non-ASCII
+   byte renders as mojibake there). CI fails the build if `ProductName` or `CompanyName` come out
+   empty, because that regression is invisible until users are already being blocked.
+3. **It is unsigned.** Only a certificate fixes that one, and there isn't one. Say so plainly rather
+   than implying the other two measures are a complete fix.
+
+Also load-bearing: **`upx=False`**. UPX-packing an unsigned binary is one of the strongest heuristic
+signals there is, and it only saves a few MB.
+
+`__version__` in [calist.py](calist.py#L78) is the single source of the version number. The spec
+reads it with a regex rather than importing the module, so a build never depends on the app's
+runtime imports resolving; `CALIST_VERSION` overrides it for CI. The release workflow **refuses to
+build a tag that disagrees with it**, so the Properties tab can't claim a different version from the
+release it came from.
+
+Asset names (`Calist.exe`, `Calist-windows.zip`) must stay stable across releases — the
+`releases/latest/download/<name>` permalinks in the README are built from them.
+
+## The icon
+
+[docs/make_icon.py](docs/make_icon.py) draws it; run it to regenerate (needs Pillow, which is a dev
+dependency only and deliberately not in `requirements.txt`). Two things there are deliberate:
+
+- **Every size is drawn at its own geometry, not downsampled from one master.** The four-row list
+  reads at 256px and turns to mush at 16px, so 16/24/32 drop to three rows with much thicker
+  strokes. `Image.save` would re-render every entry from the base image, throwing that away — the
+  finished renditions go in through `append_images` instead.
+- **The tile has a lifted rim.** The fill is near-black and so is the Windows 11 taskbar; without a
+  lighter edge the icon dissolves into its own background.
+
+`ui.app_icon()` resolves it the same way `calist.bundled_template()` does, which is why the spec
+keeps the `docs/` prefix when bundling. `App._apply_icon` applies it **twice** — CustomTkinter
+finishes setting the window up on its first mainloop pass, and that re-show drops an icon assigned
+during `__init__`, reverting to Tk's default feather.
 
 ## Repo
 

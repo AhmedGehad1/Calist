@@ -21,7 +21,7 @@ de-duplicated equipment register — automatically, without opening a single fil
 ![Device types](https://img.shields.io/badge/device%20types-57-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
-![Size](https://img.shields.io/badge/download-12.7%20MB-lightgrey)
+![Size](https://img.shields.io/badge/download-11.9%20MB-lightgrey)
 ![Install](https://img.shields.io/badge/install-none%20required-success)
 
 <br>
@@ -95,14 +95,52 @@ executable, so the very first launch works with zero setup.
 
 | | |
 |---|---|
-| **Size** | 12.7 MB, a single self-contained `.exe` |
+| **Size** | 11.9 MB, a single self-contained `.exe` |
 | **Requirements** | Windows 10 or 11. Nothing else — no runtime, no dependencies, no admin rights |
 | **Provenance** | Every release is built, tested and published automatically by [GitHub Actions](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml) straight from the source in this repository |
+| **Verify it** | [`SHA256SUMS.txt`](https://github.com/AhmedGehad1/Calist/releases/latest) ships with every release — `Get-FileHash .\Calist.exe -Algorithm SHA256` |
 | **History** | [All releases](https://github.com/AhmedGehad1/Calist/releases) |
 
 > **On first launch** Windows shows *"Windows protected your PC"*, because the file is not
 > code-signed — a certificate costs several hundred dollars a year, and this is a free tool.
 > Click **More info → Run anyway**. You will only ever see it once.
+
+### If Windows or your antivirus blocks it
+
+There is a second download — **[Calist-windows.zip](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist-windows.zip)**
+— that exists for exactly this. Unzip it anywhere and run the `Calist.exe` inside. It is the same
+application; it is packaged differently, and the difference is the whole point.
+
+<details>
+<summary><b>Why it happens, and why the ZIP gets through</b></summary>
+
+<br>
+
+Some scanners report the single-file download as something like
+`Trojan:Win32/Sabsik.FL.A!ml`. The `!ml` suffix is the important part: it marks a **machine-learning
+guess**, not a match against any known malware. It is a false positive, and a common one for Python
+applications packaged this way. Three properties of the build drive it:
+
+| | |
+|---|---|
+| **It unpacked itself at launch** | A one-file build extracts its payload into `%TEMP%\_MEIxxxx` and runs from there. Self-extract-then-execute is textbook packed-malware behaviour and is the single heaviest signal. **The ZIP is a plain folder build that never does this.** |
+| **It carried no version resource** | Releases before v1.2.0 shipped with no company, product or description recorded in the file at all. Legitimate software fills these in; packed malware usually does not. **Fixed in v1.2.0** — right-click → Properties → Details now shows the publisher, product and version. |
+| **It is unsigned** | An unsigned binary downloaded a handful of times has no reputation to weigh against the heuristic. This one is honest: **only a code-signing certificate fixes it**, and Calist does not have one. |
+
+What you can do about it:
+
+- **Use the ZIP.** It removes the biggest of the three signals.
+- **Check the hash** against `SHA256SUMS.txt` on the release page, so you know your copy is the one
+  GitHub built.
+- **Read the build log.** Every release is built by GitHub Actions from the tagged public source in
+  this repository — the entire process is on the [Actions tab](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml).
+- **Report the false positive.** Microsoft clears these through
+  [their submission form](https://www.microsoft.com/en-us/wdsi/filesubmission), usually within a few
+  days, and the correction reaches every Defender installation.
+- **For a managed workplace machine**, your IT department can allowlist the file by its SHA-256 hash.
+  Everything above is what they will ask for.
+
+</details>
 
 <details>
 <summary><b>Prefer to run from source?</b></summary>
@@ -490,7 +528,7 @@ Calist is a small application built to be maintained, not merely to work today.
 | **Thread-safe by construction** | Extraction runs on a worker thread. It never touches a widget and never reads a Tk variable — everything crosses back through queues drained on the main thread, which also batches redraws so three hundred files do not repaint the table three hundred times. |
 | **Output stability is verified, not assumed** | Every refactor is checked by building the same register before and after and diffing the workbooks cell by cell. The register output has been proven byte-identical across two major rewrites. |
 | **Fails closed, never open** | A missing or unreadable settings file locks the app rather than opening it. An unknown device code skips the file rather than inventing a row. A cancelled run writes nothing. |
-| **Automated release pipeline** | Tag a version and GitHub Actions runs the full suite, builds the executable, sanity-checks its size to catch missing bundled data, and publishes it. A build that fails its tests never reaches the download link. |
+| **Automated release pipeline** | Tag a version and GitHub Actions runs the full suite, builds both download shapes, refuses to continue if the tag and the version in the source disagree, checks the executable's size and version resource to catch a build missing its bundled data or its identity, publishes SHA-256 checksums, and releases. A build that fails its tests never reaches the download link. |
 
 ---
 

@@ -82,6 +82,18 @@ SETTINGS_FILE = (Path(os.environ.get("APPDATA") or Path.home())
 NEW_DAY_CHECK_MS = 30_000
 
 
+def app_icon() -> Path | None:
+    """The window icon, whether frozen or running from a checkout.
+
+    Same resolution as ``calist.bundled_template()``: a frozen build unpacks
+    its data files under ``sys._MEIPASS``, and the spec keeps the ``docs/``
+    prefix so one lookup covers both cases.
+    """
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    candidate = base / "docs" / "calist.ico"
+    return candidate if candidate.is_file() else None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Settings
 # ──────────────────────────────────────────────────────────────────────────────
@@ -456,6 +468,7 @@ class App(_Root):
         self.geometry("1020x700")
         self.minsize(880, 600)
         self.configure(fg_color=BG)
+        self._apply_icon()
 
         self._settings = load_settings()
         self._files: dict[str, FileOutcome] = {}       # path → latest outcome
@@ -483,6 +496,30 @@ class App(_Root):
         # Scheduled, not called: the initial unlock belongs to run(), and
         # checking here as well would raise a second prompt behind the first.
         self.after(NEW_DAY_CHECK_MS, self._watch_for_new_day)
+
+    def _apply_icon(self) -> None:
+        """Put the Calist mark on the window and the taskbar.
+
+        Applied twice on purpose. CustomTkinter finishes setting the window up
+        on its first mainloop pass, and on Windows that re-show drops an icon
+        assigned during ``__init__`` — the app reverts to Tk's default feather.
+        Re-applying once the loop is running makes it stick.
+
+        Best-effort throughout: a missing or unreadable icon costs the app its
+        logo, which is never worth failing to start over.
+        """
+        icon = app_icon()
+        if icon is None:
+            return
+
+        def apply() -> None:
+            try:
+                self.iconbitmap(str(icon))
+            except Exception:
+                log_ui.debug("Could not set the window icon", exc_info=True)
+
+        apply()
+        self.after(250, apply)
 
     def _initial_template(self) -> str:
         """The remembered template, else the one shipped with the app.
@@ -1357,7 +1394,8 @@ class App(_Root):
     def _show_about(self) -> None:
         messagebox.showinfo(
             "About Calist",
-            f"Calist — compile device inspection forms into one equipment register.\n\n"
+            f"Calist {calist.__version__} — compile device inspection forms "
+            f"into one equipment register.\n\n"
             f"Built by {AUTHOR_NAME}\n{AUTHOR_EMAIL}\n\n"
             f"Every register Calist produces is signed with this attribution.",
             parent=self)
