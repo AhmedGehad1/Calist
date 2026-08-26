@@ -312,6 +312,87 @@ def test_house_format_still_yields_the_right_device_code():
     assert calist.extract_device_code("G302-VAH012-1226.xlsx") == "VAH"
 
 
+# ── merged cells ──────────────────────────────────────────────────────────────
+#
+# The forms draw each answer as a box spanning two columns. A merged range
+# stores its value only in the top-left cell, so a map naming the second column
+# read blank — which is how the Ultrasound serial went missing when that form
+# was re-laid-out onto the E/K columns.
+
+def _merged_form(path, cells, merges):
+    wb = Workbook()
+    ws = wb.active
+    for ref, value in cells.items():
+        ws[ref] = value
+    for rng in merges:
+        ws.merge_cells(rng)
+    wb.save(path)
+    return str(path)
+
+
+def test_a_merged_cell_reads_through_to_its_anchor(tmp_path):
+    path = _merged_form(tmp_path / "f.xlsx", {"K17": "6061439WX0"}, ["K17:L17"])
+    assert calist.read_record(path, {"S.N": "L17"}) == {"S.N": "6061439WX0"}
+
+
+def test_naming_the_anchor_itself_still_works(tmp_path):
+    path = _merged_form(tmp_path / "f.xlsx", {"K17": "6061439WX0"}, ["K17:L17"])
+    assert calist.read_record(path, {"S.N": "K17"}) == {"S.N": "6061439WX0"}
+
+
+def test_an_ordinary_empty_cell_stays_empty(tmp_path):
+    """Only cells actually inside a merge resolve; blank means blank."""
+    path = _merged_form(tmp_path / "f.xlsx", {"A1": "header"}, ["A1:Z1"])
+    assert calist.read_record(path, {"Status": "H30"}) == {"Status": ""}
+
+
+def test_the_ultrasound_probe_serial_survives_a_merged_layout(tmp_path):
+    """The whole BB form, drawn as two-column boxes on the E/K columns."""
+    path = _merged_form(
+        tmp_path / "G302-BB001-0526.xlsx",
+        {"E15": "10-05-2026", "E17": "Versana Essential", "E19": "GE",
+         "K17": "6061439WX0", "K19": "Clinics", "K21": "982693WX4",
+         "H30": "Working"},
+        [f"{c}{r}:{chr(ord(c) + 1)}{r}"
+         for r in (15, 17, 19, 21) for c in ("E", "K")])
+
+    record = calist.read_record(path, DEVICE_CONFIGS["BB"]["cells"])
+
+    assert record["S.N"] == "6061439WX0"
+    assert record["S.N2"] == "982693WX4"
+    assert record["Model"] == "Versana Essential"
+    assert record["Manufacturer"] == "GE"
+    assert record["Location"] == "Clinics"
+
+
+def test_the_two_ultrasound_serials_end_up_on_two_lines(tmp_path):
+    """The register cell reads '<device serial>\\n(<probe serial>)'."""
+    src = tmp_path / "src"
+    src.mkdir()
+    template = tmp_path / "Device List.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    for col, name in enumerate(["No."] + calist.FIELDS, start=1):
+        ws.cell(row=3, column=col, value=name)
+    wb.save(template)
+
+    form_path = _merged_form(
+        src / "G302-BB001-0526.xlsx",
+        {"E15": "10-05-2026", "E17": "Versana Essential", "E19": "GE",
+         "K17": "6061439WX0", "K19": "Clinics", "K21": "982693WX4",
+         "H30": "Working"},
+        [f"{c}{r}:{chr(ord(c) + 1)}{r}"
+         for r in (15, 17, 19, 21) for c in ("E", "K")])
+
+    result = calist.process_files([form_path], str(template))
+
+    assert result.succeeded
+    written = load_workbook(result.output_path).active
+    serial_col = calist.TEMPLATE_START_COL + calist.FIELDS.index("S.N")
+    assert written.cell(row=calist.TEMPLATE_START_ROW,
+                        column=serial_col).value == "6061439WX0\n(982693WX4)"
+
+
 # ── end-to-end ────────────────────────────────────────────────────────────────
 
 def _form(path, cells):

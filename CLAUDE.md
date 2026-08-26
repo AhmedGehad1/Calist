@@ -11,7 +11,8 @@ inspection Excel forms and compiles them into one flat equipment register.
 
 ```powershell
 python calist.py                # launch the app
-python -m pytest                # run the test suite (105 tests)
+python calist.py --inspect FORM # dump what each mapped cell of one form reads
+python -m pytest                # run the test suite (110 tests)
 python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
@@ -117,6 +118,34 @@ that's where to fix it. Tests lock the current behaviour in, so a change there i
 
 `load_workbook(data_only=True)` returns *cached* formula results — a file written by a script and never
 opened in Excel yields `None` for those cells.
+
+### Merged cells (this has already lost a field)
+
+The forms draw each answer as a **box spanning two columns**. Excel stores a merged range's value
+only in its top-left cell; every other cell in the range reads as empty. So a cell map naming the
+second column of a box — `L17` of a merged `K17:L17` — silently produced a blank field, with no
+error anywhere. That is how the Ultrasound serial number disappeared when that form was re-laid-out
+from the F/L columns onto E/K.
+
+`_open_source` resolves this in both readers. The openpyxl side tests `isinstance(cell, MergedCell)`
+rather than checking for an empty value: openpyxl hands back a `MergedCell` for exactly the cells a
+range covers but does not anchor, so an ordinary blank cell still reads blank and can never pick up
+the text of some unrelated merged block it happens to sit inside. Verified: building the same
+register with the old and new readers is identical on unmerged forms.
+
+The xlrd side needs `formatting_info=True` to see merges at all. It costs memory and some files
+refuse it, so it falls back to a plain open — where `merged_cells` is empty and behaviour is
+unchanged. xlrd ranges are 0-based with exclusive upper bounds; openpyxl's are 1-based inclusive.
+
+**`--inspect` is how you check a cell map against a real form** without guessing:
+
+```powershell
+python calist.py --inspect "G302-BB001-0526.xlsx"
+```
+
+It prints every mapped field, the cell it reads, the value that comes back, the sheet name and the
+merged ranges, and exits non-zero if anything read blank. Reach for it first whenever a field is
+empty, and use it on the forms behind the open data questions below.
 
 ### Sorting is data-driven, not hard-coded
 

@@ -31,3 +31,8 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Working files for building the automated test sheets. These hold real
+# completed inspection forms, vendor service manuals and vendor installers -
+# none of which belong in a public repository.
+/some automated files/

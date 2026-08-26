@@ -27,6 +27,7 @@ from typing import Callable, Iterable, Iterator
 
 import xlrd
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Font
 from openpyxl.utils.cell import coordinate_to_tuple
 
@@ -75,7 +76,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -304,19 +305,46 @@ def _open_source(filepath: str) -> Iterator[CellGetter]:
 
     Hides the difference between openpyxl (.xlsx/.xlsm) and xlrd (.xls) so that
     both formats share one extraction path.
+
+    Both readers resolve **merged cells**. The forms draw each answer as a box
+    spanning two columns, and a merged range stores its value only in the
+    top-left cell — every other cell in the range reads as empty. So a cell map
+    pointing at the second column of a box (``L17`` of a merged ``K17:L17``)
+    silently produced a blank field. Looking through to the anchor makes the
+    map work whichever cell of the box it names.
     """
     if Path(filepath).suffix.lower() == ".xls":
-        workbook = xlrd.open_workbook(filepath)
+        # formatting_info is what carries the merge list. It costs more memory
+        # and some files refuse it, which must not turn into a read failure —
+        # without it merged_cells is simply empty and behaviour is as before.
+        try:
+            workbook = xlrd.open_workbook(filepath, formatting_info=True)
+        except Exception:
+            log.debug("No formatting info for %s; merges unresolved",
+                      filepath, exc_info=True)
+            workbook = xlrd.open_workbook(filepath)
         sheet = workbook.sheet_by_index(0)
+        merged = getattr(sheet, "merged_cells", ()) or ()
 
         def get(ref: str) -> object:
             row, col = coordinate_to_tuple(ref)
-            try:
-                # Raw value: xlrd reports a date as a bare Excel serial number,
-                # which clean() will render as e.g. "45306.0".
-                return sheet.cell_value(row - 1, col - 1)
-            except IndexError:
-                return None
+
+            def at(r: int, c: int) -> object:
+                try:
+                    # Raw value: xlrd reports a date as a bare Excel serial
+                    # number, which clean() renders as e.g. "45306.0".
+                    return sheet.cell_value(r - 1, c - 1)
+                except IndexError:
+                    return None
+
+            value = at(row, col)
+            if value not in (None, ""):
+                return value
+            # xlrd ranges are 0-based with exclusive upper bounds.
+            for rlo, rhi, clo, chi in merged:
+                if rlo <= row - 1 < rhi and clo <= col - 1 < chi:
+                    return at(rlo + 1, clo + 1)
+            return value
 
         yield get
     else:
@@ -326,7 +354,23 @@ def _open_source(filepath: str) -> Iterator[CellGetter]:
         workbook = load_workbook(filepath, data_only=True)
         try:
             sheet = workbook.worksheets[0]
-            yield lambda ref: sheet[ref].value
+
+            def get(ref: str) -> object:
+                cell = sheet[ref]
+                # openpyxl hands back a MergedCell for exactly the cells that
+                # are covered by a range but are not its anchor. Testing the
+                # type rather than an empty value means an ordinary blank cell
+                # reads as blank, precisely as before, and never picks up the
+                # text of some unrelated block it happens to sit inside.
+                if not isinstance(cell, MergedCell):
+                    return cell.value
+                for rng in sheet.merged_cells.ranges:
+                    if (rng.min_row <= cell.row <= rng.max_row
+                            and rng.min_col <= cell.column <= rng.max_col):
+                        return sheet.cell(rng.min_row, rng.min_col).value
+                return None
+
+            yield get
         finally:
             workbook.close()
 
@@ -691,13 +735,73 @@ def process_files(
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    """Launch the desktop app.
+def inspect_form(filepath: str) -> int:
+    """Print what every mapped cell of one form actually reads.
 
-    The UI is imported here rather than at module scope so that importing this
-    module — from a test, a script, or another tool — costs nothing and pulls
-    in no GUI toolkit.
+    The answer to "why is this field blank?". Cell maps are written by reading
+    coordinates off a paper form, and a form that has been re-laid-out since
+    shows up here immediately: a field reading '' next to a cell reference is
+    a map that no longer matches the file.
+
+    Returns a process exit code, so a form with unreadable fields fails loudly
+    when this is run from a script.
     """
+    path = Path(filepath)
+    outcome = classify_file(filepath)
+    print(f"file   : {path.name}")
+    print(f"device : {outcome.device_name or '—'} ({outcome.device_code or '—'})")
+
+    if outcome.status != READY:
+        print(f"\nCannot inspect: {outcome.detail}")
+        return 1
+
+    cells = DEVICE_CONFIGS[outcome.device_code]["cells"]
+    record = read_record(filepath, cells)
+    blank = [f for f, v in record.items() if not v]
+
+    print(f"\n{'field':<14}{'cell':<7}value")
+    print("─" * 60)
+    for field, ref in cells.items():
+        value = record[field].replace("\n", " / ")
+        print(f"{field:<14}{ref:<7}{value if value else '(blank)'}")
+
+    if path.suffix.lower() != ".xls":
+        sheet = load_workbook(filepath, data_only=True).worksheets[0]
+        merges = sorted(str(r) for r in sheet.merged_cells.ranges)
+        print(f"\nsheet read: {sheet.title!r} (always the first tab)")
+        print(f"merged ranges: {len(merges)}")
+        if merges:
+            print("  " + ", ".join(merges[:24])
+                  + (" …" if len(merges) > 24 else ""))
+
+    if blank:
+        print(f"\n{len(blank)} field(s) read blank: {', '.join(blank)}")
+        print("Either the form leaves them empty, or device_config.py points at "
+              "the wrong cell for this layout.")
+        return 1
+
+    print("\nEvery mapped field read a value.")
+    return 0
+
+
+def main() -> None:
+    """Launch the desktop app, or inspect a single form.
+
+        python calist.py                    launch the app
+        python calist.py --inspect FORM     dump what each mapped cell reads
+
+    The UI is imported inside the launch branch rather than at module scope so
+    that importing this module — from a test, a script, or another tool —
+    costs nothing and pulls in no GUI toolkit. --inspect keeps that property.
+    """
+    args = sys.argv[1:]
+    if args and args[0] == "--inspect":
+        if len(args) != 2:
+            print("usage: python calist.py --inspect <form.xlsx>")
+            raise SystemExit(2)
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+        raise SystemExit(inspect_form(args[1]))
+
     from ui import run
     run()
 
