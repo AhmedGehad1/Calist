@@ -11,7 +11,7 @@ inspection Excel forms and compiles them into one flat equipment register.
 
 ```powershell
 python calist.py                # launch the app
-python -m pytest                # run the test suite (102 tests)
+python -m pytest                # run the test suite (105 tests)
 python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
@@ -151,6 +151,11 @@ asymmetry is deliberate, so odd forms stand out.
 
 ## Coupling to keep in mind
 
+Duplicate warnings name the two **files**, not the device type — a round holding a dozen of the same
+model makes the type useless for finding the form to open. `source_name()` reads `_source`, which is
+set in `extract_records` and survives into a generated sub-module row; `Code` cannot serve because
+`build_second_row` rewrites its device token, so a sub-module's Code names no file on disk.
+
 `ALLOWED_SHARED_SN_PAIRS` ([calist.py:60](calist.py#L60)) holds `device_name` strings verbatim from
 `device_config.py`; renaming a device there breaks the exemption that lets a Patient Monitor and its
 NIBP row share a serial. `test_second_row_names_are_covered_by_the_dedup_exemptions` guards this — run
@@ -247,14 +252,45 @@ One window, three states swapped in the same layout by `_enter_setup` / `_enter_
 `_enter_results`. Not a wizard — this is a tool the same person runs repeatedly, and steps tax every
 repeat run.
 
-- **Adding devices is the hero.** With nothing loaded, `_refresh_intake` gives the vertical slack to
-  the hero panel and hides the table; once devices are in, the weights flip and the table takes over.
-  That trade is the reason rows 1 and 2 have no static `grid_rowconfigure` weight.
-- **The destination is always on screen.** The *Saves to* row shows where the register will land
-  *before* the run, and warns when it would replace an existing file. `shorten_path()` elides the
-  middle of long paths, never the tail — the deepest folders and filename are what the user reads.
-  This exists because the output location is deliberately unchanged from the original behaviour
-  (beside the first source file); surfacing it was the fix, not moving it.
+### Everything lives on one scrollable page
+
+`App._build` puts every block inside a `CTkScrollableFrame` (`self._page`). This replaced a fixed
+window grid where the table row carried the only weight — so every pixel the results card or the
+details drawer needed came straight out of the device list, which collapsed to a sliver once a run
+finished with the drawer open. Three things follow from the change, and all three are load-bearing:
+
+- **Nothing stretches on its own.** A scrollable page is exactly as tall as its contents, so
+  `grid_rowconfigure(..., weight=1)` inside it does nothing. `_fit_to_window` is what hands spare
+  window height to whichever block can use it — the hero while the app is empty, the table once it
+  is not — by converting the slack into whole Treeview rows (`ROW_PX`) or hero pixels. It is
+  incremental and self-correcting rather than computing exact chrome heights, clamped by
+  `MIN_ROWS`/`MAX_ROWS` and `MIN_HERO_H`, and capped by `MAX_FIT_PASSES` so a layout that cannot
+  land on an exact fit stops rescheduling itself. Call `_on_resize()` (debounced) after anything
+  that changes the page's shape — `_show_action`, `_toggle_log` and `_refresh_intake` all do.
+- **The hero needs `grid_propagate(False)` and an explicit height.** Left to size itself it collapses
+  to its contents, and the empty state is meant to fill the window.
+- **`CTkScrollableFrame` steals the mouse wheel.** It binds `<MouseWheel>` with `bind_all` and
+  scrolls itself for any event whose widget chain reaches its canvas — which is every widget on the
+  page, including the device table and the log box. `_wheel_over()` puts a widget-level binding on
+  each of those that scrolls the widget and returns `"break"`; widget bindings run before `all`
+  bindings, so the scroll stays where the pointer is. Add any future scrollable widget to that list.
+
+`show_lock()` now grid-removes the whole page rather than a list of individual widgets, and root row
+0 keeps `weight=1` permanently so the lock panel fills the window in its place.
+
+- **Adding devices is the hero.** With nothing loaded, `_refresh_intake` shows the hero panel and
+  hides the table; once devices are in, the slim bar takes over and the table appears.
+- **The destination is always on screen, and now selectable.** The *Saves to* row shows where the
+  register will land *before* the run, and warns when it would replace an existing file.
+  `shorten_path()` elides the middle of long paths, never the tail — the deepest folders and
+  filename are what the user reads. **Select folder** sets `output_dir`, which `_start` captures on
+  the main thread (threading rule 1) and passes to `process_files`; with none set the register lands
+  beside the first source file exactly as it always did. `_remember` drops a stored folder that no
+  longer exists, so a deleted or unmounted destination cannot fail the next run.
+- **The table carries the serial number**, between Device type and Status. It is blank (`—`) until
+  the run actually opens the file — `classify_file` is I/O-free and resolves a device from the
+  filename alone, so it cannot know a serial. `FileOutcome.serial` is filled in `extract_records`,
+  where a dual-serial device's two numbers are joined onto one line for the table.
 - **Live per-row status is the anti-frozen signal**, more than the progress bar — users watch their
   own filenames resolve.
 - Inputs are frozen during a run (`_set_inputs_enabled`), so the settings can't describe a build

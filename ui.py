@@ -479,7 +479,9 @@ class App(_Root):
         self._events: queue.Queue[tuple] = queue.Queue()
         self._result: RunResult | None = None
         self._lock: LockPanel | None = None
-        self._hidden_while_locked: list = []
+        self._outdir = tk.StringVar(value=self._settings.get("output_dir", ""))
+        self._fit_job: str | None = None
+        self._fit_passes = 0
         self._started_at = 0.0
         self._log_open = False
 
@@ -537,9 +539,25 @@ class App(_Root):
     # ── layout ───────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        """Everything lives on one scrollable page.
+
+        Before this, the window was a fixed grid and the table row carried the
+        only weight — so every pixel the results card or the details drawer
+        needed came straight out of the device list, which collapsed to a sliver
+        once a run finished with the drawer open. Now the page keeps each block
+        at a usable size and scrolls when the total exceeds the window;
+        `_fit_to_window` hands any leftover space back so nothing is wasted
+        when the window is large.
+        """
         self.grid_columnconfigure(0, weight=1)
-        # Row 1 (hero) and row 2 (table) trade the vertical slack between them;
-        # _refresh_intake decides which one has it.
+        self.grid_rowconfigure(0, weight=1)
+
+        self._page = ctk.CTkScrollableFrame(
+            self, fg_color=BG, corner_radius=0,
+            scrollbar_button_color=SURFACE_2, scrollbar_button_hover_color=BORDER)
+        self._page.grid(row=0, column=0, sticky="nsew")
+        self._page.grid_columnconfigure(0, weight=1)
+
         self._build_header()
         self._build_intake()
         self._build_table()
@@ -547,37 +565,40 @@ class App(_Root):
         self._build_action()
         self._build_log_drawer()
 
+        # Reflow when the window is resized, and once at startup after the
+        # first real geometry is known.
+        self.bind("<Configure>", self._on_resize)
+        self.after(120, self._fit_to_window)
+
     def _build_header(self) -> None:
-        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar = ctk.CTkFrame(self._page, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 14))
         bar.grid_columnconfigure(0, weight=1)
         self._header = bar
 
         ctk.CTkLabel(bar, text="Calist", text_color=TEXT,
                      font=ctk.CTkFont(FONT, 26, "bold")).grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(bar, text="Compile inspection forms into one equipment register",
-                     text_color=MUTED, font=ctk.CTkFont(FONT, 13)
-                     ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
         buttons = ctk.CTkFrame(bar, fg_color="transparent")
-        buttons.grid(row=0, column=1, rowspan=2, sticky="e")
+        buttons.grid(row=0, column=1, sticky="e")
+
+        # Attribution sits on the button line, immediately left of Details.
+        ctk.CTkLabel(buttons, text=f"Built by {AUTHOR_NAME}", text_color=FAINT,
+                     font=ctk.CTkFont(FONT, 11)
+                     ).grid(row=0, column=0, padx=(0, 14))
 
         self._btn_details = ctk.CTkButton(
             buttons, text="Details", width=88, height=32, corner_radius=8,
             fg_color=SURFACE, hover_color=SURFACE_2, text_color=MUTED,
             font=ctk.CTkFont(FONT, 12), command=self._toggle_log,
         )
-        self._btn_details.grid(row=0, column=0, padx=(0, 8))
+        self._btn_details.grid(row=0, column=1, padx=(0, 8))
 
         ctk.CTkButton(
             buttons, text="About", width=76, height=32, corner_radius=8,
             fg_color=SURFACE, hover_color=SURFACE_2, text_color=MUTED,
             font=ctk.CTkFont(FONT, 12), command=self._show_about,
-        ).grid(row=0, column=1)
-
-        ctk.CTkLabel(bar, text=f"Built by {AUTHOR_NAME}", text_color=FAINT,
-                     font=ctk.CTkFont(FONT, 11)
-                     ).grid(row=2, column=1, sticky="e", pady=(4, 0))
+        ).grid(row=0, column=2)
 
     def _build_intake(self) -> None:
         """Adding devices is the whole point of the app, so it leads.
@@ -585,15 +606,20 @@ class App(_Root):
         With nothing loaded the hero fills the window; once devices are in it
         collapses to a slim bar and hands the space to the table.
         """
-        self._intake = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=14,
+        self._intake = ctk.CTkFrame(self._page, fg_color=SURFACE, corner_radius=14,
                                     border_width=1, border_color=BORDER)
         self._intake.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 14))
         self._intake.grid_columnconfigure(0, weight=1)
         self._intake.grid_rowconfigure(0, weight=1)
 
         # ── hero ─────────────────────────────────────────────────────────────
-        self._hero = ctk.CTkFrame(self._intake, fg_color="transparent")
+        # Fixed height with propagation off, so _fit_to_window can grow the hero
+        # into spare window space. Left to size itself it would collapse to its
+        # contents, and the empty state is meant to fill the window.
+        self._hero = ctk.CTkFrame(self._intake, fg_color="transparent",
+                                  height=self.MIN_HERO_H)
         self._hero.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        self._hero.grid_propagate(False)
         self._hero.grid_columnconfigure(0, weight=1)
         self._hero.grid_rowconfigure(0, weight=1)
         self._hero.grid_rowconfigure(7, weight=1)      # centres the stack
@@ -672,7 +698,7 @@ class App(_Root):
             self._intake.dnd_bind("<<Drop>>", self._on_drop)
 
     def _build_table(self) -> None:
-        wrap = ctk.CTkFrame(self, fg_color=SURFACE_2, corner_radius=12,
+        wrap = ctk.CTkFrame(self._page, fg_color=SURFACE_2, corner_radius=12,
                             border_width=1, border_color=BORDER)
         wrap.grid_columnconfigure(0, weight=1)
         wrap.grid_rowconfigure(1, weight=1)
@@ -703,20 +729,25 @@ class App(_Root):
 
         self._tree = ttk.Treeview(
             body, style="Calist.Treeview", show="headings", selectmode="extended",
-            columns=("file", "device", "status"),
+            columns=("file", "device", "serial", "status"), height=self.MIN_ROWS,
         )
         self._tree.heading("file", text="FILE", anchor="w")
         self._tree.heading("device", text="DEVICE TYPE", anchor="w")
+        self._tree.heading("serial", text="SERIAL NUMBER", anchor="w")
         self._tree.heading("status", text="STATUS", anchor="w")
-        self._tree.column("file", width=300, minwidth=180, anchor="w", stretch=False)
-        self._tree.column("device", width=250, minwidth=150, anchor="w", stretch=False)
-        self._tree.column("status", width=330, minwidth=160, anchor="w", stretch=True)
+        self._tree.column("file", width=260, minwidth=160, anchor="w", stretch=False)
+        self._tree.column("device", width=200, minwidth=130, anchor="w", stretch=False)
+        self._tree.column("serial", width=180, minwidth=110, anchor="w", stretch=False)
+        self._tree.column("status", width=260, minwidth=150, anchor="w", stretch=True)
         self._tree.grid(row=0, column=0, sticky="nsew")
 
         bar = ttk.Scrollbar(body, orient="vertical", command=self._tree.yview,
                             style="Calist.Vertical.TScrollbar")
         bar.grid(row=0, column=1, sticky="ns")
         self._tree.configure(yscrollcommand=bar.set)
+        # The page binds <MouseWheel> on every descendant, so without this the
+        # wheel would scroll the page instead of the list under the pointer.
+        self._tree.bind("<MouseWheel>", self._wheel_over(self._tree))
 
         self._tree.tag_configure("ready", foreground=MUTED)
         self._tree.tag_configure("ok", foreground=SUCCESS)
@@ -732,7 +763,7 @@ class App(_Root):
             text_color=FAINT, font=ctk.CTkFont(FONT, 13), justify="center")
 
     def _build_settings(self) -> None:
-        panel = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=12,
+        panel = ctk.CTkFrame(self._page, fg_color=SURFACE, corner_radius=12,
                              border_width=1, border_color=BORDER)
         panel.grid(row=3, column=0, sticky="ew", padx=28, pady=(14, 0))
         panel.grid_columnconfigure(1, weight=1)
@@ -759,9 +790,9 @@ class App(_Root):
                                       font=ctk.CTkFont(FONT, 12))
         self._lbl_dest.grid(row=1, column=1, sticky="w", pady=(0, 6))
         self._btn_dest = ctk.CTkButton(
-            panel, text="Open folder", width=110, height=30, corner_radius=8,
+            panel, text="Select folder", width=110, height=30, corner_radius=8,
             fg_color=SURFACE_2, hover_color=BORDER, text_color=TEXT,
-            font=ctk.CTkFont(FONT, 12), command=self._open_destination_folder)
+            font=ctk.CTkFont(FONT, 12), command=self._pick_output_folder)
         self._btn_dest.grid(row=1, column=2, padx=(10, 18), pady=(0, 6))
 
         self._switch_dedup = ctk.CTkSwitch(
@@ -788,7 +819,7 @@ class App(_Root):
                               padx=(66, 0), pady=(0, 14))
 
     def _build_action(self) -> None:
-        self._action = ctk.CTkFrame(self, fg_color="transparent")
+        self._action = ctk.CTkFrame(self._page, fg_color="transparent")
         self._action.grid(row=4, column=0, sticky="ew", padx=28, pady=(14, 18))
         self._action.grid_columnconfigure(0, weight=1)
 
@@ -864,7 +895,7 @@ class App(_Root):
                       command=self._enter_setup).grid(row=0, column=3, sticky="e")
 
     def _build_log_drawer(self) -> None:
-        self._drawer = ctk.CTkFrame(self, fg_color=SURFACE_2, corner_radius=12,
+        self._drawer = ctk.CTkFrame(self._page, fg_color=SURFACE_2, corner_radius=12,
                                     border_width=1, border_color=BORDER)
         self._drawer.grid_columnconfigure(0, weight=1)
         self._drawer.grid_rowconfigure(0, weight=1)
@@ -874,6 +905,21 @@ class App(_Root):
             font=ctk.CTkFont(MONO, 11), wrap="none", activate_scrollbars=True)
         self._log_box.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self._log_box.configure(state="disabled")
+        self._log_box.bind("<MouseWheel>", self._wheel_over(self._log_box))
+
+    @staticmethod
+    def _wheel_over(widget):
+        """Give `widget` the wheel while the pointer is over it.
+
+        CTkScrollableFrame binds <MouseWheel> with bind_all and scrolls itself
+        for any event whose widget chain reaches its canvas — which is every
+        widget on the page. A widget binding runs first, so returning "break"
+        here keeps the scroll where the user is pointing.
+        """
+        def handler(event):
+            widget.yview_scroll(-int(event.delta / 120), "units")
+            return "break"
+        return handler
 
     def _attach_logging(self) -> None:
         handler = TkLogHandler(self._log_box)
@@ -888,6 +934,7 @@ class App(_Root):
         for frame in (self._idle, self._busy, self._done):
             frame.grid_forget()
         which.grid(row=0, column=0, sticky="ew")
+        self._on_resize()
 
     def _enter_setup(self) -> None:
         self._result = None
@@ -1047,6 +1094,15 @@ class App(_Root):
         self._settings.update(deduplicate=bool(self._dedup.get()),
                               strict_names=bool(self._strict.get()))
 
+        # A folder that has since been deleted or unmounted must not be carried
+        # forward, or the next run fails on a destination the user cannot see.
+        outdir = self._outdir.get()
+        if outdir and Path(outdir).is_dir():
+            self._settings["output_dir"] = outdir
+        else:
+            self._outdir.set("")
+            self._settings.pop("output_dir", None)
+
         # Never persist the built-in template. In a frozen build it lives in
         # PyInstaller's temp extraction folder, which is deleted on exit and
         # gets a new random name next launch — so the stored path would be dead
@@ -1088,6 +1144,66 @@ class App(_Root):
         self._refresh_settings()
         self._refresh_hint()
 
+    # ── fitting the page to the window ───────────────────────────────────────
+    #
+    # A scrollable page is exactly as tall as its contents, so nothing stretches
+    # to fill the window on its own. These two hand the leftover space to
+    # whichever block can use it — the hero while the app is empty, the device
+    # table once it is not — and give it back when the window shrinks, at which
+    # point the scrollbar takes over rather than any block being crushed.
+
+    #: Treeview row height, from style_treeview(). Used to convert spare pixels
+    #: into whole table rows.
+    ROW_PX = 32
+    MIN_ROWS, MAX_ROWS = 5, 40
+    MIN_HERO_H = 330
+    #: Cap on the settle loop below, so a layout that cannot converge on an
+    #: exact fit stops oscillating instead of rescheduling itself forever.
+    MAX_FIT_PASSES = 6
+
+    def _on_resize(self, event=None) -> None:
+        # <Configure> fires many times during a drag, and our own resizing
+        # fires it again; coalesce into one pass once the drag settles.
+        if event is not None and event.widget is not self:
+            return
+        self._fit_passes = 0
+        if self._fit_job is not None:
+            self.after_cancel(self._fit_job)
+        self._fit_job = self.after(70, self._fit_to_window)
+
+    def _fit_to_window(self) -> None:
+        self._fit_job = None
+        if self._lock is not None or not self._page.winfo_ismapped():
+            return
+        try:
+            viewport = self._page._parent_canvas.winfo_height()
+        except Exception:                                # pragma: no cover
+            return
+        if viewport < 120 or self._fit_passes >= self.MAX_FIT_PASSES:
+            return
+        self._fit_passes += 1
+
+        # Positive slack means unused window; negative means we overflow and
+        # the scrollbar is carrying the difference.
+        slack = viewport - self._page.winfo_reqheight()
+
+        if self._files:
+            if abs(slack) < self.ROW_PX:
+                return
+            current = int(self._tree.cget("height"))
+            wanted = max(self.MIN_ROWS,
+                         min(self.MAX_ROWS, current + slack // self.ROW_PX))
+            if wanted != current:
+                self._tree.configure(height=wanted)
+                self._fit_job = self.after(30, self._fit_to_window)
+        else:
+            if abs(slack) < 10:
+                return
+            wanted = max(self.MIN_HERO_H, self._hero.winfo_reqheight() + slack)
+            if wanted != self._hero.winfo_reqheight():
+                self._hero.configure(height=wanted)
+                self._fit_job = self.after(30, self._fit_to_window)
+
     def _refresh_intake(self) -> None:
         """Hand the vertical space to whichever of hero/table matters now."""
         if self._files:
@@ -1095,8 +1211,8 @@ class App(_Root):
             self._drop_slim.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
             self._intake.grid_configure(sticky="ew")
             self._intake.grid_rowconfigure(0, weight=0)
-            self.grid_rowconfigure(1, weight=0)
-            self.grid_rowconfigure(2, weight=1)
+            self._page.grid_rowconfigure(1, weight=0)
+            self._page.grid_rowconfigure(2, weight=0)
             self._table_wrap.grid(row=2, column=0, sticky="nsew", padx=28)
 
             ready = sum(1 for o in self._files.values() if o.status == READY)
@@ -1115,8 +1231,10 @@ class App(_Root):
             self._hero.grid()
             self._intake.grid_configure(sticky="nsew")
             self._intake.grid_rowconfigure(0, weight=1)
-            self.grid_rowconfigure(1, weight=1)
-            self.grid_rowconfigure(2, weight=0)
+            self._page.grid_rowconfigure(1, weight=0)
+            self._page.grid_rowconfigure(2, weight=0)
+
+        self._on_resize()
 
     def _visible_outcomes(self) -> list[tuple[str, FileOutcome]]:
         items = sorted(self._files.items(), key=lambda kv: kv[1].filename.lower())
@@ -1133,7 +1251,8 @@ class App(_Root):
             detail = f"{label} — {outcome.detail}" if outcome.detail else label
             self._tree.insert(
                 "", "end", iid=path, tags=(tag,),
-                values=(outcome.filename, outcome.device_name or "—", detail))
+                values=(outcome.filename, outcome.device_name or "—",
+                        outcome.serial or "—", detail))
 
         if rows:
             self._empty.grid_remove()
@@ -1151,10 +1270,31 @@ class App(_Root):
             return None, ""
         try:
             path = calist.resolve_output_path(sorted(self._files),
-                                              self._template.get())
+                                              self._template.get(),
+                                              self._outdir.get() or None)
         except ValueError as exc:
             return None, str(exc)
         return path, "Replaces the existing file" if path.exists() else ""
+
+    def _pick_output_folder(self) -> None:
+        """Choose where the register is saved.
+
+        Without a choice the register lands beside the first source file, which
+        is the original behaviour and stays the default — this only overrides
+        it. A folder that has gone missing falls back rather than erroring.
+        """
+        current = self._outdir.get()
+        initial = current if current and Path(current).is_dir() else \
+            self._settings.get("last_folder", "")
+        chosen = filedialog.askdirectory(
+            parent=self, title="Select a folder to save the register in",
+            initialdir=initial or None)
+        if not chosen:
+            return
+        self._outdir.set(os.path.normpath(chosen))
+        self._remember()
+        self._refresh_settings()
+        self._refresh_hint()
 
     def _refresh_settings(self) -> None:
         template = self._template.get()
@@ -1164,20 +1304,24 @@ class App(_Root):
         else:
             self._lbl_template.configure(text="Not chosen yet", text_color=FAINT)
 
+        # The chooser is always available — it is how the folder gets picked in
+        # the first place, so it must not depend on there being one already.
         path, note = self._destination()
+        chosen = self._outdir.get()
         if path:
             text = shorten_path(path)
             if note:
                 text += f"      ({note})"
             self._lbl_dest.configure(text=text, text_color=WARNING if note else TEXT)
-            self._btn_dest.configure(state="normal")
         elif note:
             self._lbl_dest.configure(text=note, text_color=DANGER)
-            self._btn_dest.configure(state="disabled")
+        elif chosen:
+            self._lbl_dest.configure(text=shorten_path(Path(chosen) / calist.OUTPUT_NAME),
+                                     text_color=TEXT)
         else:
             self._lbl_dest.configure(
-                text="Shown once devices and a template are chosen", text_color=FAINT)
-            self._btn_dest.configure(state="disabled")
+                text="Beside your forms — or select a folder to save in",
+                text_color=FAINT)
 
     def _refresh_hint(self) -> None:
         if not self._files:
@@ -1213,6 +1357,7 @@ class App(_Root):
         template = self._template.get()
         deduplicate = bool(self._dedup.get())
         strict_names = bool(self._strict.get())
+        output_dir = self._outdir.get() or None
 
         total = len(files)
         cancel = threading.Event()
@@ -1229,7 +1374,8 @@ class App(_Root):
             try:
                 result = calist.process_files(
                     files, template, deduplicate=deduplicate,
-                    strict_names=strict_names, on_file=on_file, cancel=cancel,
+                    strict_names=strict_names, output_dir=output_dir,
+                    on_file=on_file, cancel=cancel,
                 )
             except Exception as exc:                   # never die silently
                 calist.log.exception("Unexpected failure: %s", exc)
@@ -1274,7 +1420,8 @@ class App(_Root):
         label, tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))
         detail = f"{label} — {outcome.detail}" if outcome.detail else label
         self._tree.item(outcome.path, tags=(tag,),
-                        values=(outcome.filename, outcome.device_name or "—", detail))
+                        values=(outcome.filename, outcome.device_name or "—",
+                                outcome.serial or "—", detail))
 
     def _update_progress(self, outcome: FileOutcome, index: int, total: int) -> None:
         if self._tree.exists(outcome.path):
@@ -1313,13 +1460,6 @@ class App(_Root):
         if self._result and self._result.output_path:
             self._safely(reveal_in_explorer, self._result.output_path)
 
-    def _open_destination_folder(self) -> None:
-        path, _ = self._destination()
-        if path is None:
-            return
-        target = path if path.exists() else path.parent
-        self._safely(reveal_in_explorer if path.exists() else open_file, target)
-
     def _safely(self, action, target: Path) -> None:
         try:
             action(target)
@@ -1331,36 +1471,30 @@ class App(_Root):
     def _toggle_log(self) -> None:
         self._log_open = not self._log_open
         if self._log_open:
-            self.grid_rowconfigure(5, weight=0)
+            self._page.grid_rowconfigure(5, weight=0)
             self._drawer.grid(row=5, column=0, sticky="ew", padx=28, pady=(0, 18))
             self._btn_details.configure(text="Hide details")
         else:
             self._drawer.grid_forget()
             self._btn_details.configure(text="Details")
+        self._on_resize()
 
     # ── the lock ─────────────────────────────────────────────────────────────
-
-    def _main_widgets(self) -> tuple:
-        return (self._header, self._intake, self._table_wrap,
-                self._settings_panel, self._action, self._drawer)
 
     def show_lock(self) -> None:
         """Cover the window with the PIN panel and take the app out of reach.
 
-        The main widgets are removed from the layout, not just hidden behind
-        the panel, so nothing back there can be reached by tabbing to it.
+        The whole page is removed from the layout, not merely hidden behind the
+        panel, so nothing back there can be reached by tabbing to it. The root
+        is never withdrawn — see the class docstring on LockPanel for why that
+        matters.
         """
         if getattr(self, "_lock", None) is not None:
             return
 
-        self._hidden_while_locked = [w for w in self._main_widgets()
-                                     if w.winfo_manager()]
-        for widget in self._hidden_while_locked:
-            widget.grid_remove()
-
+        self._page.grid_remove()
         self._lock = LockPanel(self, self._settings, self._on_unlocked)
-        self._lock.grid(row=0, column=0, rowspan=6, sticky="nsew")
-        self.grid_rowconfigure(0, weight=1)
+        self._lock.grid(row=0, column=0, sticky="nsew")
         self._lock.take_focus()
 
     def _on_unlocked(self, panel: "LockPanel") -> None:
@@ -1369,12 +1503,10 @@ class App(_Root):
 
         panel.destroy()
         self._lock = None
-        for widget in self._hidden_while_locked:
-            widget.grid()
-        self._hidden_while_locked = []
+        self._page.grid()
 
-        self.grid_rowconfigure(0, weight=0)
         self._refresh_all()
+        self.after(80, self._fit_to_window)
         calist.log.info("Unlocked for %s", date.today().isoformat())
 
     def _watch_for_new_day(self) -> None:

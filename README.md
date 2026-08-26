@@ -17,7 +17,7 @@ de-duplicated equipment register — automatically, without opening a single fil
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![Tests passing](https://img.shields.io/badge/tests-102%20passing-brightgreen)
+![Tests passing](https://img.shields.io/badge/tests-105%20passing-brightgreen)
 ![Device types](https://img.shields.io/badge/device%20types-57-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
@@ -229,8 +229,8 @@ code entered during a cooldown is still refused.
 <tr><td><b>Cancel at any moment</b></td>
 <td>Stops cleanly between files and writes absolutely nothing. A cancelled run leaves no half-finished register behind.</td></tr>
 
-<tr><td><b>The destination is never a surprise</b></td>
-<td>The <i>Saves to</i> row shows exactly where the register will land <b>before</b> you commit, and warns you in amber if a register is already sitting there.</td></tr>
+<tr><td><b>You choose where it saves</b></td>
+<td>The <i>Saves to</i> row shows exactly where the register will land <b>before</b> you commit, and warns you in amber if a register is already sitting there. <b>Select folder</b> puts it anywhere you like; leave it alone and it lands beside your forms.</td></tr>
 
 <tr><td><b>Understands two-row devices</b></td>
 <td>A patient monitor and its NIBP module share one chassis and one serial, but need two lines in the register. Calist generates the second row itself and sorts it directly beneath its parent.</td></tr>
@@ -303,8 +303,9 @@ The results card says precisely what was built and exactly where it went, with *
 **Reveal in folder** one click away. The table filters itself down to anything that needs your
 attention, so five problem files out of three hundred are never buried.
 
-The register is saved as `device list.xlsx` beside the first source file — and that location is on
-screen the entire time, so it is never a mystery afterwards.
+The register is saved as `device list.xlsx`. By default it lands beside the first source file; use
+**Select folder** on the *Saves to* row to send it anywhere else. Either way the exact destination is
+on screen the entire time, so it is never a mystery afterwards.
 
 <details>
 <summary><b>What actually happens to a single form</b></summary>
@@ -516,7 +517,15 @@ adrift somewhere else in the register.
 
 ## Duplicate serial numbers
 
-With **Remove duplicate serial numbers** switched on, a repeated serial is dropped and logged.
+With **Remove duplicate serial numbers** switched on, a repeated serial is dropped and logged **by
+filename** — the two forms involved are named, because those are the files you have to open:
+
+```
+Duplicate serial 'SHARED-SN-42' — skipped D23-AF007-0225.xlsx, already recorded by D23-AF001-0225.xlsx
+```
+
+The device type is deliberately not what gets reported: a round holding a dozen of the same model
+makes it useless for finding the form.
 
 The exception is a device and its own generated sub-module: they legitimately share one serial,
 because they are one physical unit. A *third* record carrying that serial is still dropped.
@@ -585,11 +594,11 @@ pip install pytest
 python -m pytest
 ```
 
-**102 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
+**105 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
 
 | Suite | Covers |
 |---|---|
-| [`test_calist.py`](test_calist.py) — 60 tests | Filename parsing and format validation, value handling, ordering, de-duplication, second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
+| [`test_calist.py`](test_calist.py) — 63 tests | Filename parsing and format validation, value handling, ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
 | [`test_access.py`](test_access.py) — 35 tests | The daily code: known-date vectors, zero-padding, rejection of malformed input, midnight relocking, and cooldown escalation |
 | [`test_settings.py`](test_settings.py) — 7 tests | Preference persistence, including BOM-tolerant reading, corrupt files, and unwritable profiles |
 

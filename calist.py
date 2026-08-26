@@ -75,7 +75,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -128,6 +128,10 @@ class FileOutcome:
     status: str
     device_code: str | None = None
     device_name: str | None = None
+    #: The serial as read from the form. Empty until the file is actually
+    #: opened — pre-flight resolves a device from the filename alone and never
+    #: touches the workbook, so it cannot know this.
+    serial: str = ""
     detail: str = ""
     rows: int = 0               # 1, or 2 where a second_row was generated
 
@@ -426,6 +430,8 @@ def extract_records(
             # Sort keys, so ordering never has to re-derive the code tokens.
             record["_group"] = record["Code"]
             record["_row_order"] = 0
+            # Kept apart from Code because build_second_row rewrites that.
+            record["_source"] = filename
 
             records.append(record)
             rows = 1
@@ -444,8 +450,12 @@ def extract_records(
                     extra["Device"], extra["Code"], extra["Status"],
                 )
 
+            # A dual-serial device carries its second number on its own line
+            # for the spreadsheet; a table row wants it on one.
+            serial = record.get("S.N", "").replace("\n", "  /  ")
             report(FileOutcome(filename, filepath, OK, pre.device_code,
-                               config["device_name"], rows=rows), index)
+                               config["device_name"], serial=serial,
+                               rows=rows), index)
 
         except Exception as exc:
             log.error("%s — %s", filename, exc)
@@ -477,36 +487,56 @@ def sort_records(records: list[Record]) -> list[Record]:
                                           r.get("_row_order", 0)))
 
 
+def source_name(record: Record) -> str:
+    """The file a record came from, for messages that send the user to it.
+
+    ``_source`` is set when the record is read and survives into a generated
+    sub-module row, which is the case ``Code`` cannot cover: build_second_row
+    rewrites the code token, so a sub-module's Code names no file on disk.
+    """
+    return record.get("_source") or record.get("Code", "?")
+
+
 def deduplicate_records(records: list[Record]) -> list[Record]:
     """Drop records that repeat a serial number.
 
     A device and its generated sub-module row are allowed to share one serial
     (they are the same physical unit); any third record with that serial is
     still dropped. Blank serials are always kept.
+
+    What gets logged is the two **filenames** involved, because that is what
+    the user has to go and open. The device type does not identify which form
+    to look at when a round holds a dozen of the same model.
     """
-    seen: dict[str, list[str]] = {}
+    seen: dict[str, list[tuple[str, str]]] = {}      # serial → [(device, file)]
     kept: list[Record] = []
 
     for record in records:
         serial = record.get("S.N", "").strip()
         device = record.get("Device", "")
+        source = source_name(record)
 
         if not serial:
             kept.append(record)
             continue
 
         if serial not in seen:
-            seen[serial] = [device]
+            seen[serial] = [(device, source)]
             kept.append(record)
             continue
 
         existing = seen[serial]
-        if len(existing) == 1 and frozenset(existing + [device]) in ALLOWED_SHARED_SN_PAIRS:
-            existing.append(device)
+        devices = [d for d, _ in existing]
+        if (len(existing) == 1
+                and frozenset(devices + [device]) in ALLOWED_SHARED_SN_PAIRS):
+            existing.append((device, source))
             kept.append(record)
         else:
-            log.warning("Skipped duplicate S/N '%s' for '%s' (already recorded by %s)",
-                        serial, device, existing)
+            first = existing[0][1]
+            same = " (the same file)" if first == source else ""
+            log.warning(
+                "Duplicate serial '%s' — skipped %s, already recorded by %s%s",
+                serial, source, first, same)
 
     return kept
 
@@ -515,14 +545,19 @@ def deduplicate_records(records: list[Record]) -> list[Record]:
 # Writing output
 # ──────────────────────────────────────────────────────────────────────────────
 
-def resolve_output_path(source_files: list[str], template_file: str) -> Path:
+def resolve_output_path(source_files: list[str], template_file: str,
+                        output_dir: str | os.PathLike | None = None) -> Path:
     """Pick where the output goes, refusing to write over the template.
+
+    ``output_dir`` is the folder the user chose; without one the register lands
+    beside the first source file, which is the long-standing default.
 
     Windows paths are case-insensitive, so an output called "device list.xlsx"
     would silently overwrite a template named "Device List.xlsx" sitting in the
     same folder.
     """
-    output_path = Path(source_files[0]).parent / OUTPUT_NAME
+    folder = Path(output_dir) if output_dir else Path(source_files[0]).parent
+    output_path = folder / OUTPUT_NAME
     same_file = (os.path.normcase(os.path.abspath(output_path))
                  == os.path.normcase(os.path.abspath(template_file)))
     if same_file:
@@ -583,6 +618,7 @@ def process_files(
     *,
     deduplicate: bool = False,
     strict_names: bool = False,
+    output_dir: str | os.PathLike | None = None,
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
 ) -> RunResult:
@@ -591,6 +627,7 @@ def process_files(
     Always returns a RunResult; check ``.succeeded`` or ``.output_path``. A
     cancelled run writes nothing and comes back with ``cancelled=True``.
     ``strict_names`` skips any file whose name breaks the house format.
+    ``output_dir`` overrides where the register is written.
     """
     rule = "─" * 55
     result = RunResult()
@@ -606,7 +643,7 @@ def process_files(
     log.info(rule)
 
     try:
-        output_path = resolve_output_path(source_files, template_file)
+        output_path = resolve_output_path(source_files, template_file, output_dir)
     except ValueError as exc:
         result.error = str(exc)
         log.error("%s", exc)

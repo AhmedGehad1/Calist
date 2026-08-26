@@ -5,6 +5,7 @@ de-duplication, second-row generation and pre-flight classification, plus a
 couple of end-to-end runs against workbooks built on the fly.
 """
 
+import logging
 import threading
 from datetime import datetime
 
@@ -142,6 +143,43 @@ def test_vital_sign_modules_may_share_a_serial():
     records = [_rec("Vital Sign (SPO2 Module)", "SN1"),
                _rec("Vital Sign (NIBP Module)", "SN1")]
     assert len(calist.deduplicate_records(records)) == 2
+
+
+# The duplicate warning has to name the two files, because that is what the
+# user opens to resolve it — the device type does not identify which form to
+# look at when a round holds a dozen of the same model.
+
+def _sourced(device, serial, source):
+    return {"Device": device, "S.N": serial, "_source": source}
+
+
+def test_duplicate_warning_names_both_files(caplog):
+    records = [_sourced("ECG", "SN1", "D23-AGH001-0225.xlsx"),
+               _sourced("ECG", "SN1", "D23-AGH007-0225.xlsx")]
+    with caplog.at_level(logging.WARNING, logger="aggregator"):
+        calist.deduplicate_records(records)
+
+    message = caplog.text
+    assert "D23-AGH001-0225.xlsx" in message
+    assert "D23-AGH007-0225.xlsx" in message
+    assert "SN1" in message
+
+
+def test_duplicate_warning_falls_back_to_the_code_without_a_source():
+    # Records built by older callers carry no _source; Code still names the file.
+    assert calist.source_name({"Code": "D23-AGH001-0225"}) == "D23-AGH001-0225"
+    assert calist.source_name({}) == "?"
+
+
+def test_a_sub_module_row_reports_the_file_it_came_from():
+    """build_second_row rewrites Code, so only _source still names the file."""
+    parent = {"Device": "Patient Monitor", "S.N": "SN1", "Code": "Ward-AGH001",
+              "_source": "Ward-AGH001.xlsx", "Status2": "Working"}
+    extra = calist.build_second_row(
+        parent, {"device_name": "NIBP", "code_replace": ("AGH", "NIB")})
+
+    assert extra["Code"] != parent["Code"]          # the token was rewritten
+    assert calist.source_name(extra) == "Ward-AGH001.xlsx"
 
 
 # ── config integrity ──────────────────────────────────────────────────────────
