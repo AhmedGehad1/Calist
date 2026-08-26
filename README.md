@@ -21,7 +21,7 @@ de-duplicated equipment register — automatically, without opening a single fil
 ![Device types](https://img.shields.io/badge/device%20types-57-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
-![Size](https://img.shields.io/badge/download-11.9%20MB-lightgrey)
+![Size](https://img.shields.io/badge/download-12.7%20MB-lightgrey)
 ![Install](https://img.shields.io/badge/install-none%20required-success)
 
 <br>
@@ -95,7 +95,7 @@ executable, so the very first launch works with zero setup.
 
 | | |
 |---|---|
-| **Size** | 11.9 MB, a single self-contained `.exe` |
+| **Size** | 12.7 MB as a single `.exe`, or 13.0 MB zipped |
 | **Requirements** | Windows 10 or 11. Nothing else — no runtime, no dependencies, no admin rights |
 | **Provenance** | Every release is built, tested and published automatically by [GitHub Actions](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml) straight from the source in this repository |
 | **Verify it** | [`SHA256SUMS.txt`](https://github.com/AhmedGehad1/Calist/releases/latest) ships with every release — `Get-FileHash .\Calist.exe -Algorithm SHA256` |
@@ -168,16 +168,25 @@ drop zone is click-only and nothing else changes.
 
 ```bash
 pip install pyinstaller
-pyinstaller calist.spec --noconfirm --clean
+
+pyinstaller calist.spec --noconfirm --clean               # -> dist/Calist.exe
+CALIST_ONEDIR=1 pyinstaller calist.spec --noconfirm       # -> dist/Calist/
 ```
 
-The result is `dist/Calist.exe`. [`calist.spec`](calist.spec) is the build recipe, and two settings
-inside it are load-bearing (both commented in place):
+[`calist.spec`](calist.spec) is the build recipe, and four settings inside it are load-bearing (all
+commented in place):
 
 - `hiddenimports=["ui", "access"]` — the interface is imported lazily so the pipeline stays
   GUI-free, which means PyInstaller's static analysis cannot see it.
 - `collect_data_files("customtkinter")` — CustomTkinter loads its themes and fonts from disk at
   runtime, and a build without them fails to draw.
+- `upx=False` — UPX-packing an unsigned executable is one of the strongest signals antivirus
+  heuristics look for. It saves a few megabytes and costs the download its reputation.
+- `version=` — the generated Windows version resource. Its absence was part of why earlier releases
+  were flagged, so CI fails the build if it comes out empty.
+
+The version number comes from `__version__` in [`calist.py`](calist.py); `CALIST_VERSION` overrides
+it, and the release workflow refuses to build a tag that disagrees with it.
 
 </details>
 
