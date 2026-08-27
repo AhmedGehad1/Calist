@@ -12,16 +12,33 @@ inspection Excel forms and compiles them into one flat equipment register.
 ```powershell
 python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
-python -m pytest                # run the test suite (114 tests)
-python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
+
+python -m pytest                            # the whole suite (135 tests)
+python -m pytest test_calist.py             # one file
+python -m pytest -k merged                  # one topic, by substring
+python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
+python -c "import calist, sys; assert 'tkinter' not in sys.modules"   # GUI-free rule
 
 pyinstaller calist.spec --noconfirm              # -> dist/Calist.exe (one file)
 $env:CALIST_ONEDIR=1; pyinstaller calist.spec    # -> dist/Calist/    (folder)
 python docs/make_icon.py                         # redraw the app icon
 ```
 
-`xlrd` 2.x reads **only** `.xls`; `.xlsx`/`.xlsm` go through `openpyxl`.
+Three test files, all runnable without a display: `test_calist.py` (the pipeline),
+`test_access.py` (the PIN gate) and `test_settings.py`. There is no linter configured.
+
+**Releases are built by CI, not locally.** Bump `__version__` in `calist.py`, then
+`git tag vX.Y.Z && git push origin vX.Y.Z` — [release.yml](.github/workflows/release.yml) runs the
+tests, builds both shapes, and publishes them. It **refuses a tag that disagrees with
+`__version__`**, so bump first. Building locally is only for checking the spec; note that
+PyInstaller refuses to run at all if the obsolete `pathlib` backport is installed
+(`pip uninstall pathlib`).
+
+`.xlsx`/`.xlsm` are read by Calist's own targeted reader (see *Reading a form* below); `xlrd` 2.x
+reads **only** `.xls`. openpyxl is now a **write-side dependency only** — `write_output` is the one
+place that calls `load_workbook`, though the reader still borrows its date and number-format
+helpers so that values render exactly as they always did.
 
 ## Architecture
 
@@ -50,19 +67,67 @@ The two meet in two places, and nowhere else:
   renders. Neither channel replaces the other; keep both fed.
 
 The pipeline is a chain of small functions orchestrated by
-[`process_files()`](calist.py#L462), which does no work itself:
+[`process_files()`](calist.py#L1165), which does no work itself:
 
-1. [`extract_device_code()`](calist.py#L188) — filename stem, split on the first `-`, leading letters
+1. [`extract_device_code()`](calist.py#L305) — filename stem, split on the first `-`, leading letters
    of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`.
 2. `DEVICE_CONFIGS[code]["cells"]` — maps field names to A1 refs.
-3. [`read_record()`](calist.py#L243) — reads those cells via [`_open_source()`](calist.py#L211), a
-   context manager that hides the openpyxl/xlrd split behind one `get(ref)` function. Reads the
-   **first non-empty worksheet** — see *Which sheet gets read* below.
-4. [`clean()`](calist.py#L142) — renders raw cell values as output strings.
-5. [`build_second_row()`](calist.py#L256) — for configs with a `second_row` block, emits a sub-module
+3. [`read_record()`](calist.py#L844) — asks [`_XlsxSource`](calist.py#L491) (or
+   [`_XlsSource`](calist.py#L751) for `.xls`) for the whole cell map at once. Reads the **first
+   non-empty worksheet** — see *Which sheet gets read* below.
+4. [`clean()`](calist.py#L203) — renders raw cell values as output strings.
+5. [`build_second_row()`](calist.py#L861) — for configs with a `second_row` block, emits a sub-module
    row of the same physical unit.
-6. [`sort_records()`](calist.py#L380) → optional [`deduplicate_records()`](calist.py#L386) →
-   [`write_output()`](calist.py#L442).
+6. [`sort_records()`](calist.py#L1022) → optional [`deduplicate_records()`](calist.py#L1038) →
+   [`write_output()`](calist.py#L1112).
+
+### Reading a form (the hot path — do not undo these)
+
+Reading one `.xlsx` used to cost **~500 ms** (median 382 ms, worst 2.2 s): `load_workbook` parses
+every worksheet, the whole `styles.xml`, the drawings and the calc chain in order to reach seven
+cells. A 300-form round spent two and a half minutes doing it.
+
+[`_XlsxSource`](calist.py#L491) goes at the package directly and costs **~2 ms** (mean 4.5 ms).
+Measured against the old reader over every readable sample workbook: **82 workbooks, 171,200 cells
+(15,518 carrying values), 0 differences**, with 9,843 of those reads going through a merged
+non-anchor cell — 5,180 of them returning real text.
+
+Five things there are load-bearing:
+
+- **The lazy quantifier in `_CELL_RE`.** `<c r="E18"([^>]*?)(?:/>|>(.*?)</c>)`. Greedy, `[^>]*` eats
+  the `/` of a self-closing `<c r="E18" s="168"/>`, takes the `>` branch, and swallows everything up
+  to the *next* cell's `</c>` — so E18 silently returns F18's value. Pinned by
+  `test_a_self_closing_cell_does_not_swallow_the_next_one`.
+- **The `<c ` vs `<c r="` count gate.** All 625,586 cell tags in the sample corpus write `r` first,
+  and the lookups rely on it. Two `bytes.count` calls (~0.02 ms) prove it per file instead of
+  assuming it; a file that fails the gate raises rather than reading blank.
+- **Anything the reader cannot make sense of raises.** There is no fallback reader, so a silent
+  blank field — the exact failure `--inspect` exists to hunt — would be the alternative. A raise
+  becomes a visible `ERROR` row via the per-file `try/except` in `extract_records`.
+- **`sharedStrings.xml` and `styles.xml` are read lazily**, and only for the cells a map actually
+  asks for. Scoping the styles trigger to the wanted cells rather than every cell on the sheet is
+  most of the win: `styles.xml` is 184 KB on these forms and was being parsed for 20 files in 30.
+- **No thread or process pool.** Measured twice: threads gave 1.2× against the old reader and
+  **nothing** against the new one (1000 forms: 2.05 s at one thread, 2.11 s at two, 2.34 s at
+  eight). After decompression the work is pure Python and GIL-bound, and at 2 ms a form the pool
+  overhead exceeds the parse.
+
+`.xls` goes through xlrd with `on_demand=True`, walking sheets one at a time — `workbook.sheets()`
+would load every sheet and cancel the benefit. 58 ms → 21 ms median.
+
+**How to prove a change to the reader.** The unit tests cover the shapes; what covers the *forms* is
+a whole-grid diff against the previous reader. Before touching it, dump every cell in rows 1–80 ×
+columns A–T of every workbook in a real folder through `calist._open_source` to JSON; after the
+change, re-read and compare. That is what produced the 171,200-cell figure above, and it is the only
+thing that catches a field going quietly blank — which is the failure mode this reader has already
+had twice (the Ultrasound serial, the X-ray tab). `_open_source` is kept as a per-reference
+compatibility seam for exactly this; `read_record` batches instead.
+
+Where the time goes now, on 20,000 forms: **28 s read, 0.5 s sort, 0.2 s dedup, 9.6 s write.**
+`write_output` is the long tail and there is no cheap fix — the stalls are inside
+`workbook.save()`, so yielding the GIL around the fill loop does nothing (tried: worst stall
+483 ms → 416 ms, and it cost a second on the write). `process_files` logs `Writing N row(s)…` and
+the progress card says *Writing the register…* instead, which is the honest answer.
 
 ### Pre-flight
 
@@ -93,15 +158,21 @@ still be salvaged. `test_format_is_checked_before_the_device_code` pins this.
 
 ### Threading rules (both of these have already caused bugs)
 
-The pipeline runs on a worker thread. Two hard rules:
+Two things run on worker threads: the build (`App._start`) and the folder scan
+(`App._start_scan`). Two hard rules, and they apply to both:
 
 1. **Never read a Tk variable off the main thread.** `self._template.get()` inside the worker raises
-   `RuntimeError: main thread is not in main loop`. `App._start` captures `template`, `deduplicate`
-   and the file list into plain Python values *before* spawning the thread — keep it that way.
+   `RuntimeError: main thread is not in main loop`. `App._start` captures `template`, `deduplicate`,
+   `strict_names`, `turbo` and the file list into plain Python values *before* spawning the thread;
+   `_start_scan` does the same with `strict`. Keep it that way.
 2. **Never touch a widget from the worker.** `on_file` pushes onto `App._events` (a `queue.Queue`);
-   `App._drain` polls it on the main thread via `after()`. `TkLogHandler.emit` does the same with
-   its own queue. Batching there is also what keeps a few hundred forms from redrawing the table
-   once per file.
+   `App._drain` polls it on the main thread via `after()`. The scan pushes batches of 200 onto the
+   same queue. `TkLogHandler.emit` does the same with its own queue. Batching there is also what
+   keeps a few hundred forms from redrawing the table once per file.
+
+`_drain` reschedules itself while **either** `self._cancel` or `self._scan` is set, so a scan and a
+build both stay drained; `_cancel_run` stops whichever is in flight, and `_on_close` sets the scan's
+event too, or its thread keeps walking a network share after the window is gone.
 
 `widget.after(0, ...)` called from a worker thread is the common shortcut and is *not* safe — it
 registers a Tcl command from outside the main loop. Use the queues.
@@ -126,17 +197,26 @@ is the exception: it opens on an empty `Waveform Dialog` stub left behind by its
 real form on the next tab. So every mapped cell of every X-ray read blank — silently, because a
 missing value is indistinguishable from a form that was left empty.
 
-`_pick_sheet()` now takes the **first sheet that holds anything at all**, and `_sheet_is_blank()`
-is deliberately strict: a sheet reporting a dimension larger than `A1`, or any value in `A1`, is
-kept. So this can only ever skip a tab that could not have held the data.
+`_XlsxSource._populated_sheet()` takes the **first sheet that holds anything at all**, and
+`_sheet_has_content()` is deliberately strict: a sheet with any cell outside `A1`, or a value in
+`A1`, is kept — cell *elements*, not values, so a tab carrying only formatting still counts. This
+can only ever skip a tab that could not have held the data.
+
+Two rules about *which* parts count as sheets, both easy to undo by accident:
+
+- An older `.xlsm` lists its VBA modules as `<sheet r:id="">` entries with no part behind them.
+  They are dropped, and must not shift the ordering.
+- **Chartsheets are skipped; dialogsheets are not.** openpyxl counts dialogsheets in
+  `wb.worksheets`, and the X-ray workbook opens on one — filtering by relationship type instead of
+  by emptiness would pick a different tab than the app used to.
 
 **Do not switch this to matching sheet names.** Across the real templates the data sheet is called
 `Device data`, `Device Data`, `Data entry`, `Inserting data`, `Inserting Data` and `Data device`,
 and several workbooks carry *both* a `Device data` and a `Data entry` tab with different layouts —
 so a name list would pick the wrong one and would go stale on the next form revision.
 
-Verified against 29 real templates: 28 resolve to the same sheet as before, and only the X-ray
-changes — from `Waveform Dialog` to `Data entry`.
+Verified: the part-resolution rule agrees with `load_workbook(...).worksheets[0]` on all 82
+readable sample workbooks, 0 disagreements.
 
 ### Merged cells (this has already lost a field)
 
@@ -146,15 +226,15 @@ second column of a box — `L17` of a merged `K17:L17` — silently produced a b
 error anywhere. That is how the Ultrasound serial number disappeared when that form was re-laid-out
 from the F/L columns onto E/K.
 
-`_open_source` resolves this in both readers. The openpyxl side tests `isinstance(cell, MergedCell)`
-rather than checking for an empty value: openpyxl hands back a `MergedCell` for exactly the cells a
-range covers but does not anchor, so an ordinary blank cell still reads blank and can never pick up
-the text of some unrelated merged block it happens to sit inside. Verified: building the same
-register with the old and new readers is identical on unmerged forms.
+Both readers resolve it. `_XlsxSource._anchor()` finds the range covering a wanted reference and
+redirects to its top-left cell; a reference that *is* the anchor, or that sits in no range at all,
+is left alone, so an ordinary blank cell still reads blank and can never pick up the text of some
+unrelated merged block it happens to sit inside.
 
 The xlrd side needs `formatting_info=True` to see merges at all. It costs memory and some files
 refuse it, so it falls back to a plain open — where `merged_cells` is empty and behaviour is
-unchanged. xlrd ranges are 0-based with exclusive upper bounds; openpyxl's are 1-based inclusive.
+unchanged. xlrd ranges are 0-based with exclusive upper bounds; the `.xlsx` reader's are 1-based
+inclusive.
 
 **`--inspect` is how you check a cell map against a real form** without guessing:
 
@@ -204,7 +284,7 @@ model makes the type useless for finding the form to open. `source_name()` reads
 set in `extract_records` and survives into a generated sub-module row; `Code` cannot serve because
 `build_second_row` rewrites its device token, so a sub-module's Code names no file on disk.
 
-`ALLOWED_SHARED_SN_PAIRS` ([calist.py:60](calist.py#L60)) holds `device_name` strings verbatim from
+`ALLOWED_SHARED_SN_PAIRS` ([calist.py:71](calist.py#L71)) holds `device_name` strings verbatim from
 `device_config.py`; renaming a device there breaks the exemption that lets a Patient Monitor and its
 NIBP row share a serial. `test_second_row_names_are_covered_by_the_dedup_exemptions` guards this — run
 the tests after renaming anything.
@@ -212,13 +292,18 @@ the tests after renaming anything.
 ## Behaviour worth knowing
 
 - An unknown device code **skips the file** with an error rather than emitting a junk row. Set
-  `SKIP_UNKNOWN_CODES = False` ([calist.py:48](calist.py#L48)) to restore the old A1:A6 fallback.
+  `SKIP_UNKNOWN_CODES = False` ([calist.py:59](calist.py#L59)) to restore the old A1:A6 fallback.
 - Output is `device list.xlsx` beside the first source file. `resolve_output_path()` refuses to run if
   that would overwrite the template (Windows paths are case-insensitive, so it would otherwise clobber
   `Device List.xlsx`).
-- Because the output lands *among* the sources, selecting a whole folder twice feeds the previous run's
-  output back in as an input. Its code resolves to `DEVICE`, which isn't in `DEVICE_CONFIGS`, so it is
-  skipped with an error.
+- Because the output lands *among* the sources, selecting a whole folder twice would feed the
+  previous run's output back in as an input. `is_source_file()` drops it by name during a scan; a
+  copy picked by hand still resolves to `DEVICE`, which isn't in `DEVICE_CONFIGS`, so it is skipped
+  with an error.
+- **Excel lock files are skipped during a folder scan.** Excel drops a `~$`-prefixed copy beside any
+  workbook someone has open; they are not workbooks, and the real sample tree holds seven of them.
+  The filter applies to scanning only — a file picked *by hand* is still classified, because saying
+  nothing at all about a file someone explicitly selected is worse than an "Unsupported format" row.
 - Per-file failures are logged and skipped; a partial output is still written. Read the status log.
 
 ## Open data questions
@@ -298,7 +383,32 @@ byte-identical twice, so a diff here is expected, not a regression.
 
 One window, three states swapped in the same layout by `_enter_setup` / `_enter_working` /
 `_enter_results`. Not a wizard — this is a tool the same person runs repeatedly, and steps tax every
-repeat run.
+repeat run. `_enter_scanning` reuses the working card for a folder walk, which has no total to count
+towards until it has finished walking.
+
+### Turbo
+
+A round switch beside the wordmark, which turns red and grows a flame (`TurboFlame`, canvas
+polygons — **Pillow is a dev-only dependency and must not become a runtime one**). It exists for
+runs of tens of thousands, where the per-file UI work is the cost rather than the reading:
+
+- **No table.** `_refresh_table` and `_update_row` return early, and the table's rows are *deleted*
+  rather than merely hidden, so they stop costing memory for the session. `_build_summary`'s panel
+  takes the same grid slot.
+- **No per-file event.** `on_file` enqueues only problems, the last file, and a tick at most every
+  100 ms. Forty thousand queue items and forty thousand row updates are what used to stop the window
+  breathing.
+- **Log problems only** (`process_files(quiet=True)`): failures, unknown codes and duplicate serials
+  in full, successes collapsed to a heartbeat every `HEARTBEAT_EVERY` files. 20,000 forms produce
+  about a thousand log lines instead of twenty thousand.
+- The summary renders from `RunResult` alone — counts, unknown codes grouped by code, duplicate
+  serials, and the files that failed. Nothing is scraped back out of the log, which is why
+  `deduplicate_records` also collects `Duplicate` records instead of only warning.
+
+Turbo persists in `settings.json` and is captured into a plain bool by `_start` before the worker
+begins (threading rule 1). `_on_run_done` writes the outcomes back into `self._files` in Turbo too —
+they are stored by reference, so it costs a dict slot each, and without it switching Turbo off after
+a run would show a half-stale table.
 
 ### Everything lives on one scrollable page
 
@@ -335,7 +445,14 @@ finished with the drawer open. Three things follow from the change, and all thre
 0 keeps `weight=1` permanently so the lock panel fills the window in its place.
 
 - **Adding devices is the hero.** With nothing loaded, `_refresh_intake` shows the hero panel and
-  hides the table; once devices are in, the slim bar takes over and the table appears.
+  hides the table; once devices are in, the slim bar takes over and the table appears (or, in Turbo,
+  the summary panel).
+- **Folders are scanned on a worker.** `calist.find_source_files()` walks with `os.scandir`, whose
+  entries already know file-from-directory — `Path.rglob("*")` plus `is_file()` cost a stat per
+  entry, and all of it ran on the main thread, which on a network share is a window that stops
+  repainting with no way to stop it. Results arrive in batches of 200 through `App._events`, the
+  count updates live, and Cancel works. 20,000 forms resolve in under a second with the window
+  still live.
 - **The destination is always on screen, and now selectable.** The *Saves to* row shows where the
   register will land *before* the run, and warns when it would replace an existing file.
   `shorten_path()` elides the middle of long paths, never the tail — the deepest folders and
@@ -381,7 +498,7 @@ back:
 Also load-bearing: **`upx=False`**. UPX-packing an unsigned binary is one of the strongest heuristic
 signals there is, and it only saves a few MB.
 
-`__version__` in [calist.py](calist.py#L78) is the single source of the version number. The spec
+`__version__` in [calist.py](calist.py#L86) is the single source of the version number. The spec
 reads it with a regex rather than importing the module, so a build never depends on the app's
 runtime imports resolving; `CALIST_VERSION` overrides it for CI. The release workflow **refuses to
 build a tag that disagrees with it**, so the Properties tab can't claim a different version from the

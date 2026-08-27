@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import queue
 import subprocess
@@ -60,6 +61,10 @@ PRIMARY_HOVER = "#3b74d9"
 SUCCESS = "#3fb950"
 WARNING = "#d9a020"
 DANGER = "#f2585f"
+
+#: Turbo. The wordmark takes TURBO, so "on" is unmistakable at a glance.
+TURBO = "#ff4d2d"
+TURBO_HOVER = "#ff6f52"
 
 FONT = "Segoe UI"
 MONO = "Consolas"
@@ -173,6 +178,66 @@ class TkLogHandler(logging.Handler):
             self.widget.after(self.POLL_MS, self._pump)
         except tk.TclError:
             self._stopped = True            # window went away mid-poll
+
+
+class TurboFlame(tk.Canvas):
+    """A small flame that burns while Turbo is on.
+
+    Drawn as canvas polygons rather than as images: Pillow is a development-only
+    dependency (it draws the app icon in docs/make_icon.py and is deliberately
+    absent from requirements.txt), so it must not become a runtime one.
+
+    The animation is cheap on purpose — three smoothed polygons redrawn about
+    eleven times a second — because it burns hardest exactly when the worker
+    thread is busiest and the drain loop needs the main thread back.
+    """
+
+    W, H = 24, 28
+    FRAME_MS = 90
+    LAYERS = ((0.00, "#e8451f"), (0.30, "#ff8c1a"), (0.62, "#ffd977"))
+
+    def __init__(self, master):
+        super().__init__(master, width=self.W, height=self.H, bd=0,
+                         highlightthickness=0, bg=BG)
+        self._phase = 0.0
+        self._job: str | None = None
+
+    def start(self) -> None:
+        if self._job is None:
+            self._tick()
+
+    def stop(self) -> None:
+        if self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+        self.delete("all")
+
+    def _tick(self) -> None:
+        self._phase += 0.55
+        self.delete("all")
+        for inset, colour in self.LAYERS:
+            self.create_polygon(self._tongue(inset), fill=colour,
+                                outline="", smooth=True)
+        self._job = self.after(self.FRAME_MS, self._tick)
+
+    def _tongue(self, inset: float) -> list[float]:
+        """One teardrop: a tip at the top, a bulge near the base, a wobble."""
+        centre, top = self.W / 2, self.H * 0.06
+        height = self.H * 0.9 * (1 - inset * 0.55)
+        width = self.W * 0.44 * (1 - inset)
+        phase = self._phase + inset * 2.2
+
+        points: list[float] = []
+        steps = 12
+        for side in (1, -1):
+            span = range(steps + 1) if side == 1 else range(steps, -1, -1)
+            for step in span:
+                along = step / steps                     # 0 at the tip
+                spread = math.sin(along * math.pi) ** 0.7
+                wobble = math.sin(phase + along * 3.4) * 1.7 * along * side
+                points.append(centre + side * spread * width + wobble)
+                points.append(top + along * height)
+        return points
 
 
 class StatusFormatter(logging.Formatter):
@@ -475,7 +540,10 @@ class App(_Root):
         self._template = tk.StringVar(value=self._initial_template())
         self._dedup = tk.BooleanVar(value=self._settings.get("deduplicate", False))
         self._strict = tk.BooleanVar(value=self._settings.get("strict_names", False))
+        self._turbo = tk.BooleanVar(value=self._settings.get("turbo", False))
         self._cancel: threading.Event | None = None
+        self._scan: threading.Event | None = None
+        self._scan_from = 0
         self._events: queue.Queue[tuple] = queue.Queue()
         self._result: RunResult | None = None
         self._lock: LockPanel | None = None
@@ -483,11 +551,17 @@ class App(_Root):
         self._fit_job: str | None = None
         self._fit_passes = 0
         self._started_at = 0.0
+        #: (files done, monotonic time) samples behind the ETA.
+        self._marks: list[tuple[int, float]] = []
+        #: Problems seen so far in the run in flight, for Turbo's live summary.
+        self._live_problems: list[FileOutcome] = []
+        self._live_render = 0.0
         self._log_open = False
 
         style_treeview()
         self._build()
         self._attach_logging()
+        self._apply_turbo()
         self._enter_setup()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -561,6 +635,7 @@ class App(_Root):
         self._build_header()
         self._build_intake()
         self._build_table()
+        self._build_summary()
         self._build_settings()
         self._build_action()
         self._build_log_drawer()
@@ -576,8 +651,27 @@ class App(_Root):
         bar.grid_columnconfigure(0, weight=1)
         self._header = bar
 
-        ctk.CTkLabel(bar, text="Calist", text_color=TEXT,
-                     font=ctk.CTkFont(FONT, 26, "bold")).grid(row=0, column=0, sticky="w")
+        mark = ctk.CTkFrame(bar, fg_color="transparent")
+        mark.grid(row=0, column=0, sticky="w")
+
+        self._lbl_mark = ctk.CTkLabel(mark, text="Calist", text_color=TEXT,
+                                      font=ctk.CTkFont(FONT, 26, "bold"))
+        self._lbl_mark.grid(row=0, column=0, sticky="w")
+
+        # Turbo: a round switch beside the wordmark, and a flame once it is on.
+        self._flame = TurboFlame(mark)
+        self._flame.grid(row=0, column=1, padx=(10, 0))
+        self._flame.grid_remove()
+
+        self._btn_turbo = ctk.CTkButton(
+            mark, text="", width=26, height=26, corner_radius=13,
+            border_width=2, border_color=BORDER, fg_color=SURFACE,
+            hover_color=SURFACE_2, command=self._toggle_turbo)
+        self._btn_turbo.grid(row=0, column=2, padx=(12, 6))
+
+        self._lbl_turbo = ctk.CTkLabel(mark, text="Turbo", text_color=FAINT,
+                                       font=ctk.CTkFont(FONT, 12))
+        self._lbl_turbo.grid(row=0, column=3)
 
         buttons = ctk.CTkFrame(bar, fg_color="transparent")
         buttons.grid(row=0, column=1, sticky="e")
@@ -741,6 +835,35 @@ class App(_Root):
         self._empty = ctk.CTkLabel(
             body, text="No devices yet.\nAdd a folder to get started.",
             text_color=FAINT, font=ctk.CTkFont(FONT, 13), justify="center")
+
+    def _build_summary(self) -> None:
+        """Turbo's stand-in for the device table.
+
+        At tens of thousands of forms a row per file is the single largest
+        per-file cost in the window, and nobody reads forty thousand rows
+        anyway. What is actually wanted is the count, and then the short list
+        of things that went wrong.
+        """
+        wrap = ctk.CTkFrame(self._page, fg_color=SURFACE_2, corner_radius=12,
+                            border_width=1, border_color=BORDER)
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_rowconfigure(1, weight=1)
+        self._summary_wrap = wrap
+
+        self._lbl_summary_head = ctk.CTkLabel(
+            wrap, text="Turbo", text_color=TURBO, anchor="w",
+            font=ctk.CTkFont(FONT, 13, "bold"))
+        self._lbl_summary_head.grid(row=0, column=0, sticky="w", padx=14,
+                                    pady=(12, 6))
+
+        self._summary_box = ctk.CTkTextbox(
+            wrap, height=260, fg_color=SURFACE_2, text_color=TEXT,
+            font=ctk.CTkFont(MONO, 12), wrap="none", activate_scrollbars=True)
+        self._summary_box.grid(row=1, column=0, sticky="nsew", padx=10,
+                               pady=(0, 10))
+        self._summary_box.configure(state="disabled")
+        self._summary_box.bind("<MouseWheel>", self._wheel_over(self._summary_box))
+        wrap.grid_remove()
 
     def _build_settings(self) -> None:
         panel = ctk.CTkFrame(self._page, fg_color=SURFACE, corner_radius=12,
@@ -919,6 +1042,7 @@ class App(_Root):
     def _enter_setup(self) -> None:
         self._result = None
         self._cancel = None
+        self._scan = None
         # Reset any previous run's per-file statuses back to pre-flight, under
         # whatever the current settings are.
         strict = bool(self._strict.get())
@@ -937,7 +1061,8 @@ class App(_Root):
         """
         state = "normal" if enabled else "disabled"
         for widget in (self._btn_change, self._switch_dedup, self._switch_strict,
-                       self._btn_clear, self._btn_slim_folder, self._btn_slim_files):
+                       self._btn_clear, self._btn_slim_folder, self._btn_slim_files,
+                       self._btn_turbo):
             widget.configure(state=state)
 
     def _enter_working(self, total: int) -> None:
@@ -945,6 +1070,17 @@ class App(_Root):
         self._set_inputs_enabled(False)
         self._bar.set(0)
         self._lbl_stage.configure(text=f"Reading device 0 of {total}")
+        self._lbl_eta.configure(text="")
+        self._lbl_current.configure(text="")
+        self._btn_cancel.configure(state="normal", text="Cancel")
+
+    def _enter_scanning(self) -> None:
+        """The busy card again, but with no total — a walk cannot know one
+        until it has finished walking."""
+        self._show_action(self._busy)
+        self._set_inputs_enabled(False)
+        self._bar.set(0)
+        self._lbl_stage.configure(text="Looking for inspection forms…")
         self._lbl_eta.configure(text="")
         self._lbl_current.configure(text="")
         self._btn_cancel.configure(state="normal", text="Cancel")
@@ -988,37 +1124,91 @@ class App(_Root):
             self._btn_open.configure(state="normal")
             self._btn_reveal.configure(state="normal")
 
-        if result.problems:
+        if result.problems and not self._turbo.get():
             self._filter.set("Problems")
         self._refresh_all()
 
     # ── file intake ──────────────────────────────────────────────────────────
 
+    #: Forms handed to the main thread per batch during a folder scan. Small
+    #: enough that the window stays live on a huge tree, large enough that the
+    #: queue is not the bottleneck.
+    SCAN_BATCH = 200
+
     def _add_paths(self, paths: list[str]) -> None:
-        """Classify and absorb a batch of paths; folders are scanned."""
-        added = 0
-        strict = bool(self._strict.get())
+        """Absorb a batch of paths. Folders are walked on a worker thread."""
+        strict = bool(self._strict.get())      # threading rule 1: read it here
+        before = len(self._files)
+        folders, singles = [], []
         for raw in paths:
             path = Path(raw)
             if path.is_dir():
-                for found in sorted(path.rglob("*")):
-                    if (found.is_file()
-                            and found.suffix.lower() in calist.SUPPORTED_EXTENSIONS
-                            and found.name.lower() != calist.OUTPUT_NAME.lower()):
-                        key = str(found)
-                        if key not in self._files:
-                            self._files[key] = calist.classify_file(key, strict)
-                            added += 1
+                folders.append(str(path))
             elif path.is_file():
-                key = str(path)
-                if key not in self._files:
-                    self._files[key] = calist.classify_file(key, strict)
-                    added += 1
+                # Deliberately unfiltered: a file the user picked by hand earns
+                # an answer, even if that answer is "Unsupported format".
+                singles.append(str(path))
 
+        added = self._absorb(singles, strict)
+        if folders:
+            self._start_scan(folders, strict, before)
+        else:
+            self._finish_intake(added)
+
+    def _absorb(self, filepaths: list[str], strict: bool) -> int:
+        added = 0
+        for key in filepaths:
+            if key not in self._files:
+                self._files[key] = calist.classify_file(key, strict)
+                added += 1
+        return added
+
+    def _finish_intake(self, added: int) -> None:
         if added:
             log_ui.debug("Added %d file(s)", added)
             calist.log.info("Added %d device(s). Total: %d", added, len(self._files))
         self._enter_setup()
+
+    def _start_scan(self, folders: list[str], strict: bool, before: int) -> None:
+        """Walk folders on a worker, so a big or networked tree cannot freeze.
+
+        The walk used to run inline: a stat per entry, the whole listing built
+        before anything was filtered, all on the main thread. On a share that
+        is a window that stops repainting with no way to stop it.
+        """
+        cancel = threading.Event()
+        self._scan = cancel
+        self._scan_from = before
+        self._enter_scanning()
+
+        def worker() -> None:
+            batch: list[FileOutcome] = []
+            try:
+                for folder in folders:
+                    for filepath in calist.find_source_files(folder, cancel):
+                        # Classifying here keeps the main thread free; it is
+                        # filename-only, so it opens nothing.
+                        batch.append(calist.classify_file(filepath, strict))
+                        if len(batch) >= self.SCAN_BATCH:
+                            self._events.put(("scan", batch, 0, 0))
+                            batch = []
+                    if cancel.is_set():
+                        break
+            except Exception as exc:               # never die silently
+                calist.log.error("Could not finish scanning: %s", exc)
+            if batch:
+                self._events.put(("scan", batch, 0, 0))
+            self._events.put(("scanned", cancel.is_set(), 0, 0))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._drain()
+
+    def _on_scan_done(self, stopped: bool) -> None:
+        self._scan = None
+        added = len(self._files) - self._scan_from
+        if stopped:
+            calist.log.warning("Scan stopped — %d device(s) added so far.", added)
+        self._finish_intake(added)
 
     def _add_folder(self) -> None:
         start = self._settings.get("last_folder", "")
@@ -1072,7 +1262,8 @@ class App(_Root):
 
     def _remember(self) -> None:
         self._settings.update(deduplicate=bool(self._dedup.get()),
-                              strict_names=bool(self._strict.get()))
+                              strict_names=bool(self._strict.get()),
+                              turbo=bool(self._turbo.get()))
 
         # A folder that has since been deleted or unmounted must not be carried
         # forward, or the next run fails on a destination the user cannot see.
@@ -1103,6 +1294,147 @@ class App(_Root):
             return False
         return os.path.normcase(os.path.abspath(path)) == \
             os.path.normcase(os.path.abspath(str(shipped)))
+
+    # ── turbo ────────────────────────────────────────────────────────────────
+
+    def _toggle_turbo(self) -> None:
+        self._turbo.set(not self._turbo.get())
+        self._remember()
+        on = bool(self._turbo.get())
+        calist.log.info("Turbo %s — %s", "on" if on else "off",
+                        "log and summary only, built for tens of thousands"
+                        if on else "per-device table is back")
+        if on and not self._log_open:
+            self._toggle_log()          # Turbo is the log and the summary
+        self._apply_turbo()
+        self._refresh_all()
+
+    def _apply_turbo(self) -> None:
+        """Reflect the switch: red wordmark, lit button, burning flame."""
+        on = bool(self._turbo.get())
+        self._lbl_mark.configure(text_color=TURBO if on else TEXT)
+        self._lbl_turbo.configure(text_color=TURBO if on else FAINT)
+        self._btn_turbo.configure(
+            fg_color=TURBO if on else SURFACE,
+            hover_color=TURBO_HOVER if on else SURFACE_2,
+            border_color=TURBO if on else BORDER)
+        if on:
+            self._flame.grid()
+            self._flame.start()
+        else:
+            self._flame.stop()
+            self._flame.grid_remove()
+
+    def _summary_lines(self, result: RunResult | None) -> list[str]:
+        """What Turbo shows instead of a table.
+
+        Everything here is already carried by RunResult; nothing is scraped
+        back out of the log.
+        """
+        if result is None and self._cancel is not None:
+            # Mid-run. The counts and the ETA live on the progress card; what
+            # belongs here is the list of things already going wrong, so the
+            # user can start opening those forms without waiting for the end.
+            problems = self._live_problems
+            unknown = self._unknown_codes(problems)
+            lines = [f"Running — {len(problems):,} problem(s) so far.", ""]
+            if unknown:
+                lines += ["Unrecognised device codes", *unknown, ""]
+            failed = [o for o in problems if o.status != UNKNOWN_CODE]
+            if failed:
+                lines.append(f"Files that failed ({len(failed):,})")
+                lines += [f"   {o.filename}   {o.detail}" for o in failed[-40:]]
+            return lines
+
+        if result is None:
+            total = len(self._files)
+            unknown = self._unknown_codes(self._files.values())
+            lines = [f"{total:,} device(s) loaded, not built yet.", ""]
+            if unknown:
+                lines += ["Unrecognised device codes", *unknown, ""]
+            lines.append("Press Build register to start.")
+            return lines
+
+        elapsed = time.monotonic() - self._started_at
+        read = result.files_read
+        problems = result.problems
+        # "Failed" means a form that was opened and would not read. A form the
+        # app never opened because its name resolves to no known device is a
+        # different finding with a different fix, and lumping them together
+        # makes a round of misnamed files look like a broken app.
+        failed = [o for o in problems if o.status == ERROR]
+        skipped = len(problems) - len(failed)
+        seen = len(result.outcomes)
+        lines = [
+            f"read        {read:,}",
+            f"skipped     {skipped:,}   unrecognised code, name format "
+            f"or unsupported type",
+            f"failed      {len(failed):,}   opened but could not be read",
+            f"rows        {result.rows_written:,}"
+            + (f"   (+{result.second_rows_added:,} module rows)"
+               if result.second_rows_added else ""),
+            f"duplicates  {result.duplicates_removed:,}",
+            f"time        {human_duration(elapsed)}"
+            + (f"   ({seen / elapsed:,.0f} forms/s)" if elapsed > 0 and seen else ""),
+            "",
+        ]
+
+        unknown = self._unknown_codes(result.outcomes)
+        if unknown:
+            lines += ["Unrecognised device codes", *unknown, ""]
+
+        if result.duplicates:
+            # A two-row device drops both its rows on one repeated serial, so
+            # the same pair of files would otherwise be listed twice running.
+            # The count stays honest — it counts records — but the list is of
+            # files to go and open, and each belongs on it once.
+            seen, pairs = set(), []
+            for hit in result.duplicates:
+                key = (hit.serial, hit.dropped, hit.kept)
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(hit)
+            lines.append(f"Duplicate serials ({result.duplicates_removed:,} "
+                         f"row(s) from {len(pairs):,} file(s))")
+            for hit in pairs[:40]:
+                lines.append(f"   {hit.serial:<22} {hit.dropped}"
+                             f"   (already in {hit.kept})")
+            if len(pairs) > 40:
+                lines.append(f"   … and {len(pairs) - 40:,} more")
+            lines.append("")
+
+        if failed:
+            lines.append(f"Files that failed ({len(failed):,})")
+            for outcome in failed[:40]:
+                lines.append(f"   {outcome.filename}   {outcome.detail}")
+            if len(failed) > 40:
+                lines.append(f"   … and {len(failed) - 40:,} more")
+
+        if not unknown and not result.duplicates and not failed:
+            lines.append("Nothing needed attention.")
+        return lines
+
+    @staticmethod
+    def _unknown_codes(outcomes) -> list[str]:
+        """Unrecognised codes grouped by code — "ZZ — 14 files", not 14 rows.
+
+        A round of forms named for a device nobody has added to the table
+        produces one finding, not one per file.
+        """
+        counts: dict[str, int] = {}
+        for outcome in outcomes:
+            if outcome.status == UNKNOWN_CODE:
+                counts[outcome.device_code or "(none)"] = \
+                    counts.get(outcome.device_code or "(none)", 0) + 1
+        width = max((len(code) for code in counts), default=0)
+        return [f"   {code:<{width}}   {count:,} file(s)"
+                for code, count in sorted(counts.items())]
+
+    def _render_summary(self, result: RunResult | None) -> None:
+        self._summary_box.configure(state="normal")
+        self._summary_box.delete("1.0", "end")
+        self._summary_box.insert("1.0", "\n".join(self._summary_lines(result)))
+        self._summary_box.configure(state="disabled")
 
     def _on_strict_toggled(self) -> None:
         """Re-check every loaded name against the new setting, immediately.
@@ -1204,7 +1536,14 @@ class App(_Root):
             self._intake.grid_rowconfigure(0, weight=0)
             self._page.grid_rowconfigure(1, weight=0)
             self._page.grid_rowconfigure(2, weight=0)
-            self._table_wrap.grid(row=2, column=0, sticky="nsew", padx=28)
+            # Turbo shows the summary in the table's slot: at forty thousand
+            # forms a row per file is the biggest per-file cost in the window.
+            if self._turbo.get():
+                self._table_wrap.grid_remove()
+                self._summary_wrap.grid(row=2, column=0, sticky="nsew", padx=28)
+            else:
+                self._summary_wrap.grid_remove()
+                self._table_wrap.grid(row=2, column=0, sticky="nsew", padx=28)
 
             ready = sum(1 for o in self._files.values() if o.status == READY)
             done = sum(1 for o in self._files.values() if o.status == OK)
@@ -1219,6 +1558,7 @@ class App(_Root):
         else:
             self._drop_slim.grid_remove()
             self._table_wrap.grid_remove()
+            self._summary_wrap.grid_remove()
             self._hero.grid()
             self._intake.grid_configure(sticky="nsew")
             self._intake.grid_rowconfigure(0, weight=1)
@@ -1234,6 +1574,14 @@ class App(_Root):
         return items
 
     def _refresh_table(self) -> None:
+        if self._turbo.get():
+            # Nothing is inserted per file in Turbo, and anything a previous
+            # normal run left behind is dropped rather than merely hidden —
+            # otherwise the rows go on costing memory for the whole session.
+            if self._tree.get_children():
+                self._tree.delete(*self._tree.get_children())
+            self._render_summary(self._result)
+            return
         self._tree.delete(*self._tree.get_children())
         rows = self._visible_outcomes()
 
@@ -1260,7 +1608,10 @@ class App(_Root):
         if not self._files or not self._template.get():
             return None, ""
         try:
-            path = calist.resolve_output_path(sorted(self._files),
+            # resolve_output_path only reads the first entry, and this runs on
+            # every refresh — sorting tens of thousands of paths for it twice
+            # over is work nobody asked for.
+            path = calist.resolve_output_path([min(self._files)],
                                               self._template.get(),
                                               self._outdir.get() or None)
         except ValueError as exc:
@@ -1349,24 +1700,39 @@ class App(_Root):
         deduplicate = bool(self._dedup.get())
         strict_names = bool(self._strict.get())
         output_dir = self._outdir.get() or None
+        turbo = bool(self._turbo.get())
 
         total = len(files)
         cancel = threading.Event()
         self._cancel = cancel
         self._started_at = time.monotonic()
+        self._marks = [(0, self._started_at)]
+        self._live_problems = []
+        self._live_render = 0.0
         self._enter_working(total)
         self._remember()
 
+        # In Turbo only problems and a throttled tick cross the thread
+        # boundary. Forty thousand queue items and forty thousand row updates
+        # are the whole reason the window used to stop breathing.
+        last = [0.0]
+
         def on_file(outcome: FileOutcome, index: int, _total: int) -> None:
             # Worker thread: queue only, never a widget.
-            self._events.put(("file", outcome, index, total))
+            if not turbo:
+                self._events.put(("file", outcome, index, total))
+                return
+            now = time.monotonic()
+            if outcome.is_problem or index == total or now - last[0] >= 0.1:
+                last[0] = now
+                self._events.put(("file", outcome, index, total))
 
         def worker() -> None:
             try:
                 result = calist.process_files(
                     files, template, deduplicate=deduplicate,
                     strict_names=strict_names, output_dir=output_dir,
-                    on_file=on_file, cancel=cancel,
+                    on_file=on_file, cancel=cancel, quiet=turbo,
                 )
             except Exception as exc:                   # never die silently
                 calist.log.exception("Unexpected failure: %s", exc)
@@ -1384,6 +1750,9 @@ class App(_Root):
         """
         latest: tuple | None = None
         finished: RunResult | None = None
+        scanned = False
+        stopped = False
+        found = 0
 
         try:
             while True:
@@ -1391,22 +1760,40 @@ class App(_Root):
                 if kind == "file":
                     self._files[payload.path] = payload
                     self._update_row(payload)
+                    if payload.is_problem:
+                        self._live_problems.append(payload)
                     latest = (payload, index, total)
+                elif kind == "scan":
+                    for outcome in payload:
+                        if outcome.path not in self._files:
+                            self._files[outcome.path] = outcome
+                    found += len(payload)
+                elif kind == "scanned":
+                    scanned, stopped = True, payload
                 else:
                     finished = payload
         except queue.Empty:
             pass
 
+        if found and not scanned:
+            self._lbl_current.configure(
+                text=f"{len(self._files) - self._scan_from} devices found")
+
         if latest:
             self._update_progress(*latest)
+            if self._turbo.get() and time.monotonic() - self._live_render > 0.5:
+                self._live_render = time.monotonic()
+                self._render_summary(None)
 
         if finished is not None:
             self._on_run_done(finished)
-        elif self._cancel is not None:
+        elif scanned:
+            self._on_scan_done(stopped)
+        elif self._cancel is not None or self._scan is not None:
             self.after(60, self._drain)
 
     def _update_row(self, outcome: FileOutcome) -> None:
-        if not self._tree.exists(outcome.path):
+        if self._turbo.get() or not self._tree.exists(outcome.path):
             return
         label, tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))
         detail = f"{label} — {outcome.detail}" if outcome.detail else label
@@ -1414,32 +1801,59 @@ class App(_Root):
                         values=(outcome.filename, outcome.device_name or "—",
                                 outcome.serial or "—", detail))
 
+    #: How many recent progress marks the ETA is derived from. A whole-run
+    #: average is skewed for the rest of the run by whatever came first, and a
+    #: folder mixing .xls (~21ms a form) with .xlsx (~2ms) skews it badly.
+    ETA_WINDOW = 12
+
     def _update_progress(self, outcome: FileOutcome, index: int, total: int) -> None:
-        if self._tree.exists(outcome.path):
+        if not self._turbo.get() and self._tree.exists(outcome.path):
             self._tree.see(outcome.path)
 
         self._bar.set(index / total if total else 0)
-        self._lbl_stage.configure(text=f"Reading device {index} of {total}")
+        self._lbl_stage.configure(text=f"Reading device {index:,} of {total:,}")
         self._lbl_current.configure(text=outcome.filename)
 
-        elapsed = time.monotonic() - self._started_at
-        if 3 <= index < total:
-            remaining = (elapsed / index) * (total - index)
-            self._lbl_eta.configure(text=f"about {human_duration(remaining)} left")
-        elif index >= total:
+        now = time.monotonic()
+        self._marks.append((index, now))
+        del self._marks[:-self.ETA_WINDOW]
+
+        if index >= total:
+            # Every form is read; what is left is sorting, de-duplicating and
+            # writing, which on tens of thousands of rows takes long enough
+            # that "Reading device 20,001 of 20,001" would look stuck.
+            self._lbl_stage.configure(text="Writing the register…")
             self._lbl_eta.configure(text="finishing up")
+            return
+        if index < 3:
+            return
+
+        first_index, first_at = self._marks[0]
+        done, span = index - first_index, now - first_at
+        rate = done / span if done and span > 0 else 0
+        if rate > 0:
+            self._lbl_eta.configure(
+                text=f"about {human_duration((total - index) / rate)} left"
+                     f"   ·   {rate:,.0f}/s")
 
     def _on_run_done(self, result: RunResult) -> None:
+        # Stored by reference, not copied, so this costs a dict slot per file
+        # and nothing else — and it is what keeps the table truthful if Turbo
+        # is switched off after a run that never drew one.
         for outcome in result.outcomes:
             self._files[outcome.path] = outcome
         self._cancel = None
         self._enter_results(result)
 
     def _cancel_run(self) -> None:
-        if self._cancel is not None and not self._cancel.is_set():
-            self._cancel.set()
-            self._btn_cancel.configure(state="disabled", text="Stopping…")
-            self._lbl_stage.configure(text="Finishing the current device…")
+        """Stop whichever long job is in flight — a build, or a folder scan."""
+        for job, stage in ((self._cancel, "Finishing the current device…"),
+                           (self._scan, "Stopping the scan…")):
+            if job is not None and not job.is_set():
+                job.set()
+                self._btn_cancel.configure(state="disabled", text="Stopping…")
+                self._lbl_stage.configure(text=stage)
+                return
 
     # ── result actions ───────────────────────────────────────────────────────
 
@@ -1507,7 +1921,7 @@ class App(_Root):
         interface away mid-run would throw away the user's work and protects
         nothing, since the run was already authorised this morning.
         """
-        if (self._lock is None and self._cancel is None
+        if (self._lock is None and self._cancel is None and self._scan is None
                 and not access.is_unlocked_today(self._settings)):
             calist.log.warning("A new day has started — the access code is needed again.")
             self.show_lock()
@@ -1530,6 +1944,11 @@ class App(_Root):
                     "A register is still being built. Close anyway?"):
                 return
             self._cancel.set()
+        # A scan is interruptible work nobody would miss, so it goes quietly —
+        # but it still has to be told to stop, or its thread keeps walking a
+        # network share after the window is gone.
+        if self._scan is not None:
+            self._scan.set()
         self._remember()
         self.destroy()
 

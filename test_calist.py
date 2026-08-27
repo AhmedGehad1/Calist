@@ -6,7 +6,10 @@ couple of end-to-end runs against workbooks built on the fly.
 """
 
 import logging
+import os
 import threading
+import zipfile
+from pathlib import Path
 from datetime import datetime
 
 import pytest
@@ -460,6 +463,250 @@ def test_the_xray_reads_through_a_stub_tab_to_its_form(tmp_path):
     assert record["Status"] == "Pass"
 
 
+# ── reading the package directly ──────────────────────────────────────────────
+#
+# The reader goes at the sheet XML rather than through load_workbook, which
+# took ~500ms a form because it parses every tab and the whole styles table to
+# reach seven cells. These pin the parts of that which a fixture built with
+# openpyxl cannot reach on its own.
+
+_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_PKG = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+def _handmade_xlsx(path, sheets, shared=None, styles=None):
+    """Write an .xlsx entry by entry, without openpyxl.
+
+    Two shapes matter here and openpyxl cannot produce either. It writes every
+    string as an *inline* string, so a fixture built with it never exercises
+    the shared-string table — which is what Excel itself writes and what every
+    real form uses. And it cannot emit the ``<sheet r:id="">`` entries an older
+    macro-enabled workbook carries for its VBA modules.
+
+    ``sheets`` is a list of ``(name, rel_id, kind, body_xml)``. A blank rel_id
+    writes the broken entry, with no part behind it.
+    """
+    entries, rels = [], []
+    for index, (name, rel_id, kind, body) in enumerate(sheets, start=1):
+        if not rel_id:
+            continue
+        part = f"{kind}s/sheet{index}.xml"
+        rels.append(f'<Relationship Id="{rel_id}" Target="{part}" '
+                    f'Type="{_REL}/{kind}"/>')
+        entries.append((f"xl/{part}",
+                        f'<?xml version="1.0"?><worksheet xmlns="{_NS}">'
+                        f'{body}</worksheet>'))
+
+    listed = "".join(
+        f'<sheet name="{name}" sheetId="{i}" r:id="{rel_id}"/>'
+        for i, (name, rel_id, _, _) in enumerate(sheets, start=1))
+
+    entries.append(("xl/workbook.xml",
+                    f'<?xml version="1.0"?><workbook xmlns="{_NS}" '
+                    f'xmlns:r="{_REL}"><sheets>{listed}</sheets></workbook>'))
+    entries.append(("xl/_rels/workbook.xml.rels",
+                    f'<?xml version="1.0"?><Relationships xmlns="{_PKG}">'
+                    f'{"".join(rels)}</Relationships>'))
+    if shared is not None:
+        items = "".join(f"<si><t>{text}</t></si>" for text in shared)
+        entries.append(("xl/sharedStrings.xml",
+                        f'<?xml version="1.0"?><sst xmlns="{_NS}" '
+                        f'count="{len(shared)}">{items}</sst>'))
+    if styles is not None:
+        applied = "".join(f'<xf numFmtId="{n}"/>' for n in styles)
+        entries.append(("xl/styles.xml",
+                        f'<?xml version="1.0"?><styleSheet xmlns="{_NS}">'
+                        f'<cellXfs count="{len(styles)}">{applied}</cellXfs>'
+                        f'<dxfs count="0"/></styleSheet>'))
+
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, text in entries:
+            archive.writestr(name, text)
+    return str(path)
+
+
+def _rows(*cells):
+    return f'<row r="1">{"".join(cells)}</row>'
+
+
+def test_a_shared_string_is_looked_up(tmp_path):
+    """What Excel actually writes: the text lives in a separate table."""
+    path = _handmade_xlsx(
+        tmp_path / "f.xlsx",
+        [("Device data", "rId1", "worksheet",
+          f'<sheetData><row r="18"><c r="K18" t="s"><v>1</v></c></row>'
+          f'</sheetData>')],
+        shared=["not this one", "6061439WX0"])
+    assert calist.read_record(path, {"S.N": "K18"}) == {"S.N": "6061439WX0"}
+
+
+def test_a_self_closing_cell_does_not_swallow_the_next_one(tmp_path):
+    """A styled-but-empty cell must read blank, not steal its neighbour.
+
+    ``<c r="E18" s="168"/>`` is how Excel writes a formatted empty cell, and
+    matching it loosely runs straight past the "/" and on to the *next* cell's
+    "</c>" — so E18 silently returned F18's value.
+    """
+    path = _handmade_xlsx(
+        tmp_path / "f.xlsx",
+        [("Device data", "rId1", "worksheet",
+          '<sheetData><row r="18"><c r="E18" s="168"/>'
+          '<c r="F18" t="s"><v>0</v></c></row></sheetData>')],
+        shared=["the neighbour"])
+    record = calist.read_record(path, {"Model": "E18", "S.N": "F18"})
+    assert record == {"Model": "", "S.N": "the neighbour"}
+
+
+def test_a_vba_module_entry_does_not_shift_the_sheet_order(tmp_path):
+    """Older .xlsm files list their macro modules as sheets with no r:id."""
+    path = _handmade_xlsx(tmp_path / "f.xlsm", [
+        ("MainModule", "", None, ""),
+        ("Device data", "rId1", "worksheet",
+         '<sheetData><row r="18"><c r="K18" t="str"><v>XR-77341</v></c>'
+         '</row></sheetData>'),
+    ])
+    assert calist.read_record(path, {"S.N": "K18"}) == {"S.N": "XR-77341"}
+
+
+def test_a_leading_chartsheet_is_not_counted_as_a_sheet(tmp_path):
+    """Chartsheets are not worksheets; openpyxl keeps them apart and so do we.
+
+    Asserted on the sheet list rather than on a value, because a chartsheet
+    part holds no cells and would be skipped as empty either way — the list is
+    where dropping the rule would actually show, and it is what --inspect
+    prints.
+    """
+    path = _handmade_xlsx(tmp_path / "f.xlsx", [
+        ("Trend", "rId1", "chartsheet", ""),
+        ("Device data", "rId2", "worksheet",
+         '<sheetData><row r="18"><c r="K18" t="str"><v>XR-77341</v></c>'
+         '</row></sheetData>'),
+    ])
+    source = calist._open_workbook(path)
+    try:
+        assert source.sheet_names == ["Device data"]
+        assert source.sheet_name == "Device data"
+    finally:
+        source.close()
+    assert calist.read_record(path, {"S.N": "K18"}) == {"S.N": "XR-77341"}
+
+
+def test_a_dialogsheet_is_still_a_candidate_sheet(tmp_path):
+    """The X-ray workbook opens on one, and it must be skipped for emptiness
+    rather than by type — openpyxl counts dialogsheets among its worksheets."""
+    path = _handmade_xlsx(tmp_path / "f.xlsm", [
+        ("Waveform Dialog", "rId1", "dialogsheet",
+         '<sheetData><row r="1"><c r="B1" t="str"><v>stub</v></c></row>'
+         '</sheetData>'),
+        ("Data entry", "rId2", "worksheet",
+         '<sheetData><row r="18"><c r="K18" t="str"><v>never reached</v></c>'
+         '</row></sheetData>'),
+    ])
+    assert calist.read_record(path, {"S.N": "B1"}) == {"S.N": "stub"}
+
+
+def test_a_date_formatted_number_becomes_a_date(tmp_path):
+    """The styles table is only opened for a numeric cell a map asks for, so
+    this pins that the lazy read still finds the number format."""
+    path = _handmade_xlsx(
+        tmp_path / "f.xlsx",
+        [("Device data", "rId1", "worksheet",
+          '<sheetData><row r="16">'
+          '<c r="E16" s="1"><v>45306</v></c>'
+          '<c r="F16" s="0"><v>45306</v></c>'
+          '</row></sheetData>')],
+        styles=[0, 14])          # 14 is the built-in short date format
+    record = calist.read_record(path, {"Date": "E16", "S.N": "F16"})
+    assert record == {"Date": "2024-01-15 00:00:00", "S.N": "45306"}
+
+
+def test_escaped_text_is_decoded(tmp_path):
+    path = _handmade_xlsx(
+        tmp_path / "f.xlsx",
+        [("Device data", "rId1", "worksheet",
+          '<sheetData><row r="18"><c r="K18" t="str">'
+          '<v>Smith &amp; Sons &lt;GmbH&gt; #40</v></c></row></sheetData>')])
+    assert calist.read_record(path, {"S.N": "K18"}) == {
+        "S.N": "Smith & Sons <GmbH> #40"}
+
+
+def test_an_unreadable_file_raises_rather_than_reading_blank(tmp_path):
+    """A silent blank field is the failure mode --inspect exists to hunt, so
+    anything the reader cannot make sense of has to be loud."""
+    path = tmp_path / "G302-BB001-0526.xlsx"
+    path.write_bytes(b"this is not a zip")
+    with pytest.raises(Exception):
+        calist.read_record(str(path), {"S.N": "K18"})
+
+
+
+# ── finding forms in a folder ─────────────────────────────────────────────────
+#
+# The intake used to walk with rglob("*") and stat every entry, on the UI
+# thread. It also picked up the "~$" lock files Excel leaves beside any open
+# workbook, which are not workbooks at all — so a folder someone was working in
+# produced a row of failures for files nobody chose.
+
+def _tree(root, names):
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    return root
+
+
+def test_lock_files_are_not_forms():
+    assert not calist.is_source_file("~$G302-AGH001-0425.xlsx")
+    assert calist.is_source_file("G302-AGH001-0425.xlsx")
+
+
+def test_a_previous_run_output_is_not_a_form():
+    """The register lands among the sources, so selecting the folder twice
+    would otherwise feed the last run's output back in as an input."""
+    assert not calist.is_source_file(calist.OUTPUT_NAME)
+    assert not calist.is_source_file(calist.OUTPUT_NAME.upper())
+
+
+def test_only_excel_files_are_found(tmp_path):
+    _tree(tmp_path, ["a.xlsx", "b.xls", "c.xlsm", "notes.txt", "sheet.csv"])
+    found = {Path(p).name for p in calist.find_source_files(tmp_path)}
+    assert found == {"a.xlsx", "b.xls", "c.xlsm"}
+
+
+def test_the_scan_reaches_sub_folders(tmp_path):
+    _tree(tmp_path, ["top.xlsx", "ward/one.xlsx", "ward/lab/two.xlsx"])
+    found = {Path(p).name for p in calist.find_source_files(tmp_path)}
+    assert found == {"top.xlsx", "one.xlsx", "two.xlsx"}
+
+
+def test_the_scan_skips_lock_files(tmp_path):
+    _tree(tmp_path, ["G302-AGH001-0425.xlsx", "~$G302-AGH001-0425.xlsx"])
+    found = [Path(p).name for p in calist.find_source_files(tmp_path)]
+    assert found == ["G302-AGH001-0425.xlsx"]
+
+
+def test_the_scan_stops_when_cancelled(tmp_path):
+    _tree(tmp_path, [f"f{n}.xlsx" for n in range(20)])
+    cancel = threading.Event()
+    cancel.set()
+    assert list(calist.find_source_files(tmp_path, cancel)) == []
+
+
+def test_an_unreadable_folder_does_not_lose_the_rest(tmp_path, monkeypatch):
+    """One permission error deep in a tree must not cost the whole round."""
+    _tree(tmp_path, ["good.xlsx", "locked/hidden.xlsx"])
+    real = os.scandir
+
+    def refuse(path):
+        if Path(path).name == "locked":
+            raise PermissionError(13, "Access is denied")
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", refuse)
+    found = [Path(p).name for p in calist.find_source_files(tmp_path)]
+    assert found == ["good.xlsx"]
+
 # ── end-to-end ────────────────────────────────────────────────────────────────
 
 def _form(path, cells):
@@ -496,6 +743,72 @@ def workspace(tmp_path):
         _form(src / "Clinic-ZZZ003.xlsx", {"A1": "unknown"}),
     ]
     return files, str(template)
+
+
+
+# ── quiet mode and the structured duplicate report ────────────────────────────
+#
+# Turbo runs tens of thousands of forms, where a line per file makes the log
+# useless and the duplicate warnings are the thing worth keeping.
+
+def test_duplicates_are_reported_as_data_not_only_as_a_log_line():
+    records = [_sourced("ECG", "SN1", "D23-AGH001-0225.xlsx"),
+               _sourced("ECG", "SN1", "D23-AGH007-0225.xlsx")]
+    dropped = []
+    calist.deduplicate_records(records, dropped)
+
+    assert len(dropped) == 1
+    hit = dropped[0]
+    assert hit.serial == "SN1"
+    assert hit.dropped == "D23-AGH007-0225.xlsx"
+    assert hit.kept == "D23-AGH001-0225.xlsx"
+
+
+def test_collecting_duplicates_is_optional():
+    """Callers that only want the log must not have to pass a list."""
+    records = [_sourced("ECG", "SN1", "a.xlsx"), _sourced("ECG", "SN1", "b.xlsx")]
+    assert len(calist.deduplicate_records(records)) == 1
+
+
+def test_quiet_mode_drops_the_line_per_file(workspace, caplog):
+    files, template = workspace
+    with caplog.at_level(logging.INFO, logger="aggregator"):
+        calist.process_files(files, template, quiet=True)
+    assert "[OK]" not in caplog.text
+
+
+def test_quiet_mode_still_reports_every_problem(workspace, caplog):
+    """It is the successes that make a log unreadable, never the failures."""
+    files, template = workspace
+    with caplog.at_level(logging.INFO, logger="aggregator"):
+        calist.process_files(files, template, quiet=True)
+    assert "ZZZ" in caplog.text                  # the unknown-code form
+
+
+def test_a_loud_run_still_names_every_file(workspace, caplog):
+    files, template = workspace
+    with caplog.at_level(logging.INFO, logger="aggregator"):
+        calist.process_files(files, template)
+    assert "[OK]" in caplog.text
+
+
+def test_quiet_mode_writes_the_same_register(workspace, tmp_path):
+    """Logging less must not change a single row."""
+    files, template = workspace
+    (tmp_path / "loud").mkdir()
+    (tmp_path / "quiet").mkdir()
+
+    loud = calist.process_files(files, template, output_dir=tmp_path / "loud")
+    quiet = calist.process_files(files, template, output_dir=tmp_path / "quiet",
+                                 quiet=True)
+
+    assert loud.succeeded and quiet.succeeded
+
+    assert loud.rows_written == quiet.rows_written
+    rows = [[c.value for c in row]
+            for path in (loud.output_path, quiet.output_path)
+            for row in load_workbook(path).active.iter_rows(min_row=4, max_row=6)]
+    assert rows[:3] == rows[3:]
 
 
 def test_run_reports_every_file_and_writes_the_register(workspace):

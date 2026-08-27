@@ -21,17 +21,22 @@ import os
 import re
 import sys
 import threading
+import time
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
+from xml.etree.ElementTree import iterparse
 
 import xlrd
 from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Font
+from openpyxl.styles.numbers import BUILTIN_FORMATS, is_date_format
+from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import coordinate_to_tuple
+from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH, from_excel
 
 from device_config import DEVICE_CONFIGS
 
@@ -78,7 +83,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "1.3.3"
+__version__ = "1.4.0"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -144,6 +149,21 @@ class FileOutcome:
 
 
 @dataclass
+class Duplicate:
+    """A record dropped because its serial number was already recorded.
+
+    The two filenames are the point: the user has to open both to work out
+    which one is wrong, and the device type cannot tell them apart when a round
+    holds a dozen of the same model.
+    """
+
+    serial: str
+    device: str
+    dropped: str                # the file whose row was dropped
+    kept: str                   # the file that recorded the serial first
+
+
+@dataclass
 class RunResult:
     """The outcome of one full run."""
 
@@ -151,6 +171,9 @@ class RunResult:
     rows_written: int = 0
     outcomes: list[FileOutcome] = field(default_factory=list)
     duplicates_removed: int = 0
+    #: The dropped records themselves. The log carries the same facts; a
+    #: summary needs them in a form it can render without scraping text.
+    duplicates: list[Duplicate] = field(default_factory=list)
     second_rows_added: int = 0
     cancelled: bool = False
     error: str | None = None
@@ -295,127 +318,540 @@ def extract_device_code(filename: str) -> str | None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Finding forms in a folder
+# ──────────────────────────────────────────────────────────────────────────────
+
+#: Excel drops a lock file beside every workbook someone has open, named "~$"
+#: plus the workbook's name. They are not workbooks — opening one fails with
+#: "File is not a zip file" — so a folder anyone is working in used to produce
+#: a row of failures for files the user never chose.
+LOCK_PREFIX = "~$"
+
+#: Windows FILE_ATTRIBUTE_HIDDEN. os.scandir fills st_file_attributes straight
+#: from the directory listing on Windows, so testing it costs no extra call.
+_HIDDEN = 0x2
+
+
+def is_source_file(name: str) -> bool:
+    """Whether a filename found by scanning a folder is worth opening.
+
+    Deliberately not applied to files the user picked by hand: choosing a .docx
+    should still report "Unsupported format", because saying nothing at all
+    about a file someone explicitly selected is worse than an error row.
+    """
+    lowered = name.lower()
+    return (not name.startswith(LOCK_PREFIX)
+            and lowered != OUTPUT_NAME.lower()
+            and lowered.endswith(SUPPORTED_EXTENSIONS))
+
+
+def find_source_files(
+    folder: str | os.PathLike,
+    cancel: threading.Event | None = None,
+) -> Iterator[str]:
+    """Yield every form under ``folder``, depth first.
+
+    os.scandir hands back entries that already know file-from-directory and,
+    on Windows, their attributes too — so the extension test runs before any
+    stat and nothing is materialised in full. ``Path.rglob("*")`` followed by
+    ``is_file()`` costs a stat per entry instead: tolerable on a local disk,
+    minutes on a network share, and all of it on whichever thread called it.
+
+    Unreadable sub-folders are skipped rather than raising, so one permission
+    error in a deep tree cannot lose the rest of the round.
+    """
+    stack = [os.fspath(folder)]
+    while stack:
+        if cancel is not None and cancel.is_set():
+            return
+        try:
+            entries = os.scandir(stack.pop())
+        except OSError as exc:
+            log.debug("Skipped a folder while scanning: %s", exc)
+            continue
+
+        with entries:
+            while True:
+                try:
+                    entry = next(entries)
+                except StopIteration:
+                    break
+                except OSError as exc:              # pragma: no cover
+                    log.debug("Stopped reading a folder: %s", exc)
+                    break
+
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                        continue
+                    if not is_source_file(entry.name):
+                        continue
+                    if getattr(entry.stat(), "st_file_attributes", 0) & _HIDDEN:
+                        continue
+                except OSError:                     # vanished mid-scan
+                    continue
+                yield entry.path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Reading source workbooks
 # ──────────────────────────────────────────────────────────────────────────────
 
 CellGetter = Callable[[str], object]
 
+# ── The .xlsx/.xlsm package, read directly ────────────────────────────────────
+#
+# load_workbook() costs ~500ms on these forms — it parses every worksheet, the
+# whole styles table, the drawings and the calc chain, to reach seven cells.
+# Reading the package directly costs ~2ms: the workbook relationships, one
+# sheet's bytes, and the shared strings or the styles only when a wanted cell
+# turns out to need them.
+#
+# Everything below reproduces openpyxl's own answers deliberately — which sheet
+# it would have picked, how it renders a number or a date, how it looks through
+# a merged range. A whole-grid comparison against the old reader is the check
+# that keeps it honest; see the reader tests in test_calist.py.
 
-def _sheet_is_blank(sheet) -> bool:
-    """True only for an openpyxl sheet with no cells whatsoever.
+_MAIN_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_DOC_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
-    Conservative on purpose: a sheet carrying styling but no values reports a
-    dimension larger than A1 and is therefore kept, so this can only ever skip
-    a tab that could not have held the data.
+_WORKBOOK_PART = "xl/workbook.xml"
+_WORKBOOK_RELS = "xl/_rels/workbook.xml.rels"
+_SHARED_STRINGS_PART = "xl/sharedStrings.xml"
+_STYLES_PART = "xl/styles.xml"
+
+#: One cell element, matched from the offset of its own opening tag.
+#:
+#: The lazy quantifier on the attribute run is load-bearing. Greedy, it eats
+#: the "/" of a self-closing ``<c r="E18" s="168"/>``, then matches the ">"
+#: branch and swallows everything up to the *next* cell's ``</c>`` — silently
+#: returning a neighbouring cell's value. test_a_self_closing_cell_does_not_
+#: swallow_the_next_one pins this.
+_CELL_RE = re.compile(rb'<c r="[A-Z]+\d+"([^>]*?)(?:/>|>(.*?)</c>)', re.S)
+_CELL_TYPE_RE = re.compile(rb'\bt="([^"]+)"')
+_CELL_STYLE_RE = re.compile(rb'\bs="(\d+)"')
+_VALUE_RE = re.compile(rb'<v[^>]*>(.*?)</v>', re.S)
+_TEXT_RUN_RE = re.compile(rb'<t[^>]*>(.*?)</t>', re.S)
+_MERGE_RE = re.compile(rb'<mergeCell\s+ref="([^"]+)"')
+_OUTSIDE_A1_RE = re.compile(rb'<c r="(?!A1")')
+
+_ENTITY_RE = re.compile(rb'&(?:#(\d+)|#x([0-9a-fA-F]+)|(amp|lt|gt|quot|apos));')
+_NAMED_ENTITIES = {b"amp": b"&", b"lt": b"<", b"gt": b">",
+                   b"quot": b'"', b"apos": b"'"}
+
+
+def _unescape(raw: bytes) -> str:
+    """Decode the entities an XML parser would have decoded for us."""
+    if b"&" not in raw:
+        return raw.decode("utf-8")
+
+    def replace(match: re.Match) -> bytes:
+        decimal, hexadecimal, named = match.groups()
+        if decimal:
+            return chr(int(decimal)).encode("utf-8")
+        if hexadecimal:
+            return chr(int(hexadecimal, 16)).encode("utf-8")
+        return _NAMED_ENTITIES[named]
+
+    return _ENTITY_RE.sub(replace, raw).decode("utf-8")
+
+
+def _cast_number(text: str) -> int | float:
+    """openpyxl's rule for a numeric cell, reproduced.
+
+    Kept here rather than imported from openpyxl's private worksheet reader so
+    that a version bump cannot quietly change how a number reaches clean() —
+    "123456" must stay an int and "123456.0" a float, because that difference
+    is what ends up written into the register.
     """
-    return (sheet.max_row <= 1 and sheet.max_column <= 1
-            and sheet["A1"].value is None)
+    if "." in text or "E" in text or "e" in text:
+        return float(text)
+    return int(text)
 
 
-def _pick_sheet(sheets: list, is_blank) -> object:
-    """The first sheet that holds anything at all.
+def _sheet_has_content(data: bytes) -> bool:
+    """True unless this worksheet is unambiguously empty.
 
-    The rule used to be "always index 0", which is right for almost every form.
-    The X-ray workbook opens on an empty ``Waveform Dialog`` stub left behind
-    by its macros, with the real form on the next tab — so every mapped cell
-    read blank, on every X-ray, with no error anywhere.
-
-    Skipping is deliberately limited to sheets that are *unambiguously* empty.
-    Choosing by name would be worse: the data sheet is variously called Device
-    data, Data entry, Inserting data and Data device across the real forms, so
-    a name list would go stale, while "has no cells at all" cannot be the sheet
-    a cell map describes.
+    The openpyxl equivalent asked whether max_row/max_column reach past A1, or
+    A1 itself holds a value. Both count a *styled* but valueless cell, so this
+    looks for cell elements, not for values — a sheet carrying only formatting
+    is kept, exactly as before.
     """
-    for sheet in sheets:
-        if not is_blank(sheet):
-            return sheet
-    return sheets[0]
+    if _OUTSIDE_A1_RE.search(data):
+        return True
+    at = data.find(b'<c r="A1"')
+    if at < 0:
+        return False
+    match = _CELL_RE.match(data, at)
+    body = match.group(2) if match else None
+    return bool(body) and (b"<v" in body or b"<is" in body)
 
 
-@contextmanager
-def _open_source(filepath: str) -> Iterator[CellGetter]:
-    """Yield a function that reads a cell (by A1 reference) from the first sheet.
+class _XlsxSource:
+    """One worksheet of an .xlsx/.xlsm package, held as raw XML."""
 
-    Hides the difference between openpyxl (.xlsx/.xlsm) and xlrd (.xls) so that
-    both formats share one extraction path.
+    def __init__(self, filepath: str):
+        self._archive = zipfile.ZipFile(filepath)
+        try:
+            parts, self._epoch = self._workbook_parts()
+            self._data = self._populated_sheet(parts)
+            # Excel, LibreOffice and openpyxl all write r as the first
+            # attribute of a cell, and the lookups below rely on it. Two
+            # memchr scans (~0.02ms) prove it for the file in hand rather than
+            # assuming it, because the failure would otherwise be a silently
+            # blank field.
+            if self._data.count(b"<c ") != self._data.count(b'<c r="'):
+                raise ValueError(
+                    "cell references are not written where this reader can "
+                    "find them (unexpected attribute order)")
+            self._merges = self._merged_ranges()
+            self._strings: list[str] | None = None
+            self._date_styles: dict[int, bool] = {}
+        except Exception:
+            self._archive.close()
+            raise
 
-    Both readers resolve **merged cells**. The forms draw each answer as a box
-    spanning two columns, and a merged range stores its value only in the
-    top-left cell — every other cell in the range reads as empty. So a cell map
-    pointing at the second column of a box (``L17`` of a merged ``K17:L17``)
-    silently produced a blank field. Looking through to the anchor makes the
-    map work whichever cell of the box it names.
-    """
-    if Path(filepath).suffix.lower() == ".xls":
+    def close(self) -> None:
+        self._archive.close()
+
+    # ── package structure ────────────────────────────────────────────────────
+
+    def _workbook_parts(self) -> tuple[list[tuple[str, str]], datetime]:
+        """The worksheet names and parts, in the order openpyxl would list them.
+
+        Two rules matter and are easy to get wrong. An older .xlsm carries its
+        VBA modules as <sheet> entries with an empty r:id — openpyxl drops
+        those with a warning, so they must not shift the ordering here.
+        Chartsheets go to wb.chartsheets rather than wb.worksheets and are
+        skipped; **dialogsheets are not** — openpyxl counts them, and the X-ray
+        workbook opens on one.
+        """
+        targets: dict[str, tuple[str, str]] = {}
+        with self._archive.open(_WORKBOOK_RELS) as handle:
+            for _, element in iterparse(handle):
+                if element.tag == _PKG_REL_NS + "Relationship":
+                    kind = (element.get("Type") or "").rsplit("/", 1)[-1]
+                    targets[element.get("Id")] = (kind, element.get("Target"))
+
+        parts: list[tuple[str, str]] = []
+        epoch = WINDOWS_EPOCH
+        with self._archive.open(_WORKBOOK_PART) as handle:
+            for _, element in iterparse(handle):
+                if element.tag == _MAIN_NS + "workbookPr":
+                    if element.get("date1904") in ("1", "true"):
+                        epoch = MAC_EPOCH
+                elif element.tag == _MAIN_NS + "sheet":
+                    rel = element.get(_DOC_REL_NS + "id")
+                    if not rel:
+                        continue
+                    kind, target = targets.get(rel, (None, None))
+                    if target is None or kind == "chartsheet":
+                        continue
+                    parts.append((element.get("name") or "", _resolve_part(target)))
+
+        if not parts:
+            raise ValueError("workbook has no worksheets")
+        return parts, epoch
+
+    def _populated_sheet(self, parts: list[tuple[str, str]]) -> bytes:
+        """The first worksheet that holds anything at all.
+
+        Always reading sheet one is right for almost every form. The X-ray
+        workbook opens on an empty ``Waveform Dialog`` stub left behind by its
+        macros, with the real form on the next tab — so every mapped cell read
+        blank, on every X-ray, with no error anywhere.
+
+        The names are kept for --inspect, which has to be able to say which tab
+        it actually read; a diagnostic that names the wrong sheet is worse than
+        none.
+        """
+        self.sheet_names = [name for name, _ in parts]
+        self.sheet_name = self.sheet_names[0]
+        self.skipped_sheets: list[str] = []
+
+        first: bytes | None = None
+        for name, part in parts:
+            data = self._archive.read(part)
+            if first is None:
+                first = data
+            if _sheet_has_content(data):
+                self.sheet_name = name
+                return data
+            self.skipped_sheets.append(name)
+
+        self.skipped_sheets = []
+        return first if first is not None else b""
+
+    def merged_refs(self) -> list[str]:
+        """Every merged range on the sheet that was read, as A1 references."""
+        return sorted(
+            f"{get_column_letter(left)}{top}:{get_column_letter(right)}{bottom}"
+            for top, left, bottom, right in self._merges)
+
+    def _merged_ranges(self) -> list[tuple[int, int, int, int]]:
+        ranges = []
+        for ref in _MERGE_RE.findall(self._data):
+            start, _, end = ref.decode().partition(":")
+            top, left = coordinate_to_tuple(start)
+            bottom, right = coordinate_to_tuple(end or start)
+            ranges.append((top, left, bottom, right))
+        return ranges
+
+    # ── cells ────────────────────────────────────────────────────────────────
+
+    def _anchor(self, ref: str) -> str:
+        """Look a reference through to the top-left of any range covering it.
+
+        The forms draw each answer as a box spanning two columns, and a merged
+        range stores its value only in that top-left cell. A cell map naming
+        the second column of a box (``L17`` of a merged ``K17:L17``) otherwise
+        reads blank with no error anywhere — which is how the Ultrasound serial
+        number disappeared when that form was re-laid-out.
+        """
+        row, column = coordinate_to_tuple(ref)
+        for top, left, bottom, right in self._merges:
+            if top <= row <= bottom and left <= column <= right:
+                if row == top and column == left:
+                    return ref
+                return f"{get_column_letter(left)}{top}"
+        return ref
+
+    def values(self, refs: Iterable[str]) -> dict[str, object]:
+        """Read the given references, resolving merges and shared strings."""
+        anchors = {ref: self._anchor(ref) for ref in refs}
+
+        raw: dict[str, tuple[str, int, bytes | None]] = {}
+        for anchor in set(anchors.values()):
+            at = self._data.find(b'<c r="' + anchor.encode() + b'"')
+            if at < 0:
+                continue
+            match = _CELL_RE.match(self._data, at)
+            if match is None:
+                continue
+            attributes = match.group(1) or b""
+            kind = _CELL_TYPE_RE.search(attributes)
+            style = _CELL_STYLE_RE.search(attributes)
+            raw[anchor] = (kind.group(1).decode() if kind else "n",
+                           int(style.group(1)) if style else 0,
+                           match.group(2))
+
+        return {ref: self._value(*raw[anchor]) if anchor in raw else None
+                for ref, anchor in anchors.items()}
+
+    def _value(self, kind: str, style_id: int, body: bytes | None) -> object:
+        """Render one cell the way openpyxl's data_only reader would."""
+        if not body:
+            return None
+
+        if kind == "inlineStr":
+            if b"<rPh" in body:
+                # Phonetic runs; openpyxl drops them and keeps the base text.
+                # Rather than guess, say so — a wrong field is worse than a
+                # named failure.
+                raise ValueError("cell carries phonetic runs")
+            return "".join(_unescape(run) for run in _TEXT_RUN_RE.findall(body))
+
+        # data_only semantics: a formula cell yields its *cached* result, so a
+        # file written by a script and never opened in Excel has none.
+        match = _VALUE_RE.search(body)
+        if match is None:
+            return None
+        text = match.group(1)
+
+        if kind == "s":
+            return self._shared_string(int(text))
+        if kind == "b":
+            return bool(int(text))
+        if kind in ("str", "e", "d"):
+            return _unescape(text)
+
+        number = _cast_number(text.decode())
+        if style_id and self._is_date_style(style_id):
+            try:
+                return from_excel(number, self._epoch)
+            except (OverflowError, ValueError):
+                return "#VALUE!"
+        return number
+
+    # ── side parts, read only when a wanted cell needs them ──────────────────
+
+    def _shared_string(self, index: int) -> str:
+        if self._strings is None:
+            self._strings = self._read_shared_strings()
+        try:
+            return self._strings[index]
+        except IndexError:
+            return ""
+
+    def _read_shared_strings(self) -> list[str]:
+        try:
+            handle = self._archive.open(_SHARED_STRINGS_PART)
+        except KeyError:
+            return []
+        strings: list[str] = []
+        runs: list[str] = []
+        with handle:
+            for _, element in iterparse(handle, ("end",)):
+                if element.tag == _MAIN_NS + "t":
+                    runs.append(element.text or "")
+                elif element.tag == _MAIN_NS + "si":
+                    strings.append("".join(runs))
+                    runs.clear()
+                    element.clear()
+        return strings
+
+    def _is_date_style(self, style_id: int) -> bool:
+        """Whether this style's number format makes the cell a date.
+
+        Only reached for a numeric cell that a cell map actually asks for, so
+        the styles table — 184KB on these forms — is usually never read at all.
+        """
+        if style_id not in self._date_styles:
+            self._date_styles = self._read_date_styles()
+        return self._date_styles.get(style_id, False)
+
+    def _read_date_styles(self) -> dict[int, bool]:
+        try:
+            handle = self._archive.open(_STYLES_PART)
+        except KeyError:
+            # No styles table at all: nothing can be a date, and a missing
+            # part must not take the whole file down.
+            return {}
+
+        formats = dict(BUILTIN_FORMATS)
+        applied: list[int] = []
+        inside = False
+        with handle:
+            for event, element in iterparse(handle, ("start", "end")):
+                if event == "start":
+                    if element.tag == _MAIN_NS + "cellXfs":
+                        inside = True
+                    continue
+                if element.tag == _MAIN_NS + "numFmt":
+                    formats[int(element.get("numFmtId"))] = element.get("formatCode")
+                elif element.tag == _MAIN_NS + "cellXfs":
+                    break          # dxfs follows, and can be far larger
+                elif element.tag == _MAIN_NS + "xf" and inside:
+                    applied.append(int(element.get("numFmtId", 0)))
+                element.clear()
+        return {index: is_date_format(formats.get(number) or "")
+                for index, number in enumerate(applied)}
+
+
+def _resolve_part(target: str) -> str:
+    """A relationship target as a package path."""
+    if target.startswith("/"):
+        return target[1:]
+    return target if target.startswith("xl/") else "xl/" + target
+
+
+# ── .xls, through xlrd ────────────────────────────────────────────────────────
+
+class _XlsSource:
+    """One sheet of a legacy .xls, read through xlrd."""
+
+    def __init__(self, filepath: str):
         # formatting_info is what carries the merge list. It costs more memory
         # and some files refuse it, which must not turn into a read failure —
         # without it merged_cells is simply empty and behaviour is as before.
         try:
-            workbook = xlrd.open_workbook(filepath, formatting_info=True)
+            self._workbook = xlrd.open_workbook(filepath, formatting_info=True,
+                                                on_demand=True)
         except Exception:
             log.debug("No formatting info for %s; merges unresolved",
                       filepath, exc_info=True)
-            workbook = xlrd.open_workbook(filepath)
-        sheet = _pick_sheet(workbook.sheets(),
-                            lambda s: not (s.nrows and s.ncols))
-        merged = getattr(sheet, "merged_cells", ()) or ()
+            self._workbook = xlrd.open_workbook(filepath, on_demand=True)
+        self._sheet = self._populated_sheet()
+        self._merges = getattr(self._sheet, "merged_cells", ()) or ()
+
+    def close(self) -> None:
+        try:
+            self._workbook.release_resources()
+        except Exception:                                # pragma: no cover
+            pass
+
+    def _populated_sheet(self):
+        """The first sheet holding anything, loading one at a time.
+
+        workbook.sheets() would load every sheet up front, which is the whole
+        cost on_demand=True exists to avoid.
+        """
+        first = None
+        for index in range(self._workbook.nsheets):
+            sheet = self._workbook.sheet_by_index(index)
+            if first is None:
+                first = sheet
+            if sheet.nrows and sheet.ncols:
+                return sheet
+            if sheet is not first:
+                self._workbook.unload_sheet(index)
+        if first is None:
+            raise ValueError("workbook has no sheets")
+        return first
+
+    def values(self, refs: Iterable[str]) -> dict[str, object]:
+        return {ref: self._value(ref) for ref in refs}
+
+    def _value(self, ref: str) -> object:
+        row, column = coordinate_to_tuple(ref)
+        value = self._at(row, column)
+        if value not in (None, ""):
+            return value
+        # xlrd ranges are 0-based with exclusive upper bounds.
+        for top, bottom, left, right in self._merges:
+            if top <= row - 1 < bottom and left <= column - 1 < right:
+                return self._at(top + 1, left + 1)
+        return value
+
+    def _at(self, row: int, column: int) -> object:
+        try:
+            # Raw value: xlrd reports a date as a bare Excel serial number,
+            # which clean() renders as e.g. "45306.0".
+            return self._sheet.cell_value(row - 1, column - 1)
+        except IndexError:
+            return None
+
+
+def _open_workbook(filepath: str):
+    if Path(filepath).suffix.lower() == ".xls":
+        return _XlsSource(filepath)
+    return _XlsxSource(filepath)
+
+
+@contextmanager
+def _open_source(filepath: str) -> Iterator[CellGetter]:
+    """Yield a function that reads a cell (by A1 reference) from one workbook.
+
+    A compatibility seam, not the hot path: read_record asks for the whole cell
+    map in one call, because resolving merges once for the batch is what makes
+    a form cost two milliseconds instead of five hundred.
+    """
+    source = _open_workbook(filepath)
+    try:
+        cache: dict[str, object] = {}
 
         def get(ref: str) -> object:
-            row, col = coordinate_to_tuple(ref)
-
-            def at(r: int, c: int) -> object:
-                try:
-                    # Raw value: xlrd reports a date as a bare Excel serial
-                    # number, which clean() renders as e.g. "45306.0".
-                    return sheet.cell_value(r - 1, c - 1)
-                except IndexError:
-                    return None
-
-            value = at(row, col)
-            if value not in (None, ""):
-                return value
-            # xlrd ranges are 0-based with exclusive upper bounds.
-            for rlo, rhi, clo, chi in merged:
-                if rlo <= row - 1 < rhi and clo <= col - 1 < chi:
-                    return at(rlo + 1, clo + 1)
-            return value
+            if ref not in cache:
+                cache.update(source.values([ref]))
+            return cache.get(ref)
 
         yield get
-    else:
-        # data_only=True returns the *cached* result of any formula. A file
-        # written by a script and never opened in Excel has no cache, so those
-        # cells come back as None.
-        workbook = load_workbook(filepath, data_only=True)
-        try:
-            sheet = _pick_sheet(workbook.worksheets, _sheet_is_blank)
-
-            def get(ref: str) -> object:
-                cell = sheet[ref]
-                # openpyxl hands back a MergedCell for exactly the cells that
-                # are covered by a range but are not its anchor. Testing the
-                # type rather than an empty value means an ordinary blank cell
-                # reads as blank, precisely as before, and never picks up the
-                # text of some unrelated block it happens to sit inside.
-                if not isinstance(cell, MergedCell):
-                    return cell.value
-                for rng in sheet.merged_cells.ranges:
-                    if (rng.min_row <= cell.row <= rng.max_row
-                            and rng.min_col <= cell.column <= rng.max_col):
-                        return sheet.cell(rng.min_row, rng.min_col).value
-                return None
-
-            yield get
-        finally:
-            workbook.close()
+    finally:
+        source.close()
 
 
 def read_record(filepath: str, cell_map: dict[str, str]) -> Record:
     """Read every mapped cell out of one source file."""
-    with _open_source(filepath) as get:
-        return {
-            field: clean(get(ref)) if ref else ""
-            for field, ref in cell_map.items()
-        }
+    source = _open_workbook(filepath)
+    try:
+        values = source.values({ref for ref in cell_map.values() if ref})
+    finally:
+        source.close()
+    return {
+        field: clean(values.get(ref)) if ref else ""
+        for field, ref in cell_map.items()
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -440,11 +876,24 @@ def build_second_row(record: Record, second_row: dict) -> Record:
     return extra
 
 
+#: In quiet mode, how many files pass between progress lines. Low enough that
+#: a stalled run still looks different from a fast one, high enough that forty
+#: thousand forms produce a readable log rather than forty thousand lines.
+HEARTBEAT_EVERY = 500
+
+
+def _heartbeat(index: int, total: int, started: float) -> None:
+    elapsed = time.monotonic() - started
+    rate = index / elapsed if elapsed > 0 else 0
+    log.info("        read %s of %s  ·  %.0f/s", f"{index:,}", f"{total:,}", rate)
+
+
 def extract_records(
     source_files: Iterable[str],
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
     strict_names: bool = False,
+    quiet: bool = False,
 ) -> tuple[list[Record], list[FileOutcome]]:
     """Read every source file, returning the records and a per-file outcome.
 
@@ -452,11 +901,16 @@ def extract_records(
     checked between files, so a long run can be stopped without waiting for it
     to finish; files not reached are reported as CANCELLED. ``strict_names``
     enforces the house filename format, skipping anything that breaks it.
+
+    ``quiet`` drops the line-per-file commentary in favour of a heartbeat.
+    Problems are still reported in full — it is the forty thousand successes
+    that make a log unreadable, never the failures.
     """
     ordered = sorted(source_files)
     total = len(ordered)
     records: list[Record] = []
     outcomes: list[FileOutcome] = []
+    started = time.monotonic()
 
     def report(outcome: FileOutcome, index: int) -> None:
         outcomes.append(outcome)
@@ -513,20 +967,26 @@ def extract_records(
 
             records.append(record)
             rows = 1
-            log.info(
-                "[OK]    %s  →  %s (%s)  |  Model: %s  |  S/N: %s  |  Status: %s",
-                filename, config["device_name"], pre.device_code,
-                record.get("Model", ""), record.get("S.N", ""), record.get("Status", ""),
-            )
+            if quiet:
+                if index % HEARTBEAT_EVERY == 0:
+                    _heartbeat(index, total, started)
+            else:
+                log.info(
+                    "[OK]    %s  →  %s (%s)  |  Model: %s  |  S/N: %s  |  Status: %s",
+                    filename, config["device_name"], pre.device_code,
+                    record.get("Model", ""), record.get("S.N", ""),
+                    record.get("Status", ""),
+                )
 
             if "second_row" in config:
                 extra = build_second_row(record, config["second_row"])
                 records.append(extra)
                 rows = 2
-                log.info(
-                    "        ↳ 2nd row added: %s  |  Code: %s  |  Status: %s",
-                    extra["Device"], extra["Code"], extra["Status"],
-                )
+                if not quiet:
+                    log.info(
+                        "        ↳ 2nd row added: %s  |  Code: %s  |  Status: %s",
+                        extra["Device"], extra["Code"], extra["Status"],
+                    )
 
             # A dual-serial device carries its second number on its own line
             # for the spreadsheet; a table row wants it on one.
@@ -575,7 +1035,8 @@ def source_name(record: Record) -> str:
     return record.get("_source") or record.get("Code", "?")
 
 
-def deduplicate_records(records: list[Record]) -> list[Record]:
+def deduplicate_records(records: list[Record],
+                        dropped: list[Duplicate] | None = None) -> list[Record]:
     """Drop records that repeat a serial number.
 
     A device and its generated sub-module row are allowed to share one serial
@@ -615,6 +1076,8 @@ def deduplicate_records(records: list[Record]) -> list[Record]:
             log.warning(
                 "Duplicate serial '%s' — skipped %s, already recorded by %s%s",
                 serial, source, first, same)
+            if dropped is not None:
+                dropped.append(Duplicate(serial, device, source, first))
 
     return kept
 
@@ -647,7 +1110,16 @@ def resolve_output_path(source_files: list[str], template_file: str,
 
 
 def write_output(records: list[Record], template_file: str, output_path: Path) -> None:
-    """Fill a copy of the template with the records and save it."""
+    """Fill a copy of the template with the records and save it.
+
+    On a Turbo-scale run this is the long tail: ~2.5s to fill 38,000 rows and
+    ~7s for openpyxl to serialise them. A GUI caller sees stalls of up to half
+    a second in there — measured, and they sit inside workbook.save(), so
+    yielding the GIL around the fill loop does not touch them (tried; it moved
+    the worst stall 483ms → 416ms and cost a second on the write). What the
+    window needs is therefore to *say* what it is doing, which process_files
+    logs before calling this, not to pretend the pause is not happening.
+    """
     workbook = load_workbook(template_file)
     try:
         sheet = workbook.active
@@ -699,13 +1171,16 @@ def process_files(
     output_dir: str | os.PathLike | None = None,
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
+    quiet: bool = False,
 ) -> RunResult:
     """Run the full pipeline and report what happened.
 
     Always returns a RunResult; check ``.succeeded`` or ``.output_path``. A
     cancelled run writes nothing and comes back with ``cancelled=True``.
     ``strict_names`` skips any file whose name breaks the house format.
-    ``output_dir`` overrides where the register is written.
+    ``output_dir`` overrides where the register is written. ``quiet`` trades
+    the line-per-file log for a heartbeat, which is what makes a run of tens of
+    thousands readable.
     """
     rule = "─" * 55
     result = RunResult()
@@ -728,7 +1203,7 @@ def process_files(
         return result
 
     records, result.outcomes = extract_records(source_files, on_file, cancel,
-                                               strict_names)
+                                               strict_names, quiet)
     result.second_rows_added = sum(1 for o in result.outcomes if o.rows == 2)
     records = sort_records(records)
 
@@ -739,7 +1214,7 @@ def process_files(
 
     if deduplicate:
         before = len(records)
-        records = deduplicate_records(records)
+        records = deduplicate_records(records, result.duplicates)
         result.duplicates_removed = before - len(records)
         log.info("%d duplicate record(s) removed.", result.duplicates_removed) \
             if result.duplicates_removed else log.info("No duplicates found.")
@@ -749,6 +1224,7 @@ def process_files(
         log.warning("%s", result.error)
         return result
 
+    log.info("Writing %s row(s)…", f"{len(records):,}")
     try:
         write_output(records, template_file, output_path)
     except Exception as exc:
@@ -800,21 +1276,24 @@ def inspect_form(filepath: str) -> int:
         print(f"{field:<14}{ref:<7}{value if value else '(blank)'}")
 
     if path.suffix.lower() != ".xls":
-        workbook = load_workbook(filepath, data_only=True)
-        sheet = _pick_sheet(workbook.worksheets, _sheet_is_blank)
-        merges = sorted(str(r) for r in sheet.merged_cells.ranges)
-        skipped = [ws.title for ws in workbook.worksheets
-                   if ws is not sheet and _sheet_is_blank(ws)][:3]
-        print(f"\nsheet read: {sheet.title!r} "
-              f"(of {len(workbook.worksheets)}: "
-              f"{', '.join(ws.title for ws in workbook.worksheets[:6])}"
-              f"{' …' if len(workbook.worksheets) > 6 else ''})")
-        if skipped and workbook.worksheets[0] is not sheet:
-            print(f"skipped empty leading tab(s): {', '.join(skipped)}")
-        print(f"merged ranges: {len(merges)}")
-        if merges:
-            print("  " + ", ".join(merges[:24])
-                  + (" …" if len(merges) > 24 else ""))
+        # Asked of the reader itself, not of a second opinion: the whole point
+        # of this dump is to say what the pipeline saw.
+        source = _open_workbook(filepath)
+        try:
+            merges = source.merged_refs()
+            names = source.sheet_names
+            print(f"\nsheet read: {source.sheet_name!r} "
+                  f"(of {len(names)}: {', '.join(names[:6])}"
+                  f"{' …' if len(names) > 6 else ''})")
+            if source.skipped_sheets:
+                print("skipped empty leading tab(s): "
+                      f"{', '.join(source.skipped_sheets[:3])}")
+            print(f"merged ranges: {len(merges)}")
+            if merges:
+                print("  " + ", ".join(merges[:24])
+                      + (" …" if len(merges) > 24 else ""))
+        finally:
+            source.close()
 
     if blank:
         print(f"\n{len(blank)} field(s) read blank: {', '.join(blank)}")

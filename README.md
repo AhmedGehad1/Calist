@@ -254,7 +254,7 @@ code entered during a cooldown is still refused.
 <td>Template, last folder and every preference persist between sessions, so a repeat run is two clicks.</td></tr>
 
 <tr><td><b>Old and new Excel alike</b></td>
-<td><code>.xlsx</code> and <code>.xlsm</code> through openpyxl, legacy <code>.xls</code> through xlrd. One code path, both formats.</td></tr>
+<td><code>.xlsx</code> and <code>.xlsm</code> through a reader written for exactly this job, legacy <code>.xls</code> through xlrd. One code path, both formats.</td></tr>
 
 <tr><td><b>Fully scriptable</b></td>
 <td>The pipeline imports no GUI toolkit whatsoever, so the whole thing drives from plain Python for batch jobs and automation.</td></tr>
@@ -346,14 +346,16 @@ G302-AGH001-0425.xlsx
 
 ## Performance, measured not estimated
 
-Benchmarked on **300 real forms spanning five different device layouts**, on an ordinary desktop
-machine, and repeated to confirm the figures were not a fluke:
+Benchmarked on real forms spanning the full range of device layouts, on an ordinary desktop machine,
+and repeated to confirm the figures were not a fluke:
 
 <div align="center">
 
 | Operation | Result |
 |:---|:---|
-| Full run — 300 forms into 360 register rows | **≈ 5.5 seconds** (~55 forms/second) |
+| Reading one inspection form | **≈ 2 ms** (median; ~380 ms before) |
+| Full run — 20,000 forms into 38,804 register rows | **≈ 39 seconds** (~700 forms/second) |
+| Scanning a folder of 20,000 forms | **under 1 second**, window stays live |
 | Pre-flight validation of 300 filenames | **under 5 ms** (~14 µs each) |
 | Filename format check, per name | **≈ 0.7 µs** (1.5 million/second) |
 | Cold start of the packaged executable | **≈ 3–4 seconds** |
@@ -594,7 +596,7 @@ pip install pytest
 python -m pytest
 ```
 
-**114 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
+**135 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
 
 | Suite | Covers |
 |---|---|
