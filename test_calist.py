@@ -393,6 +393,73 @@ def test_the_two_ultrasound_serials_end_up_on_two_lines(tmp_path):
                         column=serial_col).value == "6061439WX0\n(982693WX4)"
 
 
+# ── which sheet gets read ─────────────────────────────────────────────────────
+#
+# "Always the first tab" was right for every form but one: the X-ray workbook
+# opens on an empty "Waveform Dialog" stub left by its macros, so every mapped
+# cell read blank on every X-ray.
+
+def _multi_sheet_form(path, sheets):
+    """sheets: list of (title, {ref: value}) in file order."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    for title, cells in sheets:
+        ws = wb.create_sheet(title)
+        for ref, value in cells.items():
+            ws[ref] = value
+    wb.save(path)
+    return str(path)
+
+
+def test_an_empty_leading_sheet_is_skipped(tmp_path):
+    path = _multi_sheet_form(tmp_path / "f.xlsx", [
+        ("Waveform Dialog", {}),
+        ("Data entry", {"K18": "XR-77341"}),
+    ])
+    assert calist.read_record(path, {"S.N": "K18"}) == {"S.N": "XR-77341"}
+
+
+def test_a_populated_first_sheet_still_wins(tmp_path):
+    """Never skip past a sheet that holds data, even if a later one does too."""
+    path = _multi_sheet_form(tmp_path / "f.xlsx", [
+        ("Device data", {"K18": "the right one"}),
+        ("Data entry", {"K18": "the wrong one"}),
+    ])
+    assert calist.read_record(path, {"S.N": "K18"}) == {"S.N": "the right one"}
+
+
+def test_a_workbook_of_empty_sheets_does_not_crash(tmp_path):
+    path = _multi_sheet_form(tmp_path / "f.xlsx", [("one", {}), ("two", {})])
+    assert calist.read_record(path, {"S.N": "K18"}) == {"S.N": ""}
+
+
+def test_the_xray_reads_through_a_stub_tab_to_its_form(tmp_path):
+    """The real BF shape: empty macro tab first, merged boxes on Data entry."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    wb.create_sheet("Waveform Dialog")
+    ws = wb.create_sheet("Data entry")
+    for ref, value in {"E16": "10-05-2026", "E18": "Multix Impact",
+                       "E20": "Siemens", "K18": "XR-77341",
+                       "K20": "TUBE-99812", "K22": "Radiology",
+                       "J27": "Pass"}.items():
+        ws[ref] = value
+    for row in (16, 18, 20, 22):
+        ws.merge_cells(f"E{row}:F{row}")
+        ws.merge_cells(f"K{row}:L{row}")
+    path = tmp_path / "G302-BF001-0526.xlsx"
+    wb.save(path)
+
+    record = calist.read_record(str(path), DEVICE_CONFIGS["BF"]["cells"])
+
+    assert record["S.N"] == "XR-77341"
+    assert record["S.N2"] == "TUBE-99812"
+    assert record["Model"] == "Multix Impact"
+    assert record["Manufacturer"] == "Siemens"
+    assert record["Location"] == "Radiology"
+    assert record["Status"] == "Pass"
+
+
 # ── end-to-end ────────────────────────────────────────────────────────────────
 
 def _form(path, cells):

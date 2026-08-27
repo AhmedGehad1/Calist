@@ -17,7 +17,7 @@ de-duplicated equipment register — automatically, without opening a single fil
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![Tests passing](https://img.shields.io/badge/tests-110%20passing-brightgreen)
+![Tests passing](https://img.shields.io/badge/tests-114%20passing-brightgreen)
 ![Device types](https://img.shields.io/badge/device%20types-57-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
@@ -594,11 +594,11 @@ pip install pytest
 python -m pytest
 ```
 
-**110 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
+**114 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
 
 | Suite | Covers |
 |---|---|
-| [`test_calist.py`](test_calist.py) — 68 tests | Filename parsing and format validation, value handling, merged-cell resolution, ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
+| [`test_calist.py`](test_calist.py) — 72 tests | Filename parsing and format validation, value handling, sheet selection, merged-cell resolution, ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
 | [`test_access.py`](test_access.py) — 35 tests | The daily code: known-date vectors, zero-padding, rejection of malformed input, midnight relocking, and cooldown escalation |
 | [`test_settings.py`](test_settings.py) — 7 tests | Preference persistence, including BOM-tolerant reading, corrupt files, and unwritable profiles |
 

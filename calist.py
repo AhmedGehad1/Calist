@@ -6,7 +6,9 @@ into a copy of a pre-defined template.
 The device type is read from the filename: everything after the first "-" is
 scanned for its leading letters, so "Clinic-AGH001.xlsx" yields the code "AGH".
 That code selects a cell map from device_config.py, which says where each field
-lives on that device's form. Data is always read from the first worksheet.
+lives on that device's form. Data is read from the first worksheet that holds
+anything — the X-ray workbook opens on an empty macro stub, and reading that
+one made every X-ray come out blank.
 
 Output columns (template column B onwards):
     Device | Manufacturer | Model | S.N | Location | Code | Date | Status
@@ -76,7 +78,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -299,6 +301,37 @@ def extract_device_code(filename: str) -> str | None:
 CellGetter = Callable[[str], object]
 
 
+def _sheet_is_blank(sheet) -> bool:
+    """True only for an openpyxl sheet with no cells whatsoever.
+
+    Conservative on purpose: a sheet carrying styling but no values reports a
+    dimension larger than A1 and is therefore kept, so this can only ever skip
+    a tab that could not have held the data.
+    """
+    return (sheet.max_row <= 1 and sheet.max_column <= 1
+            and sheet["A1"].value is None)
+
+
+def _pick_sheet(sheets: list, is_blank) -> object:
+    """The first sheet that holds anything at all.
+
+    The rule used to be "always index 0", which is right for almost every form.
+    The X-ray workbook opens on an empty ``Waveform Dialog`` stub left behind
+    by its macros, with the real form on the next tab — so every mapped cell
+    read blank, on every X-ray, with no error anywhere.
+
+    Skipping is deliberately limited to sheets that are *unambiguously* empty.
+    Choosing by name would be worse: the data sheet is variously called Device
+    data, Data entry, Inserting data and Data device across the real forms, so
+    a name list would go stale, while "has no cells at all" cannot be the sheet
+    a cell map describes.
+    """
+    for sheet in sheets:
+        if not is_blank(sheet):
+            return sheet
+    return sheets[0]
+
+
 @contextmanager
 def _open_source(filepath: str) -> Iterator[CellGetter]:
     """Yield a function that reads a cell (by A1 reference) from the first sheet.
@@ -323,7 +356,8 @@ def _open_source(filepath: str) -> Iterator[CellGetter]:
             log.debug("No formatting info for %s; merges unresolved",
                       filepath, exc_info=True)
             workbook = xlrd.open_workbook(filepath)
-        sheet = workbook.sheet_by_index(0)
+        sheet = _pick_sheet(workbook.sheets(),
+                            lambda s: not (s.nrows and s.ncols))
         merged = getattr(sheet, "merged_cells", ()) or ()
 
         def get(ref: str) -> object:
@@ -353,7 +387,7 @@ def _open_source(filepath: str) -> Iterator[CellGetter]:
         # cells come back as None.
         workbook = load_workbook(filepath, data_only=True)
         try:
-            sheet = workbook.worksheets[0]
+            sheet = _pick_sheet(workbook.worksheets, _sheet_is_blank)
 
             def get(ref: str) -> object:
                 cell = sheet[ref]
@@ -766,9 +800,17 @@ def inspect_form(filepath: str) -> int:
         print(f"{field:<14}{ref:<7}{value if value else '(blank)'}")
 
     if path.suffix.lower() != ".xls":
-        sheet = load_workbook(filepath, data_only=True).worksheets[0]
+        workbook = load_workbook(filepath, data_only=True)
+        sheet = _pick_sheet(workbook.worksheets, _sheet_is_blank)
         merges = sorted(str(r) for r in sheet.merged_cells.ranges)
-        print(f"\nsheet read: {sheet.title!r} (always the first tab)")
+        skipped = [ws.title for ws in workbook.worksheets
+                   if ws is not sheet and _sheet_is_blank(ws)][:3]
+        print(f"\nsheet read: {sheet.title!r} "
+              f"(of {len(workbook.worksheets)}: "
+              f"{', '.join(ws.title for ws in workbook.worksheets[:6])}"
+              f"{' …' if len(workbook.worksheets) > 6 else ''})")
+        if skipped and workbook.worksheets[0] is not sheet:
+            print(f"skipped empty leading tab(s): {', '.join(skipped)}")
         print(f"merged ranges: {len(merges)}")
         if merges:
             print("  " + ", ".join(merges[:24])

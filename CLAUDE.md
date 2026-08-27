@@ -12,7 +12,7 @@ inspection Excel forms and compiles them into one flat equipment register.
 ```powershell
 python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
-python -m pytest                # run the test suite (110 tests)
+python -m pytest                # run the test suite (114 tests)
 python -c "import calist"       # pipeline import check — pulls in no GUI
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
@@ -56,8 +56,8 @@ The pipeline is a chain of small functions orchestrated by
    of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`.
 2. `DEVICE_CONFIGS[code]["cells"]` — maps field names to A1 refs.
 3. [`read_record()`](calist.py#L243) — reads those cells via [`_open_source()`](calist.py#L211), a
-   context manager that hides the openpyxl/xlrd split behind one `get(ref)` function. **Always
-   worksheet index 0.**
+   context manager that hides the openpyxl/xlrd split behind one `get(ref)` function. Reads the
+   **first non-empty worksheet** — see *Which sheet gets read* below.
 4. [`clean()`](calist.py#L142) — renders raw cell values as output strings.
 5. [`build_second_row()`](calist.py#L256) — for configs with a `second_row` block, emits a sub-module
    row of the same physical unit.
@@ -118,6 +118,25 @@ that's where to fix it. Tests lock the current behaviour in, so a change there i
 
 `load_workbook(data_only=True)` returns *cached* formula results — a file written by a script and never
 opened in Excel yields `None` for those cells.
+
+### Which sheet gets read (this has already lost a whole device)
+
+The rule was **always `worksheets[0]`**, and it is right for almost every form. The X-ray workbook
+is the exception: it opens on an empty `Waveform Dialog` stub left behind by its macros, with the
+real form on the next tab. So every mapped cell of every X-ray read blank — silently, because a
+missing value is indistinguishable from a form that was left empty.
+
+`_pick_sheet()` now takes the **first sheet that holds anything at all**, and `_sheet_is_blank()`
+is deliberately strict: a sheet reporting a dimension larger than `A1`, or any value in `A1`, is
+kept. So this can only ever skip a tab that could not have held the data.
+
+**Do not switch this to matching sheet names.** Across the real templates the data sheet is called
+`Device data`, `Device Data`, `Data entry`, `Inserting data`, `Inserting Data` and `Data device`,
+and several workbooks carry *both* a `Device data` and a `Data entry` tab with different layouts —
+so a name list would pick the wrong one and would go stale on the next form revision.
+
+Verified against 29 real templates: 28 resolve to the same sheet as before, and only the X-ray
+changes — from `Waveform Dialog` to `Data entry`.
 
 ### Merged cells (this has already lost a field)
 
