@@ -312,9 +312,17 @@ finished with the drawer open. Three things follow from the change, and all thre
   window height to whichever block can use it — the hero while the app is empty, the table once it
   is not — by converting the slack into whole Treeview rows (`ROW_PX`) or hero pixels. It is
   incremental and self-correcting rather than computing exact chrome heights, clamped by
-  `MIN_ROWS`/`MAX_ROWS` and `MIN_HERO_H`, and capped by `MAX_FIT_PASSES` so a layout that cannot
-  land on an exact fit stops rescheduling itself. Call `_on_resize()` (debounced) after anything
-  that changes the page's shape — `_show_action`, `_toggle_log` and `_refresh_intake` all do.
+  `MIN_ROWS`/`MAX_ROWS` and `MIN_HERO_H`/`MAX_HERO_H`, and capped by `MAX_FIT_PASSES` so a layout
+  that cannot land on an exact fit stops rescheduling itself. Call `_on_resize()` (debounced) after
+  anything that changes the page's shape — `_show_action`, `_toggle_log` and `_refresh_intake` all
+  do.
+- **Two unit systems meet in the hero branch.** `CTkFrame.configure(height=)` and `cget("height")`
+  speak CustomTkinter's *logical* units; `slack` and every `winfo_*` measurement are *device*
+  pixels, 1.25× apart on this display. Comparing one against the other made a 380 cap render as
+  475 and stopped the loop settling. Convert with
+  `ctk.ScalingTracker.get_widget_scaling(widget)` and keep each side in its own units. The table
+  branch is exempt: a Treeview's `height` is a row count and `ROW_PX` is the raw ttk `rowheight`,
+  so both are already device pixels.
 - **The hero needs `grid_propagate(False)` and an explicit height.** Left to size itself it collapses
   to its contents, and the empty state is meant to fill the window.
 - **`CTkScrollableFrame` steals the mouse wheel.** It binds `<MouseWheel>` with `bind_all` and

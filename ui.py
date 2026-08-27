@@ -635,16 +635,9 @@ class App(_Root):
 
         ctk.CTkLabel(self._hero, text="Add your devices", text_color=TEXT,
                      font=ctk.CTkFont(FONT, 24, "bold")).grid(row=2, column=0)
-        ctk.CTkLabel(
-            self._hero,
-            text=("Drop a folder here, or browse for one, to build the register"
-                  if HAS_DND else
-                  "Choose the folder holding your device inspection forms"),
-            text_color=MUTED, font=ctk.CTkFont(FONT, 13),
-        ).grid(row=3, column=0, pady=(6, 0))
 
         buttons = ctk.CTkFrame(self._hero, fg_color="transparent")
-        buttons.grid(row=4, column=0, pady=(22, 0))
+        buttons.grid(row=4, column=0, pady=(20, 0))
         ctk.CTkButton(buttons, text="Add folder", width=190, height=50,
                       corner_radius=11, fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
                       font=ctk.CTkFont(FONT, 15, "bold"), command=self._add_folder
@@ -653,19 +646,6 @@ class App(_Root):
                       corner_radius=11, fg_color=SURFACE_2, hover_color=BORDER,
                       text_color=TEXT, font=ctk.CTkFont(FONT, 14),
                       command=self._add_files).pack(side="left")
-
-        ctk.CTkLabel(
-            self._hero,
-            text="Picking a folder adds every Excel file inside it, "
-                 "including files in subfolders.",
-            text_color=FAINT, font=ctk.CTkFont(FONT, 12),
-        ).grid(row=5, column=0, pady=(20, 0))
-        ctk.CTkLabel(
-            self._hero,
-            text="Each one is checked on arrival, so an unrecognised device "
-                 "shows up before you build — not after.",
-            text_color=FAINT, font=ctk.CTkFont(FONT, 12),
-        ).grid(row=6, column=0, pady=(3, 0))
 
         # ── slim bar ─────────────────────────────────────────────────────────
         self._drop_slim = ctk.CTkFrame(self._intake, fg_color="transparent")
@@ -795,28 +775,28 @@ class App(_Root):
             font=ctk.CTkFont(FONT, 12), command=self._pick_output_folder)
         self._btn_dest.grid(row=1, column=2, padx=(10, 18), pady=(0, 6))
 
+        # Both switches share one row: dedup left, filename format hard right.
+        # The weighted spacer column between them is what pins the second one
+        # to the edge as the window widens.
+        switches = ctk.CTkFrame(panel, fg_color="transparent")
+        switches.grid(row=2, column=0, columnspan=3, sticky="ew",
+                      padx=(18, 18), pady=(6, 14))
+        switches.grid_columnconfigure(0, weight=1)
+
         self._switch_dedup = ctk.CTkSwitch(
-            panel, text="Remove duplicate serial numbers", variable=self._dedup,
+            switches, text="Remove duplicate serial numbers", variable=self._dedup,
             font=ctk.CTkFont(FONT, 12), text_color=TEXT, progress_color=PRIMARY,
             button_color=TEXT, fg_color=BORDER, command=self._remember,
         )
-        self._switch_dedup.grid(row=2, column=0, columnspan=3, sticky="w",
-                                padx=(18, 0), pady=(4, 2))
+        self._switch_dedup.grid(row=0, column=0, sticky="w")
 
         self._switch_strict = ctk.CTkSwitch(
-            panel, text=f"Accept only filenames like  {FILENAME_EXAMPLE}",
+            switches, text=f"Accept only filenames like  {FILENAME_EXAMPLE}",
             variable=self._strict, font=ctk.CTkFont(FONT, 12), text_color=TEXT,
             progress_color=PRIMARY, button_color=TEXT, fg_color=BORDER,
             command=self._on_strict_toggled,
         )
-        self._switch_strict.grid(row=3, column=0, columnspan=3, sticky="w",
-                                 padx=(18, 0), pady=(2, 2))
-
-        self._lbl_format = ctk.CTkLabel(
-            panel, text="site code · device code and number · month and year",
-            text_color=FAINT, anchor="w", font=ctk.CTkFont(FONT, 11))
-        self._lbl_format.grid(row=4, column=0, columnspan=3, sticky="w",
-                              padx=(66, 0), pady=(0, 14))
+        self._switch_strict.grid(row=0, column=1, sticky="e", padx=(24, 0))
 
     def _build_action(self) -> None:
         self._action = ctk.CTkFrame(self._page, fg_color="transparent")
@@ -1156,7 +1136,10 @@ class App(_Root):
     #: into whole table rows.
     ROW_PX = 32
     MIN_ROWS, MAX_ROWS = 5, 40
-    MIN_HERO_H = 330
+    #: The hero absorbs spare height, but only up to a point — past MAX it is
+    #: just an expanse of empty card, so the leftover is left below the panel
+    #: instead. MIN is a little above the badge-title-buttons stack.
+    MIN_HERO_H, MAX_HERO_H = 230, 380
     #: Cap on the settle loop below, so a layout that cannot converge on an
     #: exact fit stops oscillating instead of rescheduling itself forever.
     MAX_FIT_PASSES = 6
@@ -1199,8 +1182,16 @@ class App(_Root):
         else:
             if abs(slack) < 10:
                 return
-            wanted = max(self.MIN_HERO_H, self._hero.winfo_reqheight() + slack)
-            if wanted != self._hero.winfo_reqheight():
+            # Two unit systems meet here. CTkFrame.configure(height=) takes
+            # CustomTkinter's logical units and cget gives them back, while
+            # slack and every winfo_* measurement are device pixels — 1.25x
+            # apart on this display. Mixing them made a 380 cap render as 475
+            # and kept the loop from ever settling.
+            scale = ctk.ScalingTracker.get_widget_scaling(self._hero)
+            current = self._hero.cget("height")
+            wanted = min(self.MAX_HERO_H,
+                         max(self.MIN_HERO_H, current + slack / scale))
+            if abs(wanted - current) >= 4:
                 self._hero.configure(height=wanted)
                 self._fit_job = self.after(30, self._fit_to_window)
 
