@@ -90,14 +90,26 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # ── Imaging: a second serial (tube / probe) shifts Location down ──────────
     "BB": {"device_name": "Ultrasound", "cells": form(17, "H30", col="F", val="L", extra={"S.N2": "L21"})},
     "BF": {"device_name": "X-ray",      "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
-    # NOTE: identical to BF. The trailing "()" looks like an unfinished edit —
-    # confirm what this code is meant to be called before the next run.
-    "CA": {"device_name": "X-ray ()",   "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
+    # Was "X-ray ()" — an unfinished edit this file carried a TODO about. The
+    # site's master code list settles it: CA is the dental x-ray. It shares BF's
+    # layout, which is why it was copied from it in the first place.
+    "CA": {"device_name": "Dental X-Ray", "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
     "EA": {"device_name": "C-Arm",      "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
 
     # ── Forms using the D/J columns ───────────────────────────────────────────
     "AF": {"device_name": "ECG",          "cells": form(32, "F41", col="D", val="J")},
-    "AL": {"device_name": "Phototherapy", "cells": form(28, "F37", col="D", val="J")},
+    # This file's own TODO listed Phototherapy as unverified, and the import
+    # bore that out: ~670 files no layout could read. Two are in circulation —
+    # the same rows with an extra line above the date, and one shifted seven
+    # rows down. Both read off the printed labels.
+    "AL": {
+        "device_name": "Phototherapy",
+        "cells": form(28, "F37", col="D", val="J"),
+        "alt_cells": [
+            form(28, "J36", col="D", val="J", date_gap=4),
+            form(35, "J43", col="D", val="J", date_gap=4),
+        ],
+    },
 
     # ── Standard E/K forms ────────────────────────────────────────────────────
     "AC": {"device_name": "Defibrillator",          "cells": form(15, "G24")},
@@ -107,7 +119,13 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AH": {"device_name": "SPO2",                   "cells": form(14, "G27")},
     "EE": {"device_name": "Flowmeter",              "cells": form(17, "G31")},
     "GP": {"device_name": "Holter machines",        "cells": form(18, "G26")},
-    "DV": {"device_name": "OR light",               "cells": form(15, "G24")},
+    # Named "OR light" here; the master code list calls it a light source.
+    # ~400 of the 1,005 files use the ordinary E/K block instead of row 15.
+    "DV": {
+        "device_name": "Light source",
+        "cells": form(15, "G24"),
+        "alt_cells": [form(18, "K22")],
+    },
     "AS": {"device_name": "Centrifuge",             "cells": form(18, "K25")},
     "AJ": {"device_name": "Suction",                "cells": form(23, "G32")},
     "AM": {"device_name": "Ventilator",             "cells": form(17, "G33")},
@@ -139,8 +157,19 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AD": {"device_name": "Pacemaker",              "cells": form(22, "G31")},
     "AV": {"device_name": "Elisa reader",           "cells": form(18, "K22")},
     "FE": {"device_name": "Nebulizer",              "cells": form(17, "K31")},
-    "AO": {"device_name": "Infrared",               "cells": form(18, "H32")},
-    "GC": {"device_name": "Portable Data Logger",   "cells": form(20, "G33")},
+    # Was "Infrared", which is what CK is. The master code list has AO as the
+    # patient thermometer, and two codes sharing one name was the clue that one
+    # of them had been copied from the other.
+    "AO": {"device_name": "Thermometer, patient",   "cells": form(18, "H32")},
+    # A second layout sits one row up with an extra line above the date. Its
+    # status cell carries no printed label, so K23 follows the +4 offset every
+    # other form of this shape uses — unverified, and only the serial and model
+    # decide whether a layout is accepted anyway.
+    "GC": {
+        "device_name": "Portable Data Logger",
+        "cells": form(20, "G33"),
+        "alt_cells": [form(19, "K23", date_gap=4)],
+    },
     "DA": {"device_name": "Shaker",                 "cells": form(18, "H29")},
     "GI": {"device_name": "Bacteria Analyzer",      "cells": form(18, "K22")},
     "ED": {"device_name": "Heart lung Machine",     "cells": form(15, "G43")},
@@ -194,15 +223,27 @@ DEVICE_CONFIGS: dict[str, dict] = {
     },
 
     # ── Forms with an extra line above the Date (date_gap=4) ──────────────────
-    "BZ": {"device_name": "Syringe",                "cells": form(26, "G35", date_gap=4)},
+    # The syringe-pump form drifted by a row in each direction over the years.
+    # The original map is row 26 and stays primary; a four-year import found
+    # ~820 files it could not read, and probing those showed rows 25 and 27 in
+    # circulation. Confirmed against the printed labels, not inferred.
+    "BZ": {
+        "device_name": "Syringe",
+        "cells": form(26, "G35", date_gap=4),
+        "alt_cells": [
+            form(27, "K35", date_gap=4),
+            form(25, "K33", date_gap=4),
+            # Same rows as the primary, but the status sits in K rather than G.
+            form(26, "K34", date_gap=4),
+        ],
+    },
     "CE": {"device_name": "Sphygmomanometer",       "cells": form(47, "H59", date_gap=4)},
     "CB": {"device_name": "Digital blood pressure", "cells": form(18, "G26", date_gap=4)},
     "AE": {"device_name": "ESU",                    "cells": form(15, "G24", date_gap=4)},
     "BL": {"device_name": "Autoclave",              "cells": form(18, "K22", date_gap=4)},
     "AN": {"device_name": "Thermo",                 "cells": form(18, "H32", date_gap=4)},
     "EC": {"device_name": "Laminar flow",           "cells": form(18, "F31", date_gap=4)},
-    # NOTE: same device_name as "AO" above but a different Status cell.
-    "CK": {"device_name": "Infrared",               "cells": form(18, "F31", date_gap=4)},
+    "CK": {"device_name": "Infrared lamp",          "cells": form(18, "F31", date_gap=4)},
 
     # ── Odd one out ───────────────────────────────────────────────────────────
     # NOTE: Location is K19. Every other standard form puts it 2 rows below the

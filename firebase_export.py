@@ -66,6 +66,7 @@ from calist import (
     read_record,
 )
 from device_config import DEVICE_CONFIGS
+from device_names import DEVICE_NAMES
 
 # ──────────────────────────────────────────────────────────────────────────────
 # What the app expects
@@ -135,28 +136,27 @@ FOLDER_CATEGORIES: dict[str, str] = {
     "معهد ناصر": CATEGORY_OTHER,
 }
 
-#: Device codes whose *identity* is known but whose form cannot be read yet.
-#:
-#: Deliberately kept here rather than in ``device_config``. Adding one there
-#: without a correct cell map would make Calist emit a register row full of
-#: whatever happens to sit at those coordinates — worse than reporting the file
-#: as unrecognised, because a plausible-looking wrong row does not announce
-#: itself. These import with the device named and ``needsAttention`` set, so
-#: nothing is lost and nothing is invented.
-#:
-#: Why each one is here:
-#:   FC  the first sheet is an Electrical Safety Test page; the equipment data
-#:       lives on another sheet, and Calist reads only the first
-#:   BD  the workbook is a TRIAD "Mammo Linear Pack Correction" calculator,
-#:       not an inspection form at all
-#:   CD  three different layouts across the 88 files, none dominant
-#:   SK  skipped at the author's request, pending identification
-NAMED_ONLY: dict[str, str] = {
-    "FC": "High Flow Nasal Cannula",
-    "BD": "Mammography",
-    "CD": "Endoscopy Set",
-    "SK": "Unidentified (SK)",
-}
+def named_only(code: str) -> str | None:
+    """The device a code names, when there is no cell map to read its form.
+
+    Every code in the site's master list that ``device_config`` has no layout
+    for. Such a record still carries the right device type, the site, the date
+    and the file — most of what an inventory needs — and says plainly that its
+    readings could not be extracted.
+
+    **Deliberately not merged into ``device_config``.** A code there without a
+    correct cell map would make Calist emit a register row full of whatever
+    happens to sit at those coordinates, which is worse than reporting the file
+    as unrecognised: a plausible-looking wrong row does not announce itself.
+
+    This began as four codes typed by hand. The master list turned it into
+    ~110, which is the difference between a thousand archive files importing as
+    "unknown device" and importing as the device they actually are.
+    """
+    key = code.strip().upper()
+    if not key or key in DEVICE_CONFIGS:
+        return None
+    return DEVICE_NAMES.get(key)
 
 #: Files that are not inspection forms and must never become records.
 #:
@@ -628,14 +628,28 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
                 form.tag = stem_match.group("tag").upper()
                 form.month = int(stem_match.group("mm"))
                 form.filed_yy = int(stem_match.group("yy"))
+                named_year = 2000 + form.filed_yy
+
                 # A file dated December 2022 living in the 2023 folder is
-                # normal — it is work filed in the 2023 round. Both facts are
-                # kept: the filename dates the calibration, the folder records
-                # the round. Only note it when they differ, so the report shows
-                # how often it happens rather than asserting one is wrong.
-                if 2000 + form.filed_yy != year:
+                # normal — it is work filed in the 2023 round. A file dated
+                # January 2026 in the 2025 folder is a round that ran over the
+                # new year. Both are real, and both are simply noted.
+                #
+                # A file dated *more than a year after* its round is not real.
+                # The archive holds names ending 2032, 2033 and 2055, which are
+                # plainly mistyped: a calibration cannot be filed years before
+                # it happened. The folder year is the trustworthy half, so the
+                # date falls back to it and the original is recorded.
+                if named_year > year + 1:
                     form.attention = (
-                        f"dated {form.month:02d}/{2000 + form.filed_yy}, "
+                        f"filename says {form.month:02d}/{named_year}, which is "
+                        f"after the {year} round it was filed in — treated as "
+                        f"a typo for {year}"
+                    )
+                    form.filed_yy = year % 100
+                elif named_year != year:
+                    form.attention = (
+                        f"dated {form.month:02d}/{named_year}, "
                         f"filed in the {year} round"
                     )
 
@@ -643,13 +657,13 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
             if outcome.status == READY:
                 form.device_code = outcome.device_code or ""
                 form.device_name = DEVICE_CONFIGS[form.device_code]["device_name"]
-            elif (extract_device_code(name) or "").upper() in NAMED_ONLY:
+            elif named_only(extract_device_code(name) or ""):
                 # Identified, but not readable. The record still carries the
                 # right device type, the file and the site — which is most of
                 # what the inventory needs — and says plainly that its readings
                 # could not be extracted.
                 form.device_code = (extract_device_code(name) or "").upper()
-                form.device_name = NAMED_ONLY[form.device_code]
+                form.device_name = named_only(form.device_code) or ""
                 form.attention = "device known, form layout not mapped yet"
             else:
                 form.device_code = (extract_device_code(name) or "").upper()
@@ -1408,7 +1422,7 @@ def analyse(forms: list[ParsedForm], codes: dict[str, dict], root: Path) -> Repo
         if form.device_code in DEVICE_CONFIGS:
             report.known_device += 1
             report.device_counts[form.device_name] += 1
-        elif form.device_code in NAMED_ONLY:
+        elif named_only(form.device_code):
             report.named_only[form.device_code] += 1
         elif form.device_code:
             if form.conforms:
@@ -1526,7 +1540,7 @@ def render(report: Report) -> str:
         add("  needsAttention rather than guessed at.")
         add("")
         for code, count in report.named_only.most_common():
-            add(f"    {code:<10} {count:>7,}   {NAMED_ONLY[code]}")
+            add(f"    {code:<10} {count:>7,}   {named_only(code)}")
 
     if report.unknown_from_bad_names:
         rule("Not device codes — badly named files")
@@ -1805,12 +1819,38 @@ def main(argv: list[str] | None = None) -> int:
                 print("   none found")
                 continue
 
+            # When the code already has a map, sample the files that map
+            # *cannot* read. Sampling broadly finds the layout already
+            # configured and tells you nothing — which is exactly what happened
+            # with the syringe form, whose failures turned out to sit a row
+            # either side of the map in use.
+            #
+            # Forms genuinely do drift: the same device gets a new template
+            # between rounds, and automated exports shift the block again.
+            pool = matches
+            if code in DEVICE_CONFIGS:
+                failing = []
+                for form_ in matches[:: max(1, len(matches) // 60)]:
+                    try:
+                        if read_best(form_.path, DEVICE_CONFIGS[code])[1] < 0:
+                            failing.append(form_)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if len(failing) >= 4:
+                        break
+                if failing:
+                    pool = failing
+                    print(f"   sampling {len(failing)} file(s) the current map "
+                          f"cannot read")
+                else:
+                    print("   the current map reads every file sampled")
+
             # Spread the sample across the archive: the same device filed in
             # 2023 and 2026 may be on two different versions of the form, and a
             # sample taken from one folder would never show it.
-            step = max(1, len(matches) // 4)
+            step = max(1, len(pool) // 4)
             agreed: dict[str, Counter] = defaultdict(Counter)
-            for form_ in matches[::step][:4]:
+            for form_ in pool[::step][:4]:
                 found = discover_map(form_.path)
                 print(f"   {Path(form_.filename).name[:34]:<36} "
                       f"{ {k: v for k, v in sorted(found.items())} }")
