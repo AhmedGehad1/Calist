@@ -835,29 +835,58 @@ BATCH_SIZE = 500
 KEY_ENV = "CALIST_FIREBASE_KEY"
 
 
+def using_emulator() -> bool:
+    """True when the Firestore emulator is the target rather than the project.
+
+    `firebase-admin` honours FIRESTORE_EMULATOR_HOST on its own; this exists so
+    the tool can *say* which one it is about to write to. Writing to production
+    when you believed you were on the emulator is the expensive mistake, and it
+    is silent unless something announces it.
+    """
+    return bool(os.environ.get("FIRESTORE_EMULATOR_HOST", "").strip())
+
+
 def connect(project: str):
     """Open an admin connection, or explain exactly what is missing.
 
     Imported lazily so that ``--dry-run`` and ``--verify-maps`` — the modes that
     matter most and touch no network — keep working on a machine that has never
     installed firebase-admin.
+
+    Against the emulator no credentials are needed at all, which is a feature
+    rather than a shortcut: experimenting should not require handling the key
+    that grants write access to four years of real records.
     """
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore, storage
+    except ImportError:
+        raise SystemExit("firebase-admin is not installed.  pip install firebase-admin")
+
+    if using_emulator():
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(
+                options={
+                    "projectId": project,
+                    "storageBucket": f"{project}.firebasestorage.app",
+                }
+            )
+        return firestore.client(), storage
+
     key_path = os.environ.get(KEY_ENV, "").strip().strip('"')
     if not key_path:
         raise SystemExit(
             f"{KEY_ENV} is not set.\n"
             f"  Point it at your service-account JSON, kept OUTSIDE this repo:\n"
             f'    setx {KEY_ENV} "C:\\keys\\medcalpro-admin.json"\n'
-            f"  Then open a new terminal so the variable is visible."
+            f"  Then open a new terminal so the variable is visible.\n\n"
+            f"  Or work against the emulator instead, which needs no key and\n"
+            f"  costs nothing:\n"
+            f"    firebase emulators:start --only firestore,auth,storage\n"
+            f"    set FIRESTORE_EMULATOR_HOST=localhost:8080"
         )
     if not Path(key_path).is_file():
         raise SystemExit(f"{KEY_ENV} points at {key_path}, which does not exist.")
-
-    try:
-        import firebase_admin
-        from firebase_admin import credentials, firestore, storage
-    except ImportError:
-        raise SystemExit("firebase-admin is not installed.  pip install firebase-admin")
 
     if not firebase_admin._apps:
         firebase_admin.initialize_app(
@@ -1618,24 +1647,59 @@ def _run_push(args, root: Path) -> int:
         int(y) for y in str(args.storage_years).split(",") if y.strip().isdigit()
     }
 
+    records = len({f.doc_id for f in forms})
+    customers = len({f.customer_code for f in forms if f.customer_code})
+    files = len([f for f in forms if f.year in storage_years]) if args.storage else 0
+    emulator = using_emulator()
+
     print()
-    print("ABOUT TO WRITE")
-    print(f"  project        {args.project}")
-    print(f"  calibrations   {len({f.doc_id for f in forms}):,} documents into "
-          f"'{CALIBRATIONS}'  (from {len(forms):,} files)")
-    print(f"  customers      {len({f.customer_code for f in forms if f.customer_code}):,}"
-          f" documents into '{CUSTOMERS}'")
+    if emulator:
+        print("ABOUT TO WRITE — EMULATOR "
+              f"({os.environ['FIRESTORE_EMULATOR_HOST']})")
+        print("  Nothing here is billable and nothing reaches the real project.")
+    else:
+        print(f"ABOUT TO WRITE — LIVE PROJECT '{args.project}'  ** THIS COSTS MONEY **")
+    print(f"  calibrations   {records:,} documents into '{CALIBRATIONS}'"
+          f"  (from {len(forms):,} files)")
+    print(f"  customers      {customers:,} documents into '{CUSTOMERS}'")
     if args.storage:
-        n = len([f for f in forms if f.year in storage_years])
-        print(f"  files          {n:,} workbooks into Storage "
+        print(f"  files          {files:,} workbooks into Storage "
               f"({', '.join(str(y) for y in sorted(storage_years))})")
     else:
         print("  files          none (pass --storage to upload workbooks)")
+
     print()
     print("  Document ids are derived from the files, so re-running updates")
     print("  rather than duplicating. Existing fields are merged, not replaced.")
-    print()
 
+    if not emulator:
+        # Stated before the prompt, not after, so the number is on screen at
+        # the moment the decision is made.
+        writes = records + customers
+        billable = max(0, writes - 20_000)          # 20k/day free on Blaze
+        cost = billable / 100_000 * 0.18
+        bytes_ = sum(len(json.dumps(build_document(f, None), default=str))
+                     for f in forms[:200]) / min(200, len(forms) or 1)
+        stored_mb = records * bytes_ / 1024 / 1024
+
+        print()
+        print("  ESTIMATED COST")
+        print(f"    writes           {writes:,}  "
+              f"({billable:,} billable after the 20k/day free tier)")
+        print(f"    one-time         ~${cost:,.2f}")
+        print(f"    Firestore data   ~{stored_mb:,.0f} MB "
+              f"(indexes add roughly 3x that without fieldOverrides)")
+        if files:
+            gb = sum(Path(f.path).stat().st_size
+                     for f in forms if f.year in storage_years) / 1024**3
+            print(f"    Storage          ~{gb:,.2f} GB  "
+                  f"→ ~${gb * 0.026:,.2f}/month, ~${files / 10_000 * 0.05:,.2f} to upload")
+        print()
+        print("  Try it on the emulator first — same code, no cost:")
+        print("    firebase emulators:start --only firestore,auth,storage")
+        print("    set FIRESTORE_EMULATOR_HOST=localhost:8080")
+
+    print()
     if not args.yes:
         print("Refusing to write without --yes. Re-run with --yes when ready.")
         return 3
