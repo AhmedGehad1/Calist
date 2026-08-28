@@ -18,6 +18,27 @@ env/
 # Completed inspection forms may contain real device and site data;
 # never commit them.
 *-inspection.xlsx
+
+# ── Credentials ───────────────────────────────────────────────────────────────
+# THIS REPOSITORY IS PUBLIC. A Firebase service-account key committed here hands
+# anyone on the internet write access to four years of calibration records, and
+# it bypasses every security rule in the process.
+#
+# The key belongs somewhere outside this folder entirely — firebase_export.py
+# reads its path from CALIST_FIREBASE_KEY and has no default. These patterns are
+# a backstop for the day somebody drops one in here anyway, not the plan.
+*serviceaccount*.json
+*service-account*.json
+*-adminsdk-*.json
+firebase-key*.json
+medcalpro*.json
+/secrets/
+.env
+.env.*
+
+# Dry-run reports name real hospitals and device serials.
+dry-run-*.txt
+dry-run-*.json
 /forms/
 /inspections/
 
