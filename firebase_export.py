@@ -878,11 +878,44 @@ def connect(project: str):
         raise SystemExit("firebase-admin is not installed.  pip install firebase-admin")
 
     if using_emulator():
+        # google-cloud-storage reads its own variable, not the one firebase
+        # tooling sets. Without this the uploads go to the real bucket while
+        # everything else goes to the emulator — the worst possible split.
+        gcs_host = os.environ.get("FIREBASE_STORAGE_EMULATOR_HOST", "").strip()
+        if gcs_host and not os.environ.get("STORAGE_EMULATOR_HOST"):
+            os.environ["STORAGE_EMULATOR_HOST"] = f"http://{gcs_host}"
+
         if not firebase_admin._apps:
             import google.auth.credentials
 
+            class _EmulatorToken(google.auth.credentials.Credentials):
+                """A token the emulator will accept and never has to refresh.
+
+                ``AnonymousCredentials`` looks like the obvious choice and works
+                for Firestore, but Cloud Storage asks its credentials to refresh
+                and anonymous ones raise on that — so uploads failed with
+                "Anonymous credentials cannot be refreshed" while every other
+                call succeeded. The emulator does not check the value, it just
+                needs one that exists.
+                """
+
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.token = "owner"
+
+                def refresh(self, request) -> None:  # noqa: D401, ARG002
+                    self.token = "owner"
+
+                @property
+                def expired(self) -> bool:
+                    return False
+
+                @property
+                def valid(self) -> bool:
+                    return True
+
             class _EmulatorCredential(credentials.Base):
-                """No credentials at all — the emulator does not check them.
+                """No real credentials — the emulator does not check them.
 
                 Without this, ``initialize_app()`` with no credential falls back
                 to Application Default Credentials and fails on a machine that
@@ -892,7 +925,7 @@ def connect(project: str):
                 """
 
                 def get_credential(self):
-                    return google.auth.credentials.AnonymousCredentials()
+                    return _EmulatorToken()
 
             firebase_admin.initialize_app(
                 _EmulatorCredential(),
