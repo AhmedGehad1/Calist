@@ -1038,6 +1038,24 @@ def push_firestore(
     return len(written), customer_count
 
 
+def reachable(path: str) -> str:
+    """Windows cannot open a path past 260 characters without the ``\\\\?\\`` prefix.
+
+    Six workbooks in the archive nest deeper than that: an automated site files
+    its ultrasound probes under folders carrying the full model and serial, so
+    ``…\\GE       Logiq P7      LP7352115     Radiology\\Convex      4C     1144687WX9.xlsx``
+    runs to 276 characters. ``os.walk`` finds them happily and then ``stat`` and
+    ``open`` both raise FileNotFoundError on a file that is plainly there.
+
+    That killed an entire run at the cost-estimate stage — 34 minutes of reading
+    thrown away before a single document was written — so the prefix is applied
+    here rather than left to each caller to remember.
+    """
+    if os.name == "nt" and len(path) >= 250 and not path.startswith("\\\\?\\"):
+        return "\\\\?\\" + os.path.abspath(path)
+    return path
+
+
 def push_storage(
     forms: list[ParsedForm],
     db,
@@ -1070,7 +1088,7 @@ def push_storage(
             if blob.exists():
                 skipped += 1
             else:
-                blob.upload_from_filename(form.path)
+                blob.upload_from_filename(reachable(form.path))
                 uploaded += 1
             db.collection(CALIBRATIONS).document(form.doc_id).set(
                 {"storagePath": blob_name}, merge=True
@@ -1753,7 +1771,16 @@ def _run_push(args, root: Path) -> int:
         print(f"    Firestore data   ~{stored_mb:,.0f} MB "
               f"(indexes add roughly 3x that without fieldOverrides)")
         if files:
-            gb = sum(Path(f.path).stat().st_size
+            # Guarded as well as prefixed: this is only an estimate, and a file
+            # that cannot be measured must never bring down a run that has not
+            # yet written anything.
+            def _size(form: ParsedForm) -> int:
+                try:
+                    return Path(reachable(form.path)).stat().st_size
+                except OSError:
+                    return 0
+
+            gb = sum(_size(f)
                      for f in forms if f.year in storage_years) / 1024**3
             print(f"    Storage          ~{gb:,.2f} GB  "
                   f"→ ~${gb * 0.026:,.2f}/month, ~${files / 10_000 * 0.05:,.2f} to upload")
