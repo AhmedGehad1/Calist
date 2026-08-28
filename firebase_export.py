@@ -865,11 +865,27 @@ def connect(project: str):
 
     if using_emulator():
         if not firebase_admin._apps:
+            import google.auth.credentials
+
+            class _EmulatorCredential(credentials.Base):
+                """No credentials at all — the emulator does not check them.
+
+                Without this, ``initialize_app()`` with no credential falls back
+                to Application Default Credentials and fails on a machine that
+                has never run `gcloud auth`. The whole point of the emulator is
+                that experimenting should not require the admin key, so it has
+                to work with nothing configured.
+                """
+
+                def get_credential(self):
+                    return google.auth.credentials.AnonymousCredentials()
+
             firebase_admin.initialize_app(
-                options={
+                _EmulatorCredential(),
+                {
                     "projectId": project,
                     "storageBucket": f"{project}.firebasestorage.app",
-                }
+                },
             )
         return firestore.client(), storage
 
