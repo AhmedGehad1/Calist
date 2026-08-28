@@ -313,3 +313,36 @@ DEVICE_CONFIGS["AG"] = {
     "cells": DEVICE_CONFIGS["AGH"]["cells"],
     "second_row": {"device_name": "NIBP", "code_replace": ("AG", "AGCB")},
 }
+
+# "VAGH" is "AGH" with a stray V typed in front — 6 files at one site, confirmed
+# by the owner. Same treatment as AG above: the cell map is shared by reference
+# so the two can never drift, and the second row gets its own code_replace
+# because AGH's ("AGH" -> "AGCB") would rewrite "VAGH001" to "VAGCB001".
+#
+# The sampled files put the Date at E14 rather than AGH's E16, so that layout is
+# carried as an alternate. Alternates are only reached when the primary cannot
+# read a file sensibly, so this can rescue the shifted forms without touching any
+# that already read correctly.
+DEVICE_CONFIGS["VAGH"] = {
+    "device_name": DEVICE_CONFIGS["AGH"]["device_name"],
+    "cells": DEVICE_CONFIGS["AGH"]["cells"],
+    "alt_cells": [form(18, "D39", date_gap=4, extra={"Status2": "J39"})],
+    "second_row": {"device_name": "NIBP", "code_replace": ("VAGH", "AGCB")},
+}
+
+# "GJAF" is "AF" (ECG) with a GJ typed in front — the GJ prefix is spurious, and
+# "Aortic balloon" (the real GJ) has nothing to do with these forms, which print
+# "ECG Performance Test" at the top.
+#
+# Not shared by reference like AG and VAGH: the layout genuinely differs from AF,
+# which puts the Date at D30 and the Status at F41. These 10 files carry two
+# layouts of their own — one anchored at row 32, a later one at row 60 — so the
+# second is an alternate and AF's own map is a last resort.
+DEVICE_CONFIGS["GJAF"] = {
+    "device_name": DEVICE_CONFIGS["AF"]["device_name"],
+    "cells": form(32, "J70", col="D", val="J", date_gap=4),
+    "alt_cells": [
+        form(60, "J70", col="D", val="J", date_gap=4),
+        DEVICE_CONFIGS["AF"]["cells"],
+    ],
+}
