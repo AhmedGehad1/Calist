@@ -90,14 +90,17 @@ def test_vagh_rewrites_its_own_code_for_the_second_row():
     assert "VAGH001".replace(was, now) == "AGCB001"
 
 
-def test_gjaf_is_an_ecg():
-    assert DEVICE_CONFIGS["GJAF"]["device_name"] == DEVICE_CONFIGS["AF"]["device_name"]
+def test_gjaf_is_an_aortic_balloon_not_an_ecg():
+    # The form prints "ECG Performance Test", because a balloon pump triggers
+    # off the ECG signal. That heading is a section, not the device -- reading
+    # it as the identity gives ECG, which is wrong.
+    assert DEVICE_CONFIGS["GJAF"]["device_name"] == "Aortic balloon"
+    assert DEVICE_CONFIGS["GJAF"]["device_name"] != DEVICE_CONFIGS["AF"]["device_name"]
 
 
-def test_gjaf_does_not_share_af_cells():
-    # Its layout genuinely differs -- AF puts the Date at D30, GJAF at D28 --
-    # so sharing by reference would be wrong here even though it is right for
-    # VAGH.
+def test_gjaf_does_not_use_af_cells():
+    # A different device, and a different layout: AF puts the Date at D30 and
+    # the Status at F41.
     assert DEVICE_CONFIGS["GJAF"]["cells"] != DEVICE_CONFIGS["AF"]["cells"]
     assert DEVICE_CONFIGS["GJAF"]["cells"]["Date"] == "D28"
 

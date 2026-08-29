@@ -330,19 +330,18 @@ DEVICE_CONFIGS["VAGH"] = {
     "second_row": {"device_name": "NIBP", "code_replace": ("VAGH", "AGCB")},
 }
 
-# "GJAF" is "AF" (ECG) with a GJ typed in front — the GJ prefix is spurious, and
-# "Aortic balloon" (the real GJ) has nothing to do with these forms, which print
-# "ECG Performance Test" at the top.
+# "GJAF" is the aortic balloon pump — a GJ, confirmed by the owner.
 #
-# Not shared by reference like AG and VAGH: the layout genuinely differs from AF,
-# which puts the Date at D30 and the Status at F41. These 10 files carry two
-# layouts of their own — one anchored at row 32, a later one at row 60 — so the
-# second is an alternate and AF's own map is a last resort.
+# Its form prints "ECG Performance Test" near the top, which is not the device:
+# an intra-aortic balloon pump inflates in time with the heart and triggers off
+# the ECG signal, so testing that trigger is part of testing the pump. Reading
+# that heading as the identity gets you "ECG" (code AF), which is wrong, and the
+# cell layout is not AF's either — AF puts the Date at D30 and the Status at F41.
+#
+# The two layouts below were read off the files themselves: one anchored at row
+# 32 and a later re-lay-out at row 60.
 DEVICE_CONFIGS["GJAF"] = {
-    "device_name": DEVICE_CONFIGS["AF"]["device_name"],
+    "device_name": "Aortic balloon",
     "cells": form(32, "J70", col="D", val="J", date_gap=4),
-    "alt_cells": [
-        form(60, "J70", col="D", val="J", date_gap=4),
-        DEVICE_CONFIGS["AF"]["cells"],
-    ],
+    "alt_cells": [form(60, "J70", col="D", val="J", date_gap=4)],
 }
