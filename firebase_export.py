@@ -1750,7 +1750,14 @@ def build_document(form: ParsedForm, customer: dict | None) -> dict:
         "serialUpper": serial.upper(),
         "serialQuality": classify_serial(serial),
         "layoutUsed": form.layout,
-        "storagePath": None,
+        # `storagePath` is deliberately absent, not None.
+        #
+        # It is written by push_storage once the workbook is actually uploaded,
+        # and every write here is a merge. Sending an explicit None would
+        # overwrite the real path on every record that already has one —
+        # 41,818 of them at the time of writing — and silently detach the whole
+        # archive from its files. A field that is simply not mentioned survives
+        # the merge untouched.
         "needsAttention": bool(attention),
         "attentionReason": attention,
     }

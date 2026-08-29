@@ -223,6 +223,26 @@ def test_the_form_names_a_site_the_code_list_has_never_heard_of():
     assert customer["address"] == "Luxor"
 
 
+def test_a_rebuilt_document_never_mentions_storagePath():
+    """Because every write is a merge, and None would overwrite a real path.
+
+    push_storage sets storagePath once a workbook is actually uploaded. If
+    build_document sent an explicit None, a plain re-import would wipe it from
+    every record that had one -- 41,818 of them -- and silently detach the whole
+    archive from its files. A field that is not mentioned survives a merge.
+    """
+    form = firebase_export.ParsedForm(
+        path="D:/x/G302-BP001-0326.xlsx",
+        filename="G302-BP001-0326.xlsx",
+        year=2026,
+        site="G302",
+        tag="BP001",
+        device_code="BP",
+        serial="SN-1",
+    )
+    assert "storagePath" not in firebase_export.build_document(form, None)
+
+
 # ── tombstones ────────────────────────────────────────────────────────────────
 #
 # When an engineer deletes a calibration in the app, the record goes and a
