@@ -14,7 +14,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
-python -m pytest                            # the whole suite (170 tests)
+python -m pytest                            # the whole suite (174 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -371,16 +371,23 @@ the tests after renaming anything.
 
 ## Open data questions
 
-Flagged in `device_config.py` and the README, unresolved — they need checking against the paper forms:
+Two remain, both needing a look at the paper form. `CA` (was `"X-ray ()"`, now Dental X-Ray) and
+the duplicate `AO`/`CK` "Infrared" naming are resolved.
 
 - `EU` (Lab Oven) has Location `K19`; every other standard form puts it at `row+2` = `K20`.
 - `CF` (Baby Warmer) has Model *below* Manufacturer, inverted vs. every other form.
-- `CA` is named `"X-ray ()"` and is otherwise identical to `BF`.
-- `AO` and `CK` are both named `"Infrared"` with different Status cells.
+
+**`BD` (Mammography) is deliberately unmapped.** All 40 archive files carry the identical header
+`GE / Alpha st / Gona Hospital`, survey date 2012, across many different site codes — the vendor QC
+template's boilerplate, not the device. A map would put the same fabricated manufacturer and model
+into 40 rows and look entirely plausible. Do not add one without a form that is actually filled in.
+
+`BJ` (Auto Refractometer) and `FC` (High Flow Nasal Cannula) are unmapped too: one archive file each,
+and no coherent field block on either.
 
 Device names are reproduced verbatim in output, spelling slips included (`Protien Analyzer`,
 `Tornique`). Correcting them changes the text written into every register, so treat it as a deliberate
-data change, not a typo fix.
+data change, not a typo fix — the owner has been asked and has not said yes.
 
 ## Daily PIN gate (`access.py`)
 

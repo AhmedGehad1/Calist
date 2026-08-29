@@ -17,8 +17,8 @@ de-duplicated equipment register — automatically, without opening a single fil
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![Tests passing](https://img.shields.io/badge/tests-114%20passing-brightgreen)
-![Device types](https://img.shields.io/badge/device%20types-57-blue)
+![Tests passing](https://img.shields.io/badge/tests-174%20passing-brightgreen)
+![Device types](https://img.shields.io/badge/device%20types-95-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
 ![Size](https://img.shields.io/badge/download-12.7%20MB-lightgrey)
@@ -48,18 +48,18 @@ The trap is that **those six cells sit somewhere different on every device's for
 | Sphygmomanometer | `K47` |
 | Baby Incubator | `L72` |
 
-Fifty-seven device types. Fifty-seven layouts. Building the register by hand means opening every
+Ninety-five device types. Ninety-five layouts. Building the register by hand means opening every
 file, working out which layout you are looking at, finding six scattered cells, and copying them
 across — several hundred times, without a single transcription error.
 
-**Calist already knows all fifty-seven.** Point it at the folder and walk away.
+**Calist already knows all ninety-five.** Point it at the folder and walk away.
 
 <div align="center">
 
 | Doing it by hand | With Calist |
 |:---|:---|
 | Open 300 files, one at a time | Pick the folder once |
-| Remember 57 different cell layouts | Recognised automatically from the filename |
+| Remember 95 different cell layouts | Recognised automatically from the filename |
 | Find the one bad file at row 214 | Flagged **before** the run even starts |
 | Retype serial numbers and hope | Read straight from the cell, never retyped |
 | Sort and number the rows yourself | Sorted, numbered and de-duplicated for you |
@@ -418,7 +418,7 @@ useless blanket "invalid":
 
 ## The device engine
 
-All 57 layouts live in [`device_config.py`](device_config.py). Because 51 of the 57 forms turn out to
+All 95 layouts live in [`device_config.py`](device_config.py). Because 90 of the 95 forms turn out to
 be *the same layout at a different row offset*, they are generated rather than typed out:
 
 ```python
@@ -446,7 +446,7 @@ Keyword arguments absorb every variation:
 | `date_gap=4` | an extra line sits above the Date | `form(26, "G35", date_gap=4)` |
 | `extra={...}` | a second serial, a second status, or a one-off cell | `form(17, "H30", extra={"S.N2": "L21"})` |
 
-The result: **55 of the 57 devices are a single readable line each**, and only two genuinely
+The result: **90 of the 95 devices are a single readable line each**, and only 5 genuinely
 different forms (`AK` Baby Incubator, `CF` Baby Warmer) are written out in full. That asymmetry is
 deliberate — the odd ones out are supposed to stand out, not hide inside a wall of near-identical
 blocks.
@@ -462,34 +462,44 @@ Find the Model cell on the form, note the Status cell, and add:
 No code changes. No special cases. Sorting, second rows and de-duplication all follow automatically.
 
 <details>
-<summary><b>All 57 supported devices</b></summary>
+<summary><b>All 95 supported devices</b></summary>
 
 <br>
 
 | | | |
 |---|---|---|
-| `AA` Anesthesia | `AV` Elisa reader | `EC` Laminar flow |
-| `AB` Vaporizer | `AX` Lab Incubator | `ED` Heart lung Machine |
-| `AC` Defibrillator | `BB` Ultrasound | `EE` Flowmeter |
-| `AD` Pacemaker | `BF` X-ray | `EO` Pipet |
-| `AE` ESU | `BL` Autoclave | `EP` Refrigerator |
-| `AF` ECG | `BP` Balance | `EU` Lab Oven |
-| `AGH` Patient Monitor | `BV` Blood gas analyzer | `EV` Blood Mixer |
-| `AH` SPO2 | `BZ` Syringe | `EY` Freezer |
-| `AI` Infusion | `CA` X-ray () | `FE` Nebulizer |
-| `AJ` Suction | `CB` Digital blood pressure | `FG` ACT |
-| `AK` Baby Incubator | `CE` Sphygmomanometer | `FI` Hormone Analyzer |
-| `AL` Phototherapy | `CF` Baby Warmer | `FJ` OR Table |
-| `AM` Ventilator | `CK` Infrared | `FQ` C-pap |
-| `AN` Thermo | `DA` Shaker | `GC` Portable Data Logger |
-| `AO` Infrared | `DG` CBC Analyzer | `GD` Protien Analyzer |
-| `AQ` Water Bath | `DL` Sealing Machine | `GI` Bacteria Analyzer |
-| `AR` Electrolyte Analyzer | `DO` O2 conc | `GK` Tornique |
-| `AS` Centrifuge | `DV` OR light | `GP` Holter machines |
-| `AU` Chemistry analyzer | `EA` C-Arm | `VAH` Vital Sign (SPO2 Module) |
-
-<sub>Names appear exactly as they are written into the register, including the spelling slips noted
-under <a href="#known-issues">Known issues</a>.</sub>
+| `AA` Anesthesia | `BV` Blood gas analyzer | `EU` Lab Oven |
+| `AB` Vaporizer | `BW` CT | `EV` Blood Mixer |
+| `AC` Defibrillator | `BX` MRI | `EY` Freezer |
+| `AD` Pacemaker | `BZ` Syringe | `EZ` Non-invasive Hemodynamic Monitor |
+| `AE` ESU | `CA` Dental X-Ray | `FA` Elisa Washer |
+| `AF` ECG | `CB` Digital blood pressure | `FD` Drugs Analyzer |
+| `AG` Patient Monitor | `CD` Endoscopic Set | `FE` Nebulizer |
+| `AGH` Patient Monitor | `CE` Sphygmomanometer | `FF` EEG |
+| `AH` SPO2 | `CF` Baby Warmer | `FG` ACT |
+| `AI` Infusion | `CK` Infrared lamp | `FI` Hormone Analyzer |
+| `AJ` Suction | `CN` Microwave | `FJ` OR Table |
+| `AK` Baby Incubator | `CP` Vertebral Column Stretcher | `FM` PCR Rotor |
+| `AL` Phototherapy | `CZ` Mixture Device | `FP` Dexa Scan |
+| `AM` Ventilator | `DA` Shaker | `FQ` C-pap |
+| `AN` Thermo | `DB` Hot Plate | `FR` Sodium & Potassium Analyzer |
+| `AO` Thermometer, patient | `DE` Colony Counter | `FT` Biofeedback |
+| `AQ` Water Bath | `DG` CBC Analyzer | `FU` Joint Mobiliser |
+| `AR` Electrolyte Analyzer | `DL` Sealing Machine | `FV` Cardiac Enzyme Analyzer |
+| `AS` Centrifuge | `DO` O2 conc | `FW` Blood Culture System |
+| `AU` Chemistry analyzer | `DS` Spirometer | `FZ` Endoscope |
+| `AV` Elisa reader | `DU` Immunoassay Analyzer | `GC` Portable Data Logger |
+| `AX` Lab Incubator | `DV` Light source | `GD` Protien Analyzer |
+| `AY` Virus & PCR Analyzer | `DW` Heater Air Mattress | `GE` Temperature Calibration Tester |
+| `BB` Ultrasound | `DX` Fetal Doppler | `GH` Bipap |
+| `BC` Ultrasound (Eye) | `EA` C-Arm | `GI` Bacteria Analyzer |
+| `BE` X-ray (Mobile) | `EC` Laminar flow | `GJAF` Aortic balloon |
+| `BF` X-ray | `ED` Heart lung Machine | `GK` Tornique |
+| `BL` Autoclave | `EE` Flowmeter | `GM` Corona Virus Analyzer |
+| `BM` Hemodialysis Machine | `EN` Catheter Lab | `GP` Holter machines |
+| `BN` Therapeutic Ultrasound | `EO` Pipet | `VAGH` Patient Monitor |
+| `BP` Balance | `EP` Refrigerator | `VAH` Vital Sign (SPO2 Module) |
+| `BQ` Flatbed Platelet Agitator | `EQ` Urine Analyzer |  |
 
 </details>
 
@@ -596,13 +606,14 @@ pip install pytest
 python -m pytest
 ```
 
-**135 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
+**174 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
 
 | Suite | Covers |
 |---|---|
-| [`test_calist.py`](test_calist.py) — 72 tests | Filename parsing and format validation, value handling, sheet selection, merged-cell resolution, ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
+| [`test_calist.py`](test_calist.py) — 107 tests | Filename parsing and format validation, value handling, sheet selection, merged-cell resolution, layout fallback (including that the calibrator is never read as the device), ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
 | [`test_access.py`](test_access.py) — 35 tests | The daily code: known-date vectors, zero-padding, rejection of malformed input, midnight relocking, and cooldown escalation |
 | [`test_settings.py`](test_settings.py) — 7 tests | Preference persistence, including BOM-tolerant reading, corrupt files, and unwritable profiles |
+| [`test_firebase_export.py`](test_firebase_export.py) — 25 tests | The archive export: long-path handling, device aliases, and the files that are not forms |
 
 Several tests exist purely to stop a future change quietly weakening something:
 
@@ -621,7 +632,7 @@ toolkit.
 calist.py                    the extraction pipeline - imports no GUI toolkit    (664 lines)
 ui.py                        the desktop interface, CustomTkinter               (1399 lines)
 access.py                    the daily access code - pure, standalone            (138 lines)
-device_config.py             57 device layouts and the form() helper             (180 lines)
+device_config.py             95 device layouts and the form() helper             (436 lines)
 calist.spec                  PyInstaller build recipe
 template/Device List.xlsx    reference register template
 ```
@@ -630,12 +641,22 @@ template/Device List.xlsx    reference register template
 
 ## Known issues
 
-Stated openly. Four entries in the device table need checking against the paper forms:
+Stated openly, and measured against 42,826 real forms from the 2025 and 2026 rounds.
+
+**Two entries still need checking against the paper forms:**
 
 - **`EU`** (Lab Oven) puts Location at `K19`; every other standard form puts it at `K20`.
-- **`CF`** (Baby Warmer) has Model *below* Manufacturer — inverted compared with all 56 others.
-- **`CA`** is identical to `BF`, and its name is unfinished in the source (`"X-ray ()"`).
-- **`AO`** and **`CK`** are both named `Infrared` with different Status cells.
+- **`CF`** (Baby Warmer) has Model *below* Manufacturer — inverted compared with the rest.
+
+**`BD` (Mammography) is deliberately not mapped.** Its 40 files are a 16-sheet physics QC workbook,
+and every one of them carries the same header — `GE / Alpha st / Gona Hospital`, survey date 2012 —
+across many different sites. That is the vendor template's boilerplate, not the device. Mapping it
+would write the same fabricated manufacturer and model into 40 register rows, and it would look
+entirely plausible. Better blank than confidently wrong.
+
+**259 forms out of 42,826 (0.6%) still produce no reading.** Most are genuine data faults rather
+than mapping faults: unfilled templates, a serial cell holding `2020.04.30`, and one file that is
+226 KB of nulls rather than a workbook.
 
 **A field reading blank almost always means the form was re-laid-out** and its cell map now points
 somewhere else. There is a command for exactly that, and it opens no window:
@@ -647,9 +668,9 @@ python calist.py --inspect "G302-BB001-0526.xlsx"
 It prints every mapped field, the cell it reads, what came back, and the sheet's merged ranges,
 exiting non-zero if anything read blank — which tells you whether to change the form or the map.
 
-Three device names carry spelling slips that reach the register output — `Protien Analyzer`,
-`Tornique` and `X-ray ()`. They are left alone deliberately: correcting them changes the text written
-into every historical register, so it should be a considered decision rather than a drive-by fix.
+Two device names carry spelling slips that reach the register output — `Protien Analyzer` and
+`Tornique`. They are left alone deliberately: correcting them changes the text written into every
+historical register, so it should be a considered decision rather than a drive-by fix.
 
 Because the output lands among the source files, selecting the same folder twice would feed the
 previous run's output back in. Its code resolves to `DEVICE`, which is not in the table, so it is

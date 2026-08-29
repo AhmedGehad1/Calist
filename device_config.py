@@ -265,6 +265,72 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "EU": {"device_name": "Lab Oven", "cells": form(18, "H32", extra={"Location": "K19"}),
            "alt_cells": [form(17, "H31"), form(19, "H33")]},
 
+    # ── Devices the master code list names but nobody had mapped ──────────────
+    #
+    # 29 codes, 190 files across the 2025 and 2026 rounds, every one of which
+    # imported blank. Each map below was read off the forms' own printed labels
+    # with calist.locate_by_labels — never copied from a device that looked
+    # similar, which is what produced the AI map that reported "ICU" as a serial
+    # for years. The count after each name is how many archive files agreed.
+    #
+    # These forms put the Date four rows above the Model rather than two, hence
+    # date_gap=4 throughout.
+
+    # The lab bench: one shared layout, Status bottom-right at K22.
+    "FA": {"device_name": "Elisa Washer",           "cells": form(18, "K22", date_gap=4)},
+    "EQ": {"device_name": "Urine Analyzer",         "cells": form(18, "K22", date_gap=4)},
+    "FV": {"device_name": "Cardiac Enzyme Analyzer", "cells": form(18, "K22", date_gap=4)},
+    "FM": {"device_name": "PCR Rotor",              "cells": form(18, "K22", date_gap=4)},
+    "FR": {"device_name": "Sodium & Potassium Analyzer", "cells": form(18, "K22", date_gap=4)},
+    "FF": {"device_name": "EEG",                    "cells": form(18, "K22", date_gap=4)},
+    "DE": {"device_name": "Colony Counter",         "cells": form(18, "K22", date_gap=4)},
+    "FD": {"device_name": "Drugs Analyzer",         "cells": form(18, "K22", date_gap=4)},
+    "DB": {"device_name": "Hot Plate",              "cells": form(18, "K22", date_gap=4)},
+    "CZ": {"device_name": "Mixture Device",         "cells": form(18, "K22", date_gap=4)},
+    "GM": {"device_name": "Corona Virus Analyzer",  "cells": form(18, "K22", date_gap=4)},
+    "BQ": {"device_name": "Flatbed Platelet Agitator", "cells": form(18, "K22", date_gap=4)},
+    "EZ": {"device_name": "Non-invasive Hemodynamic Monitor",
+           "cells": form(18, "K22", date_gap=4)},
+
+    # Physiotherapy, same sheet as the lab bench.
+    "FU": {"device_name": "Joint Mobiliser",        "cells": form(18, "K22", date_gap=4)},
+    "FT": {"device_name": "Biofeedback",            "cells": form(18, "K22", date_gap=4)},
+    "CP": {"device_name": "Vertebral Column Stretcher", "cells": form(18, "K22", date_gap=4)},
+
+    # Two forms in circulation for these; the older one sits three rows higher.
+    "FW": {"device_name": "Blood Culture System",   "cells": form(18, "K22", date_gap=4),
+           "alt_cells": [form(15, "J27", date_gap=4)]},
+    "DU": {"device_name": "Immunoassay Analyzer",   "cells": form(18, "K22", date_gap=4),
+           "alt_cells": [form(15, "J27", date_gap=4)]},
+    "AY": {"device_name": "Virus & PCR Analyzer",   "cells": form(15, "J27", date_gap=4),
+           "alt_cells": [form(18, "K22", date_gap=4)]},
+
+    # Imaging. These sheets carry no Status field at all — they end at
+    # "Tested By" and a comment box — so Status is mapped to nothing rather
+    # than to whatever happens to sit at a borrowed coordinate.
+    "BW": {"device_name": "CT",                     "cells": form(17, "", date_gap=4)},
+    "BX": {"device_name": "MRI",                    "cells": form(17, "", date_gap=4)},
+    "FP": {"device_name": "Dexa Scan",              "cells": form(17, "", date_gap=4)},
+    "DW": {"device_name": "Heater Air Mattress",    "cells": form(17, "", date_gap=4)},
+
+    # Respiratory: Status is mid-sheet at G34.
+    "DS": {"device_name": "Spirometer",             "cells": form(17, "G34", date_gap=4)},
+    "GH": {"device_name": "Bipap",                  "cells": form(17, "G34", date_gap=4)},
+
+    # The D/J column pair, like the ECG and Phototherapy forms.
+    "DX": {"device_name": "Fetal Doppler",
+           "cells": form(27, "F36", col="D", val="J", date_gap=4)},
+    "BC": {"device_name": "Ultrasound (Eye)",
+           "cells": form(28, "F37", col="D", val="J", date_gap=4)},
+
+    # Manufacturer and Location sit four rows below the Model here, not two.
+    "CD": {"device_name": "Endoscopic Set",
+           "cells": form(18, "K26", date_gap=4,
+                         extra={"Manufacturer": "E22", "Location": "K22"})},
+    # Location two rows lower again, as on the other imaging-suite forms.
+    "EN": {"device_name": "Catheter Lab",
+           "cells": form(18, "J27", date_gap=4, extra={"Location": "K22"})},
+
     # ── Genuinely different forms — written out in full ───────────────────────
     # The incubator form was re-laid-out between the 2025 and 2026 rounds. The
     # map below is the *current* one and is unchanged; the alternate is the

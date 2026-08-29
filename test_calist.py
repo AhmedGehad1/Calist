@@ -7,6 +7,7 @@ couple of end-to-end runs against workbooks built on the fly.
 
 import logging
 import os
+import re
 import threading
 import zipfile
 from pathlib import Path
@@ -1117,3 +1118,49 @@ def test_classify_serial_sorts_the_shapes_apart():
     assert calist.classify_serial("16-01-2026") == "suspect"
     assert calist.classify_serial("BALANCE001") == "assigned"
     assert calist.classify_serial("STX21170332PA") == "real"
+
+
+# ── the device table after the archive validation ─────────────────────────────
+
+def test_every_cell_reference_is_a_real_a1_reference():
+    """Catches a typo in a coordinate, which would otherwise read blank."""
+    from openpyxl.utils.cell import coordinate_to_tuple
+    for code, config in DEVICE_CONFIGS.items():
+        maps = [config["cells"], *config.get("alt_cells", [])]
+        for cell_map in maps:
+            for field, ref in cell_map.items():
+                if not ref:
+                    continue                      # deliberately unmapped field
+                coordinate_to_tuple(ref)          # raises if malformed
+                assert re.fullmatch(r"[A-Z]{1,3}\d{1,4}", ref), f"{code}.{field}={ref}"
+
+
+def test_mammography_is_deliberately_not_mapped():
+    """BD must stay unmapped until a form is found that is actually filled in.
+
+    All 40 BD workbooks in the 2025-2026 archive carry the same header —
+    GE / Alpha st / Gona Hospital, survey date 2012 — across many different
+    site codes. That is the vendor QC template's boilerplate, not the device.
+    A cell map would write the same fabricated manufacturer and model into 40
+    register rows and look entirely plausible.
+    """
+    assert "BD" not in DEVICE_CONFIGS
+
+
+def test_the_devices_added_from_the_archive_are_all_named():
+    """Every code mapped here is one the site's master list actually names."""
+    from device_names import DEVICE_NAMES
+    added = {"FA", "EQ", "FV", "FM", "FR", "FF", "DE", "FD", "DB", "CZ", "GM",
+             "BQ", "EZ", "FU", "FT", "CP", "FW", "DU", "AY", "BW", "BX", "FP",
+             "DW", "DS", "GH", "DX", "BC", "CD", "EN"}
+    assert added <= set(DEVICE_CONFIGS), added - set(DEVICE_CONFIGS)
+    assert added <= set(DEVICE_NAMES), added - set(DEVICE_NAMES)
+
+
+def test_a_form_with_no_status_field_maps_status_to_nothing():
+    """CT, MRI, Dexa and the air mattress end at "Tested By" — no Status box.
+
+    Mapping Status to a borrowed coordinate would read whatever sits there.
+    """
+    for code in ("BW", "BX", "FP", "DW"):
+        assert DEVICE_CONFIGS[code]["cells"]["Status"] == "", code
