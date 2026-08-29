@@ -962,3 +962,158 @@ def test_written_rows_land_where_the_template_expects_them(workspace):
     assert first[0] == 1                              # index in column A
     assert first[1] == "Defibrillator"                # Device in column B
     assert "SN-1" in first[4]                         # S.N in column E
+
+
+# ── reading a form whose map no longer fits ───────────────────────────────────
+#
+# Measured over the 2025 and 2026 archives: the configured map works for 94.7%
+# of 42,826 forms. The rest were re-laid-out between rounds — a uniform shift of
+# one to three rows — and read blank with nothing said. These pin the fallback
+# chain, and the two traps that make it dangerous to write naively.
+
+_STANDARD = {"Manufacturer": "E20", "Model": "E18", "S.N": "K18",
+             "Location": "K20", "Date": "E16", "Status": "H32"}
+
+
+def _device_form(path, row, *, sheet="Device data", extra=None, before=None):
+    """A form in the usual shape, with its field block anchored at `row`."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    for title, cells in (before or []):
+        ws = wb.create_sheet(title)
+        for ref, value in cells.items():
+            ws[ref] = value
+    ws = wb.create_sheet(sheet)
+    ws[f"C{row}"] = "Model:"
+    ws[f"E{row}"] = "Perfusor Space"
+    ws[f"I{row}"] = "Serial No.:"
+    ws[f"K{row}"] = "148271"
+    ws[f"C{row + 2}"] = "Manufacturer:"
+    ws[f"E{row + 2}"] = "B.Braun"
+    ws[f"I{row + 2}"] = "Location"
+    ws[f"K{row + 2}"] = "ICU"
+    for ref, value in (extra or {}).items():
+        ws[ref] = value
+    wb.save(path)
+    return str(path)
+
+
+def test_the_configured_map_wins_when_it_fits(tmp_path):
+    path = _device_form(tmp_path / "f.xlsx", 18)
+    record, how = calist.read_best(path, {"cells": _STANDARD})
+    assert how == "primary"
+    assert record["Model"] == "Perfusor Space"
+
+
+def test_an_alternate_layout_is_tried_next(tmp_path):
+    path = _device_form(tmp_path / "f.xlsx", 19)          # shifted one row down
+    config = {"cells": _STANDARD,
+              "alt_cells": [{**_STANDARD, "Model": "E19", "S.N": "K19",
+                             "Manufacturer": "E21", "Location": "K21"}]}
+    record, how = calist.read_best(path, config)
+    assert how == "alt 1"
+    assert record["S.N"] == "148271"
+
+
+def test_the_printed_labels_rescue_an_unrecorded_shift(tmp_path):
+    """No alt_cells for this offset — the form's own labels have to find it."""
+    path = _device_form(tmp_path / "f.xlsx", 15)
+    record, how = calist.read_best(path, {"cells": _STANDARD})
+    assert how == "labels"
+    assert record["Model"] == "Perfusor Space"
+    assert record["S.N"] == "148271"
+    assert record["Manufacturer"] == "B.Braun"
+    assert record["Location"] == "ICU"
+
+
+def test_the_device_block_is_found_on_another_sheet(tmp_path):
+    """GC forms put a Report tab in front; BM keeps the details on a cover."""
+    path = _device_form(tmp_path / "f.xlsx", 24, sheet="cover page",
+                        before=[("Report", {"A1": "Electrical Safety Test",
+                                            "A2": "Protective Earth"})])
+    record, how = calist.read_best(path, {"cells": _STANDARD})
+    assert how == "labels on 'cover page'"
+    assert record["Model"] == "Perfusor Space"
+
+
+def test_the_calibrator_is_never_read_as_the_device(tmp_path):
+    """The trap this whole guard exists for.
+
+    A Hemodialysis cover page prints the reference meter ABOVE the device under
+    test, so "first Model: label wins" records the calibrator's model and serial
+    as the machine's. The headings are the only reliable signal.
+    """
+    wb = Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet("cover page")
+    ws["A15"] = "Calibration Device"
+    ws["G15"] = "Model"
+    ws["H15"] = "EMIS"                                   # the Fluke
+    ws["G18"] = "Serial No."
+    ws["H18"] = "9D2749"
+    ws["A22"] = "Device information"
+    ws["G24"] = "Model"
+    ws["H24"] = "AK96"                                   # the dialysis machine
+    ws["A26"] = "Manufacturer"
+    ws["C26"] = "Gambro"
+    ws["G26"] = "Serial No."
+    ws["H26"] = "11195"
+    path = tmp_path / "f.xlsx"
+    wb.save(path)
+
+    record, how = calist.read_best(str(path), {"cells": _STANDARD})
+
+    assert record["Model"] == "AK96", "read the calibrator instead of the device"
+    assert record["S.N"] == "11195"
+    assert record["Manufacturer"] == "Gambro"
+    assert "EMIS" not in record.values()
+    assert "9D2749" not in record.values()
+
+
+def test_a_table_heading_is_not_mistaken_for_a_field(tmp_path):
+    """Therapeutic Ultrasound heads a table 'Model | S.N.' at row 11 and puts
+    the real fields at row 69. Taking the first match read the model as "S.N.".
+    """
+    path = _device_form(tmp_path / "f.xlsx", 69,
+                        extra={"A11": "Model", "E11": "S.N."})
+    record, how = calist.read_best(path, {"cells": _STANDARD})
+    assert record["Model"] == "Perfusor Space"
+    assert record["S.N"] == "148271"
+
+
+def test_a_form_of_placeholders_is_not_rescued(tmp_path):
+    """Some cover sheets are filled in with 0 throughout. A serial of "0"
+    classifies as a placeholder rather than a blank, so without an explicit
+    check the fallback "rescues" them into a row of zeroes.
+    """
+    path = _device_form(tmp_path / "f.xlsx", 15)
+    wb = load_workbook(path)
+    ws = wb["Device data"]
+    for ref in ("E15", "K15", "E17", "K17"):
+        ws[ref] = "0"
+    wb.save(path)
+
+    _record, how = calist.read_best(str(path), {"cells": _STANDARD})
+    assert how == "none"
+
+
+def test_nothing_readable_reports_none(tmp_path):
+    path = _multi_sheet_form(tmp_path / "f.xlsx", [("Sheet", {"A1": "nothing"})])
+    _record, how = calist.read_best(path, {"cells": _STANDARD})
+    assert how == "none"
+
+
+def test_plausible_rejects_a_serial_that_is_not_one():
+    assert not calist.plausible({"S.N": "ICU", "Model": "MX450"})
+    assert not calist.plausible({"S.N": "16-01-2026", "Model": "MX450"})
+    assert not calist.plausible({"S.N": "SN1", "Model": ""})
+    assert calist.plausible({"S.N": "SN1", "Model": "MX450"})
+
+
+def test_classify_serial_sorts_the_shapes_apart():
+    assert calist.classify_serial("") == "blank"
+    assert calist.classify_serial("N.A") == "placeholder"
+    assert calist.classify_serial("ICU") == "suspect"
+    assert calist.classify_serial("16-01-2026") == "suspect"
+    assert calist.classify_serial("BALANCE001") == "assigned"
+    assert calist.classify_serial("STX21170332PA") == "real"

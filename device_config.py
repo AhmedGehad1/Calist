@@ -88,7 +88,10 @@ DEVICE_CONFIGS: dict[str, dict] = {
     },
 
     # ── Imaging: a second serial (tube / probe) shifts Location down ──────────
-    "BB": {"device_name": "Ultrasound", "cells": form(17, "H30", col="F", val="L", extra={"S.N2": "L21"})},
+    "BB": {"device_name": "Ultrasound",
+           "cells": form(17, "H30", col="F", val="L", extra={"S.N2": "L21"}),
+           "alt_cells": [form(18, "H31", col="F", val="L", extra={"S.N2": "L22"}),
+                         form(16, "H29", col="F", val="L", extra={"S.N2": "L20"})]},
     "BF": {"device_name": "X-ray",      "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
     # Was "X-ray ()" — an unfinished edit this file carried a TODO about. The
     # site's master code list settles it: CA is the dental x-ray. It shares BF's
@@ -129,14 +132,18 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AS": {"device_name": "Centrifuge",             "cells": form(18, "K25")},
     "AJ": {"device_name": "Suction",                "cells": form(23, "G32")},
     "AM": {"device_name": "Ventilator",             "cells": form(17, "G33")},
-    "FG": {"device_name": "ACT",                    "cells": form(18, "H32")},
-    "DG": {"device_name": "CBC Analyzer",           "cells": form(18, "H32")},
+    "FG": {"device_name": "ACT",                    "cells": form(18, "H32"),
+           "alt_cells": [form(17, "H31"), form(19, "H33")]},
+    "DG": {"device_name": "CBC Analyzer",           "cells": form(18, "H32"),
+           "alt_cells": [form(15, "H29")]},
     "AU": {"device_name": "Chemistry analyzer",     "cells": form(18, "K22")},
     "AX": {"device_name": "Lab Incubator",          "cells": form(18, "H32")},
     "EY": {"device_name": "Freezer",                "cells": form(18, "H32")},
-    "EP": {"device_name": "Refrigerator",           "cells": form(18, "H32")},
+    "EP": {"device_name": "Refrigerator",           "cells": form(18, "H32"),
+           "alt_cells": [form(19, "H33")]},
     "DL": {"device_name": "Sealing Machine",        "cells": form(18, "K22")},
-    "BV": {"device_name": "Blood gas analyzer",     "cells": form(18, "K22")},
+    "BV": {"device_name": "Blood gas analyzer",     "cells": form(18, "K22"),
+           "alt_cells": [form(15, "K19")]},
     "FQ": {"device_name": "C-pap",                  "cells": form(17, "G34")},
     # Two layouts in the wild. The original map is unchanged and still tried
     # first; the alternate sits two rows higher and rescues the forms where the
@@ -149,14 +156,15 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AI": {
         "device_name": "Infusion",
         "cells": form(27, "G36"),
-        "alt_cells": [form(25, "G34")],
+        "alt_cells": [form(28, "G37"), form(26, "G35"), form(25, "G34")],
     },
     "DO": {"device_name": "O2 conc",                "cells": form(17, "G31")},
     "FJ": {"device_name": "OR Table",               "cells": form(18, "K22")},
     "AB": {"device_name": "Vaporizer",              "cells": form(18, "K22")},
     "AD": {"device_name": "Pacemaker",              "cells": form(22, "G31")},
     "AV": {"device_name": "Elisa reader",           "cells": form(18, "K22")},
-    "FE": {"device_name": "Nebulizer",              "cells": form(17, "K31")},
+    "FE": {"device_name": "Nebulizer",              "cells": form(17, "K31"),
+           "alt_cells": [form(18, "K32")]},
     # Was "Infrared", which is what CK is. The master code list has AO as the
     # patient thermometer, and two codes sharing one name was the clue that one
     # of them had been copied from the other.
@@ -182,10 +190,13 @@ DEVICE_CONFIGS: dict[str, dict] = {
         "alt_cells": [form(18, "K22")],
     },
     "GK": {"device_name": "Tornique",               "cells": form(23, "G32")},
-    "AQ": {"device_name": "Water Bath",             "cells": form(18, "H32")},
-    "EV": {"device_name": "Blood Mixer",            "cells": form(18, "K22")},
+    "AQ": {"device_name": "Water Bath",             "cells": form(18, "H32"),
+           "alt_cells": [form(17, "H31")]},
+    "EV": {"device_name": "Blood Mixer",            "cells": form(18, "K22"),
+           "alt_cells": [form(15, "K19")]},
     "GD": {"device_name": "Protien Analyzer",       "cells": form(18, "K22")},
-    "AR": {"device_name": "Electrolyte Analyzer",   "cells": form(18, "K22")},
+    "AR": {"device_name": "Electrolyte Analyzer",   "cells": form(18, "K22"),
+           "alt_cells": [form(15, "K19")]},
 
     # ── Added from the archive ────────────────────────────────────────────────
     # Codes that appear in four years of forms but were never in this table, so
@@ -196,7 +207,8 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "BM": {"device_name": "Hemodialysis Machine",   "cells": form(18, "K22")},
     "BN": {"device_name": "Therapeutic Ultrasound", "cells": form(18, "K22")},
     "CN": {"device_name": "Microwave",              "cells": form(18, "K22")},
-    "GE": {"device_name": "Temperature Calibration Tester", "cells": form(18, "K22")},
+    "GE": {"device_name": "Temperature Calibration Tester", "cells": form(18, "K22"),
+           "alt_cells": [form(17, "K21")]},
     # Manufacturer sits two rows below Model rather than the usual one gap.
     "FZ": {
         "device_name": "Endoscope",
@@ -241,7 +253,8 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "CB": {"device_name": "Digital blood pressure", "cells": form(18, "G26", date_gap=4)},
     "AE": {"device_name": "ESU",                    "cells": form(15, "G24", date_gap=4)},
     "BL": {"device_name": "Autoclave",              "cells": form(18, "K22", date_gap=4)},
-    "AN": {"device_name": "Thermo",                 "cells": form(18, "H32", date_gap=4)},
+    "AN": {"device_name": "Thermo",                 "cells": form(18, "H32", date_gap=4),
+           "alt_cells": [form(19, "H33", date_gap=4), form(20, "H34", date_gap=4)]},
     "EC": {"device_name": "Laminar flow",           "cells": form(18, "F31", date_gap=4)},
     "CK": {"device_name": "Infrared lamp",          "cells": form(18, "F31", date_gap=4)},
 
@@ -249,7 +262,8 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # NOTE: Location is K19. Every other standard form puts it 2 rows below the
     # S.N (which is K18 here), i.e. K20 — this looks like a typo worth checking
     # against the actual Lab Oven form.
-    "EU": {"device_name": "Lab Oven", "cells": form(18, "H32", extra={"Location": "K19"})},
+    "EU": {"device_name": "Lab Oven", "cells": form(18, "H32", extra={"Location": "K19"}),
+           "alt_cells": [form(17, "H31"), form(19, "H33")]},
 
     # ── Genuinely different forms — written out in full ───────────────────────
     # The incubator form was re-laid-out between the 2025 and 2026 rounds. The
@@ -295,6 +309,15 @@ DEVICE_CONFIGS: dict[str, dict] = {
             "Date": "D62",
             "Status": "F49",
         },
+        # The 2025 round prints the same block two rows higher.
+        "alt_cells": [{
+            "Manufacturer": "D64",
+            "Model": "D66",
+            "S.N": "L58",
+            "Location": "D68",
+            "Date": "D60",
+            "Status": "F47",
+        }],
     },
 
     # "FV": {"device_name": "Endoscopy", "cells": form(18, "K22")},  # unverified

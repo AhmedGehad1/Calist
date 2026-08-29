@@ -14,7 +14,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
-python -m pytest                            # the whole suite (135 tests)
+python -m pytest                            # the whole suite (170 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -72,9 +72,11 @@ The pipeline is a chain of small functions orchestrated by
 1. [`extract_device_code()`](calist.py#L305) — filename stem, split on the first `-`, leading letters
    of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`.
 2. `DEVICE_CONFIGS[code]["cells"]` — maps field names to A1 refs.
-3. [`read_record()`](calist.py#L844) — asks [`_XlsxSource`](calist.py#L491) (or
-   [`_XlsSource`](calist.py#L751) for `.xls`) for the whole cell map at once. Reads the **first
-   non-empty worksheet** — see *Which sheet gets read* below.
+3. [`read_best()`](calist.py#L998) — asks [`_XlsxSource`](calist.py#L491) (or
+   [`_XlsSource`](calist.py#L751) for `.xls`) for the whole cell map at once, falling through to
+   `alt_cells` and then to the form's own printed labels when the map no longer fits — see *When
+   the map no longer fits the form* below. Reads the **first non-empty worksheet** to begin with;
+   see *Which sheet gets read*.
 4. [`clean()`](calist.py#L203) — renders raw cell values as output strings.
 5. [`build_second_row()`](calist.py#L861) — for configs with a `second_row` block, emits a sub-module
    row of the same physical unit.
@@ -217,6 +219,67 @@ so a name list would pick the wrong one and would go stale on the next form revi
 
 Verified: the part-resolution rule agrees with `load_workbook(...).worksheets[0]` on all 82
 readable sample workbooks, 0 disagreements.
+
+### When the map no longer fits the form (`read_best`)
+
+Measured over the 2025 and 2026 rounds — **42,826 forms** — the configured map works for **94.7%**
+of them. The rest are not broken files: the form was re-laid-out between visits and everything below
+the inserted row moved. Nothing announced it, because a shifted map reads blank and a blank field is
+indistinguishable from one an engineer left empty.
+
+[`read_best()`](calist.py#L998) tries, in order, and **stops at the first plausible record**:
+
+1. the configured `cells` — where 94.7% stop, at no extra cost;
+2. each `alt_cells` entry, the layouts already written down;
+3. the fields located from **the form's own printed labels**, on the same sheet;
+4. the same, across the workbook's other tabs.
+
+Steps 3–4 are the net for shifts nobody has recorded yet. `alt_cells` still earns its place: it is
+cheaper (no whole-grid read) and auditable.
+
+**The configured map always wins when it produces a plausible record**, so this can only rescue a
+file the map got wrong and can never change one it already got right.
+
+Four things there are load-bearing:
+
+- **`plausible()` needs the serial *and* the model.** A misaligned map landing on some other number
+  passes a serial-only check; one landing on a caption passes a model-only check. It also rejects a
+  record that is placeholders throughout — a cover sheet filled in with `0` has a serial that
+  classifies as a *placeholder*, not a blank, and without that check the fallback "rescues" it into
+  a row of zeroes.
+- **A shift moves everything, so Date and Status move too.** They carry no label the locator can
+  match — Status is captioned *above* its value, not beside it — so `_uniform_offset()` derives the
+  distance from the four labelled fields and applies it to `Date`, `Status`, `Status2` and `S.N2`.
+  It returns `None` unless every located field moved the same distance in the same column. Without
+  this, `EP` wrote the caption `"Status:"` into the register instead of `"Calibrated"`.
+- **On another sheet, carry nothing across.** The configured references describe a different tab, so
+  reading them there returns whatever happens to sit at those coordinates — which is how a
+  Nebulizer's date came back as `"Gas Flow Analyser"`. Only what was located on that sheet is used;
+  the rest stay blank, because a blank field is honest and a confident wrong one is not.
+- **A value that is itself a caption is not a value.** The Therapeutic Ultrasound form heads a table
+  `Model | S.N.` at row 11 and puts the real fields at row 69; taking the first match read the model
+  as the string `"S.N."`.
+
+### Never read the calibrator as the device
+
+These sheets describe **two** instruments: the device being calibrated and the one doing the
+calibrating. Both blocks print `Model:` and `Serial No.:`. A Hemodialysis cover page prints the
+reference meter **first**:
+
+```
+A15  Calibration Device    G15 Model   H15 EMIS       <- the calibrator
+A22  Device information
+A24  Device name           G24 Model   H24 AK96       <- the dialysis machine
+A26  Manufacturer  Gambro  G26 Serial  H26 11195
+```
+
+so "first `Model:` label wins" records `EMIS` / `9D2749` as the machine's. **Position cannot be
+trusted; the headings can.** `locate_by_labels()` reads `_DEVICE_HEADING` and `_GEAR_HEADING` first
+and only considers cells inside the device's own section. A form with no such headings — every
+single-block form — behaves as before, first match top-down.
+
+`test_the_calibrator_is_never_read_as_the_device` pins this. A register row carrying a Fluke's
+serial looks right and is wrong, and nothing downstream would catch it.
 
 ### Merged cells (this has already lost a field)
 

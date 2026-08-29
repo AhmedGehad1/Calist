@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from calist import read_best as calist_read_best
 from calist import (
     BAD_FORMAT,
     ERROR,
@@ -60,9 +61,12 @@ from calist import (
     UNSUPPORTED,
     build_second_row,
     classify_file,
+    classify_serial,
     clean,
     extract_device_code,
     find_source_files,
+    locate_by_labels,
+    plausible,
     read_record,
 )
 from device_config import DEVICE_CONFIGS
@@ -228,30 +232,6 @@ _DATE_LIKE_RE = re.compile(
 )
 
 
-def classify_serial(serial: str) -> str:
-    """One of: blank, placeholder, assigned, real, suspect.
-
-    ``suspect`` is the finding that matters. It means the cell holds something
-    that is not a serial by any reading — the archive has infusion pumps whose
-    serial cell says "ICU" — and every such device at a site would collapse onto
-    every other one if serial were used as identity. It is the clearest argument
-    for the site+tag identity the schema actually uses.
-    """
-    value = serial.strip()
-    if not value:
-        return "blank"
-    if value.lower() in _PLACEHOLDERS:
-        return "placeholder"
-    if _DATE_LIKE_RE.match(value):
-        return "suspect"
-    if not _HAS_DIGIT_RE.search(value):
-        return "suspect"
-    if _ASSIGNED_SERIAL_RE.match(value):
-        return "assigned"
-    return "real"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # One parsed form
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -784,61 +764,31 @@ def header_from_grid(grid: dict) -> dict:
 
 
 def read_best(path: str, config: dict) -> tuple[dict, int]:
-    """Read a form, trying the device's alternate layouts if the primary fails.
+    """Read a form, trying every layout Calist knows. See calist.read_best.
 
-    Some forms were re-laid-out between rounds — the Baby Incubator sheet moved
-    between the 2025 and 2026 visits, and Infusion has two variants in
-    circulation. ``device_config`` records the current map in ``cells`` and any
-    older ones in ``alt_cells``.
+    Kept as a wrapper for the integer contract this module's callers use: 0 for
+    the configured map, 1+ for an alternate, **-1 when nothing produced a
+    plausible record**. That last case matters — an earlier version returned the
+    primary's output regardless, so a form on an unknown layout was imported
+    with whatever happened to sit at those coordinates and nothing said so.
 
-    **The primary map always wins when it produces a plausible record**, so this
-    can only ever rescue a file the original map got wrong; it can never change
-    one it already got right. That is deliberate: the existing maps are the
-    author's, they are correct for current work, and this is additive.
-
-    Returns the record and which layout produced it: 0 for the primary, 1+ for
-    an alternate, and **-1 when no layout produced a plausible record**. That
-    last case matters — an earlier version returned the primary's output
-    regardless, so a form on an unknown layout was imported with whatever
-    happened to sit at those coordinates and nothing said otherwise.
+    The client header is read in the *same* pass as the mapped cells: opening
+    each workbook twice would double a 35-minute read for the sake of two
+    strings, and the reader resolves a whole block of refs in one go.
     """
-    cells = config["cells"]
     try:
-        # The client header is read in the *same* pass as the mapped cells.
-        # Opening each workbook twice would double a 35-minute read for the sake
-        # of two strings, and the reader resolves a whole block of refs in one
-        # go — asking for 240 more costs almost nothing.
-        record = read_record(path, {**cells, **_HEADER_BLOCK})
+        record, how = calist_read_best(path, config, extra=_HEADER_BLOCK)
     except Exception:  # noqa: BLE001
-        record = {}
-
-    if _plausible(record):
+        return {}, -1
+    if how == "primary":
         return record, 0
-
-    for index, alternate in enumerate(config.get("alt_cells", []), start=1):
-        try:
-            candidate = read_record(path, {**alternate, **_HEADER_BLOCK})
-        except Exception:  # noqa: BLE001
-            continue
-        if _plausible(candidate):
-            return candidate, index
-
-    return record, -1
-
-
-def _plausible(record: dict) -> bool:
-    """A record is plausible when the serial looks like one and a model is set.
-
-    Two fields rather than one: a misaligned map that happens to land on some
-    other number would pass a serial-only check, and one that lands on a label
-    would pass a model-only check. Requiring both together is what actually
-    separates the layouts.
-    """
-    if not record:
-        return False
-    if classify_serial(clean(record.get("S.N"))) in ("suspect", "blank"):
-        return False
-    return bool(clean(record.get("Model")))
+    if how == "none":
+        return record, -1
+    if how.startswith("alt "):
+        return record, int(how.split()[1])
+    # Located from the form's own printed labels — not one of the written-down
+    # layouts, so reported as an alternate rather than as the primary.
+    return record, len(config.get("alt_cells", [])) + 1
 
 
 def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:

@@ -494,23 +494,44 @@ class _XlsxSource:
     def __init__(self, filepath: str):
         self._archive = zipfile.ZipFile(filepath)
         try:
-            parts, self._epoch = self._workbook_parts()
-            self._data = self._populated_sheet(parts)
-            # Excel, LibreOffice and openpyxl all write r as the first
-            # attribute of a cell, and the lookups below rely on it. Two
-            # memchr scans (~0.02ms) prove it for the file in hand rather than
-            # assuming it, because the failure would otherwise be a silently
-            # blank field.
-            if self._data.count(b"<c ") != self._data.count(b'<c r="'):
-                raise ValueError(
-                    "cell references are not written where this reader can "
-                    "find them (unexpected attribute order)")
+            self._parts, self._epoch = self._workbook_parts()
+            self._data = self._populated_sheet(self._parts)
+            self._check_attribute_order()
             self._merges = self._merged_ranges()
             self._strings: list[str] | None = None
             self._date_styles: dict[int, bool] = {}
         except Exception:
             self._archive.close()
             raise
+
+    def _check_attribute_order(self) -> None:
+        """Excel, LibreOffice and openpyxl all write r as a cell's first
+        attribute, and the lookups below rely on it. Two memchr scans
+        (~0.02 ms) prove it for the file in hand rather than assuming it,
+        because the failure would otherwise be a silently blank field.
+        """
+        if self._data.count(b"<c ") != self._data.count(b'<c r="'):
+            raise ValueError(
+                "cell references are not written where this reader can "
+                "find them (unexpected attribute order)")
+
+    def select_sheet(self, name: str) -> bool:
+        """Re-point this source at another tab of the same workbook.
+
+        Used only when the sheet chosen on open turns out not to carry the
+        device details — GC files put them on 'Data entry' behind a 'Report'
+        tab, BM files on 'cover page'. Re-reading one part of an already-open
+        archive is far cheaper than opening the file again.
+        """
+        for candidate, part in self._parts:
+            if candidate != name:
+                continue
+            self._data = self._archive.read(part)
+            self._check_attribute_order()
+            self._merges = self._merged_ranges()
+            self.sheet_name = name
+            return True
+        return False
 
     def close(self) -> None:
         self._archive.close()
@@ -764,6 +785,19 @@ class _XlsSource:
             self._workbook = xlrd.open_workbook(filepath, on_demand=True)
         self._sheet = self._populated_sheet()
         self._merges = getattr(self._sheet, "merged_cells", ()) or ()
+        self.sheet_names = self._workbook.sheet_names()
+        self.sheet_name = self._sheet.name
+
+    def select_sheet(self, name: str) -> bool:
+        """Re-point this source at another sheet — see _XlsxSource.select_sheet."""
+        for index in range(self._workbook.nsheets):
+            if self._workbook.sheet_names()[index] != name:
+                continue
+            self._sheet = self._workbook.sheet_by_index(index)
+            self._merges = getattr(self._sheet, "merged_cells", ()) or ()
+            self.sheet_name = name
+            return True
+        return False
 
     def close(self) -> None:
         try:
@@ -852,6 +886,301 @@ def read_record(filepath: str, cell_map: dict[str, str]) -> Record:
         field: clean(values.get(ref)) if ref else ""
         for field, ref in cell_map.items()
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reading a form whose map no longer fits
+#
+# Measured over the 2025 and 2026 rounds — 42,826 forms — the configured map
+# works for 94.7% of them. The rest are not broken files: they are forms that
+# were re-laid-out between visits, and the shift is uniform, usually one to
+# three rows. `alt_cells` records the layouts we know; this is the net for the
+# ones nobody has written down yet.
+# ──────────────────────────────────────────────────────────────────────────────
+
+#: A serial the site assigned because the device carries none, e.g. BALANCE001.
+_ASSIGNED_SERIAL_RE = re.compile(r"^[A-Za-z][A-Za-z ]*\.?\s*\d+$")
+
+#: The test is *any* digit, not a trailing one: STX21170332PA and NV03124H are
+#: perfectly good manufacturer serials that end in a letter. What separates a
+#: serial from a location typed into the wrong cell is having numbers at all.
+_HAS_DIGIT_RE = re.compile(r"\d")
+
+#: Written where a device genuinely has no serial and none was assigned.
+#:
+#: "0.0" and "0.00" are here because a numeric zero cell arrives as a float and
+#: renders that way — a Baby Warmer cover sheet filled in with zeros throughout
+#: otherwise reads as a real serial and gets imported as a device.
+_PLACEHOLDERS = {"", "-", "--", "n.a", "na", "n/a", "none", "null",
+                 "0", "0.0", "0.00", "00"}
+
+#: A date, in any shape these forms use. Excluded by name because a misaligned
+#: map lands on a date more often than on anything else, and "16-01-2026" would
+#: otherwise pass a digits-only test and be imported as a serial number.
+_DATE_LIKE_RE = re.compile(r"^\s*\d{1,4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,4}\s*$")
+
+
+def classify_serial(serial: str) -> str:
+    """One of: blank, placeholder, assigned, real, suspect.
+
+    ``suspect`` is the finding that matters: the cell holds something that is
+    not a serial by any reading — the archive has infusion pumps whose serial
+    cell says "ICU" — which is how a misaligned map announces itself.
+    """
+    value = serial.strip()
+    if not value:
+        return "blank"
+    if value.lower() in _PLACEHOLDERS:
+        return "placeholder"
+    if _DATE_LIKE_RE.match(value):
+        return "suspect"
+    if not _HAS_DIGIT_RE.search(value):
+        return "suspect"
+    if _ASSIGNED_SERIAL_RE.match(value):
+        return "assigned"
+    return "real"
+
+
+def plausible(record: Record) -> bool:
+    """A record is plausible when the serial looks like one and a model is set.
+
+    Two fields rather than one: a misaligned map that happens to land on some
+    other number would pass a serial-only check, and one that lands on a label
+    would pass a model-only check. Requiring both is what separates layouts.
+    """
+    if not record:
+        return False
+    if classify_serial(clean(record.get("S.N"))) in ("suspect", "blank"):
+        return False
+    model = clean(record.get("Model"))
+    if not model:
+        return False
+    # A record that is placeholders all the way through is not a reading of
+    # anything. Some cover sheets are filled in with "0" throughout, and a
+    # serial of "0" classifies as a placeholder rather than a blank — so
+    # without this the fallback "rescues" them into a row of zeroes.
+    if (model.lower() in _PLACEHOLDERS
+            and clean(record.get("S.N")).lower() in _PLACEHOLDERS):
+        return False
+    return True
+
+
+#: The labels these forms print beside each field.
+_FIELD_LABEL_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("S.N", re.compile(r"^serial\s*(no\.?|number)?\s*:?\s*$|^s\.?\s*n\.?\s*:?\s*$", re.I)),
+    ("Model", re.compile(r"^model\s*:?\s*$", re.I)),
+    ("Manufacturer", re.compile(r"^manufacturer\s*:?\s*$", re.I)),
+    ("Location", re.compile(r"^location\s*:?\s*$", re.I)),
+]
+
+#: Headings that introduce the instrument doing the calibrating.
+#:
+#: This is not a nicety. A Hemodialysis cover page prints the reference meter
+#: ABOVE the device under test:
+#:
+#:     A15  Calibration Device   G15 Model   H15 EMIS      <- the calibrator
+#:     A22  Device information
+#:     A24  Device name          G24 Model   H24 AK96      <- the actual device
+#:
+#: so "take the first Model: label" records the calibrator's model and serial
+#: as the dialysis machine's. Position cannot be trusted; the headings can.
+_GEAR_HEADING = re.compile(
+    r"calibration\s*device|reference\s*(meter|equipment|instrument|standard)"
+    r"|test\s*equipment|standard\s*used|m\s*&\s*te|calibrator\b|equipment\s*used"
+    r"|measuring\s*equipment|traceab",
+    re.I,
+)
+#: The heading that opens the block describing the device being calibrated.
+_DEVICE_HEADING = re.compile(r"device\s*(information|data|under\s*test)|equipment\s*under", re.I)
+
+_LABEL_COLUMNS = "ABCDEFGHIJKLMN"
+_LABEL_MAX_ROW = 95
+
+#: Other things printed on these sheets that are captions, never values.
+_OTHER_CAPTIONS = re.compile(
+    r"^\s*(date\s*(of\s*receipt)?|issue\s*date.*|status|type|class|"
+    r"prev\.?\s*calib\.?|next\s*calib\.?.*|tested\s*by|entered\s*by|"
+    r"revised\s*by|safety|remark s?|accessories)\s*:?\s*$",
+    re.I,
+)
+
+
+def _is_a_label(text: str) -> bool:
+    """True when a cell holds a caption rather than an answer."""
+    return (any(pattern.match(text) for _, pattern in _FIELD_LABEL_PATTERNS)
+            or bool(_OTHER_CAPTIONS.match(text)))
+
+
+def locate_by_labels(values: dict[str, object]) -> dict[str, str]:
+    """Work out where the fields sit from the form's own printed labels.
+
+    ``values`` is a whole-grid read of A1:N95. Returns a cell map, which may be
+    partial — a caller should check it produced a plausible record before
+    trusting it.
+
+    Only cells inside the device's own section are considered; see
+    ``_GEAR_HEADING``. Where the form has no such headings at all, the first
+    match top-down wins, which is what every single-block form wants.
+    """
+    text = {ref: clean(value) for ref, value in values.items()}
+
+    device_row = gear_row = None
+    for row in range(1, _LABEL_MAX_ROW + 1):
+        for column in _LABEL_COLUMNS:
+            body = text.get(f"{column}{row}", "")
+            if not body:
+                continue
+            if device_row is None and _DEVICE_HEADING.search(body):
+                device_row = row
+            if _GEAR_HEADING.search(body) and (gear_row is None or row < gear_row):
+                gear_row = row
+
+    def in_device_section(row: int) -> bool:
+        if device_row is not None:
+            # The device block runs from its heading to the next gear heading
+            # below it, or to the end of the sheet.
+            end = gear_row if gear_row is not None and gear_row > device_row else None
+            return row >= device_row and (end is None or row < end)
+        if gear_row is not None:
+            return row < gear_row
+        return True
+
+    found: dict[str, str] = {}
+    for row in range(1, _LABEL_MAX_ROW + 1):
+        if not in_device_section(row):
+            continue
+        for index, column in enumerate(_LABEL_COLUMNS):
+            body = text.get(f"{column}{row}", "")
+            if not body:
+                continue
+            for field, pattern in _FIELD_LABEL_PATTERNS:
+                if field in found or not pattern.match(body):
+                    continue
+                # Merges make a label repeat across its own span, so the value
+                # is the first cell to the right whose text differs — and which
+                # is not itself a label. The Therapeutic Ultrasound form heads a
+                # table with "Model | S.N." at row 11 and puts the real fields
+                # at row 69; without this the model reads as the string "S.N.".
+                for other in _LABEL_COLUMNS[index + 1:]:
+                    candidate = text.get(f"{other}{row}", "")
+                    if not candidate or candidate == body:
+                        continue
+                    if _is_a_label(candidate):
+                        break
+                    found[field] = f"{other}{row}"
+                    break
+    return found
+
+
+def _uniform_offset(configured: dict[str, str],
+                    located: dict[str, str]) -> int | None:
+    """How far the form shifted, when every located field moved together.
+
+    An inserted row moves *everything* below it, so a form whose Model, serial,
+    manufacturer and location all sit one row lower has moved its Date and
+    Status too. Those two carry no label the locator can match — Status is
+    captioned above its value rather than beside it — so they can only be
+    reached by applying the offset the other four agree on.
+
+    Returns None unless the agreement is exact: same column, same distance, for
+    every field found. A partial or ragged match means something other than a
+    shift, and guessing there is how a caption ends up in the register.
+    """
+    offsets = set()
+    for field, ref in located.items():
+        old = configured.get(field)
+        if not old:
+            return None
+        old_column, old_row = coordinate_to_tuple(old)[1], coordinate_to_tuple(old)[0]
+        new_column, new_row = coordinate_to_tuple(ref)[1], coordinate_to_tuple(ref)[0]
+        if old_column != new_column:
+            return None
+        offsets.add(new_row - old_row)
+    if len(offsets) == 1:
+        moved = offsets.pop()
+        return moved or None
+    return None
+
+
+def _shift(ref: str, rows: int) -> str:
+    row, column = coordinate_to_tuple(ref)
+    return f"{get_column_letter(column)}{row + rows}"
+
+
+def _read_with(source, cell_map: dict[str, str]) -> Record:
+    values = source.values({ref for ref in cell_map.values() if ref})
+    return {field: clean(values.get(ref)) if ref else ""
+            for field, ref in cell_map.items()}
+
+
+def read_best(filepath: str, config: dict,
+              extra: dict[str, str] | None = None) -> tuple[Record, str]:
+    """Read a form, falling back through every layout we know before giving up.
+
+    Returns the record and how it was obtained: ``"primary"``, ``"alt N"``,
+    ``"labels"``, ``"labels on <sheet>"``, or ``"none"``.
+
+    **The configured map always wins when it produces a plausible record**, so
+    this can only rescue a file the map got wrong; it can never change one it
+    already got right. Every later step costs an extra read, and 94.7% of forms
+    stop at the first.
+
+    ``extra`` is merged into every read, for a caller that wants more of the
+    sheet in the same pass — firebase_export takes the client header that way
+    rather than opening all 47,000 workbooks twice.
+    """
+    cells = {**config["cells"], **(extra or {})}
+    source = _open_workbook(filepath)
+    try:
+        record = _read_with(source, cells)
+        if plausible(record):
+            return record, "primary"
+
+        for index, alternate in enumerate(config.get("alt_cells", []), start=1):
+            candidate = _read_with(source, {**alternate, **(extra or {})})
+            if plausible(candidate):
+                return candidate, f"alt {index}"
+
+        # Nothing written down fits. Ask the form where its fields are.
+        grid = {f"{c}{r}": f"{c}{r}"
+                for r in range(1, _LABEL_MAX_ROW + 1) for c in _LABEL_COLUMNS}
+        located = locate_by_labels(source.values(set(grid)))
+        if located:
+            candidate = {**cells, **located}
+            # Carry Date and Status along when the form has simply shifted:
+            # they have no label to find, and leaving them behind is how the
+            # caption "Status:" ends up in the register instead of "Calibrated".
+            rows = _uniform_offset(cells, located)
+            if rows is not None:
+                for field in ("Date", "Status", "Status2", "S.N2"):
+                    if cells.get(field):
+                        candidate[field] = _shift(cells[field], rows)
+            found = _read_with(source, candidate)
+            if plausible(found):
+                return found, "labels"
+
+        # Still nothing: the device details may be on another tab entirely.
+        for name in getattr(source, "sheet_names", []):
+            if name == getattr(source, "sheet_name", None):
+                continue
+            if not source.select_sheet(name):
+                continue
+            located = locate_by_labels(source.values(set(grid)))
+            if not located:
+                continue
+            # Only what was actually located on THIS sheet. The configured
+            # references describe a different tab, so carrying them across
+            # reads whatever happens to sit at those coordinates here — which
+            # is how a Nebulizer's date came back as "Gas Flow Analyser".
+            # A blank field is honest; a confident wrong one is not.
+            found = _read_with(source, {field: located.get(field, "")
+                                        for field in cells})
+            if plausible(found):
+                return found, f"labels on {name!r}"
+
+        return record, "none"
+    finally:
+        source.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -951,7 +1280,13 @@ def extract_records(
             config = DEVICE_CONFIGS[pre.device_code]
 
         try:
-            record = read_record(filepath, config["cells"])
+            record, layout = read_best(filepath, config)
+            if layout not in ("primary", "none"):
+                # Worth saying out loud: a form reaching here has been
+                # re-laid-out since its map was written, and the register only
+                # has a row for it because the fallback found the fields.
+                log.info("%s — read using %s (the form has moved since its "
+                         "cell map was written)", filename, layout)
             record["Code"] = Path(filename).stem
             record["Device"] = config["device_name"]
 
@@ -1265,7 +1600,8 @@ def inspect_form(filepath: str) -> int:
         print(f"\nCannot inspect: {outcome.detail}")
         return 1
 
-    cells = DEVICE_CONFIGS[outcome.device_code]["cells"]
+    config = DEVICE_CONFIGS[outcome.device_code]
+    cells = config["cells"]
     record = read_record(filepath, cells)
     blank = [f for f, v in record.items() if not v]
 
@@ -1274,6 +1610,18 @@ def inspect_form(filepath: str) -> int:
     for field, ref in cells.items():
         value = record[field].replace("\n", " / ")
         print(f"{field:<14}{ref:<7}{value if value else '(blank)'}")
+
+    # What the pipeline would actually record, which is not the same thing once
+    # the configured map stops fitting the form.
+    best, layout = read_best(filepath, config)
+    if layout != "primary":
+        print(f"\nthe configured map does not fit this form — read using: {layout}")
+        if layout == "none":
+            print("no layout, alternate or printed label produced a usable record")
+        else:
+            for field in ("Model", "S.N", "Manufacturer", "Location"):
+                if best.get(field):
+                    print(f"  {field:<14}{best[field]}")
 
     if path.suffix.lower() != ".xls":
         # Asked of the reader itself, not of a second opinion: the whole point
