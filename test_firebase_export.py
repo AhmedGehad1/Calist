@@ -112,12 +112,16 @@ def test_gjaf_carries_its_second_layout_as_an_alternate():
     assert "D56" in dates
 
 
-# ── the client header ─────────────────────────────────────────────────────────
+# ── the form header ───────────────────────────────────────────────────────────
 #
-# Every form names its client, and the address label sits exactly two rows below
-# the name label. The absolute position moves between device types -- C3 on the
-# Defibrillator sheet, C11 on the Nebulizer -- but that gap never does, which is
-# what lets one rule work across all 57 maps.
+# Every form names its client and its contact, and none of it was ever imported:
+# clientAddress, contactName and contactPhone were empty on all 82,287 records,
+# because the only source consulted was Hospital Codes.xlsx.
+#
+# Nothing about the position is stable -- the client name sits at C3, C5, C6,
+# C11 or D6 depending on the device type, the contact at A30, G32, F44, H42 or
+# B28. The *labels* are identical across every form in the archive, so the
+# fields are found by label and one rule covers all 57 maps.
 
 
 def test_finds_the_name_and_the_address_two_rows_below():
@@ -125,10 +129,12 @@ def test_finds_the_name_and_the_address_two_rows_below():
         "C6": "Client Name:", "E6": "Alpha Eye Center",
         "C8": "Client Address:", "E8": "Tolba Awaida St, Zagazig",
     }
-    assert firebase_export.client_from_grid(grid) == (
-        "Alpha Eye Center",
-        "Tolba Awaida St, Zagazig",
-    )
+    assert firebase_export.header_from_grid(grid) == {
+        "client_name": "Alpha Eye Center",
+        "client_address": "Tolba Awaida St, Zagazig",
+        "contact_name": "",
+        "contact_phone": "",
+    }
 
 
 def test_the_label_may_sit_anywhere():
@@ -137,7 +143,7 @@ def test_the_label_may_sit_anywhere():
         "D11": "Client Name", "F11": "Sohag Oncology Institute",
         "D13": "Client Address", "F13": "Kornish Al Nile, Sohag",
     }
-    assert firebase_export.client_from_grid(grid)[0] == "Sohag Oncology Institute"
+    assert firebase_export.header_from_grid(grid)["client_name"] == "Sohag Oncology Institute"
 
 
 def test_the_labels_own_merged_span_is_skipped():
@@ -152,18 +158,52 @@ def test_the_labels_own_merged_span_is_skipped():
         "C6": "Client Name:", "D6": "Client Name:", "E6": "Alpha Eye Center",
         "C8": "Client Address:", "D8": "Client Address:", "E8": "Zagazig",
     }
-    assert firebase_export.client_from_grid(grid) == ("Alpha Eye Center", "Zagazig")
+    out = firebase_export.header_from_grid(grid)
+    assert out["client_name"] == "Alpha Eye Center"
+    assert out["client_address"] == "Zagazig"
 
 
 def test_a_form_with_no_client_header_yields_nothing():
     # Some device types put their test data on the sheet the reader picks and
     # the header elsewhere. The caller falls back to the code list.
-    assert firebase_export.client_from_grid({"A16": "Test parameter (mmHg)"}) == ("", "")
+    assert not any(firebase_export.header_from_grid({"A16": "Test parameter (mmHg)"}).values())
 
 
 def test_a_name_with_no_address_still_gives_the_name():
-    grid = {"C6": "Client Name:", "E6": "Alpha Eye Center"}
-    assert firebase_export.client_from_grid(grid) == ("Alpha Eye Center", "")
+    out = firebase_export.header_from_grid({"C6": "Client Name:", "E6": "Alpha Eye Center"})
+    assert out["client_name"] == "Alpha Eye Center"
+    assert out["client_address"] == ""
+
+
+def test_finds_the_contact_and_their_number():
+    # Contacts sit far lower than the client header and often in column A --
+    # A30, G32, F44, H42, B28 across five device types -- so position tells you
+    # nothing and the label tells you everything.
+    grid = {
+        "A30": "Contact Person Name:", "C30": "Mohamed Sayed",
+        "A31": "Phone No.:", "C31": "01284466683",
+    }
+    out = firebase_export.header_from_grid(grid)
+    assert out["contact_name"] == "Mohamed Sayed"
+    assert out["contact_phone"] == "01284466683"
+
+
+def test_a_phone_number_keeps_its_leading_zero():
+    # Read as text, never coerced to a number -- the same reason the Excel
+    # writer uses TextCellValue for phones.
+    grid = {"H43": "Phone No.:", "J43": "01204715812"}
+    assert firebase_export.header_from_grid(grid)["contact_phone"] == "01204715812"
+
+
+def test_client_and_contact_are_found_in_the_same_pass():
+    grid = {
+        "C6": "Client Name:", "E6": "Alpha Eye Center",
+        "C8": "Client Address:", "E8": "Zagazig",
+        "A30": "Contact Person Name:", "C30": "Mohamed Sayed",
+        "A31": "Phone No.:", "C31": "01284466683",
+    }
+    out = firebase_export.header_from_grid(grid)
+    assert all(out.values()), out
 
 
 def test_the_code_list_wins_on_the_name_and_the_form_supplies_the_address():

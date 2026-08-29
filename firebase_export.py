@@ -296,6 +296,12 @@ class ParsedForm:
     client_name: str = ""
     client_address: str = ""
 
+    #: The engineer's contact at the site, and their number. Recorded per visit
+    #: in the form itself, which is the right grain -- a returning customer gets
+    #: a fresh contact each year.
+    contact_name: str = ""
+    contact_phone: str = ""
+
     #: Which cell layout read this form: 0 is the device's primary map, 1+ an
     #: alternate. Reported so a form that changed between rounds is visible
     #: rather than silently handled.
@@ -699,62 +705,82 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
     return forms
 
 
-#: Columns and rows a form's client header can occupy.
+#: Where a form's header fields can sit.
 #:
-#: Read as one block and searched by label rather than pinned to fixed cells,
-#: because the header sits at a different row on almost every device type — C3
-#: on the Defibrillator sheet, C5 on Anaesthesia, C6 on the Patient Monitor, C11
-#: on the Nebulizer, D6 on the Baby Incubator. Pinning coordinates would mean 57
-#: more cell maps to maintain and get wrong.
-_CLIENT_COLS = "BCDEFGHIJK"
-_CLIENT_BLOCK = {
+#: Read as one block and searched **by label**, never by fixed cell. The client
+#: name sits at C3 on the Defibrillator sheet, C5 on Anaesthesia, C6 on the
+#: Patient Monitor, C11 on the Nebulizer, D6 on the Baby Incubator; the contact
+#: is at A30, G32, F44, H42, B28. Nothing about the position is stable.
+#:
+#: The *labels* are. "Client Name:", "Client Address:", "Contact Person Name:"
+#: and "Phone No.:" are word-for-word identical across every device type in the
+#: archive, so one rule covers all 57 maps without touching any of them.
+#: Contacts reach row 45 and often sit in column A, which is why the block is
+#: this large.
+_HEADER_COLS = "ABCDEFGHIJKL"
+_HEADER_BLOCK = {
     f"{col}{row}": f"{col}{row}"
-    for row in range(1, 25)
-    for col in _CLIENT_COLS
+    for row in range(1, 56)
+    for col in _HEADER_COLS
 }
 
-_CLIENT_LABEL = re.compile(r"^\s*client\s*(name|address)\s*:?\s*$", re.I)
-_CLIENT_NAME_LABEL = re.compile(r"^\s*client\s*name\s*:?\s*$", re.I)
+#: Anything that is a label rather than a value. Used to step over a label's own
+#: merged span — Calist resolves merges, so the cells beside "Client Name:"
+#: report that same text, and the first non-empty neighbour is not the answer.
+_ANY_LABEL = re.compile(
+    r"^\s*(client\s*(name|address)|contact\s*person\s*name|phone\s*(no|number)?)"
+    r"[\s:.]*$",
+    re.I,
+)
+
+_LABELS = {
+    # Trailing punctuation is [\s:.]* rather than a single optional character:
+    # the label is written "Phone No.:" -- a full stop AND a colon -- which a
+    # one-character class silently fails to match.
+    "client_name": re.compile(r"^\s*client\s*name[\s:.]*$", re.I),
+    "client_address": re.compile(r"^\s*client\s*address[\s:.]*$", re.I),
+    "contact_name": re.compile(r"^\s*contact\s*person\s*name[\s:.]*$", re.I),
+    "contact_phone": re.compile(r"^\s*phone\s*(no|number)?[\s:.]*$", re.I),
+}
 
 
-def client_from_grid(grid: dict) -> tuple[str, str]:
-    """The client's name and address, located by label.
+def header_from_grid(grid: dict) -> dict:
+    """Client and contact details, located by label.
 
-    **The address label is always exactly two rows below the name label.** The
-    absolute position moves between device types but that gap never does, which
-    is what makes one rule work across every form in the archive.
+    Returns a dict of the four fields, each empty when its label is absent —
+    some device types (`CE` among them) put their test data on the sheet the
+    reader picks and the header on another, so nothing is found and the caller
+    falls back to the code list.
 
-    Returns empty strings when the form has no client header — some device
-    types, `CE` among them, put their test data on the sheet the reader picks
-    and the header elsewhere. The caller falls back to the code list.
+    Phone numbers keep their leading zero: they are read as text and never
+    coerced to a number, which is the same reason the Excel writer uses
+    ``TextCellValue`` for them.
     """
     text = {
         ref: (str(value).strip() if value is not None else "")
         for ref, value in grid.items()
     }
 
-    for ref, value in text.items():
-        if not _CLIENT_NAME_LABEL.match(value):
-            continue
-
+    def value_beside(ref: str) -> str:
         match = re.match(r"([A-Z]+)(\d+)", ref)
         if not match:
-            continue
-        column, row = match.group(1), int(match.group(2))
-
-        def beside(target_row: int) -> str:
-            # Skips the label's own merged span. Calist resolves merged cells,
-            # so the cells beside a label report the label's text as well —
-            # taking the first non-empty neighbour would return "Client Name:".
-            for candidate in _CLIENT_COLS[_CLIENT_COLS.index(column) + 1:]:
-                found = text.get(f"{candidate}{target_row}", "")
-                if found and not _CLIENT_LABEL.match(found):
-                    return found
             return ""
+        column, row = match.group(1), match.group(2)
+        for candidate in _HEADER_COLS[_HEADER_COLS.index(column) + 1:]:
+            found = text.get(f"{candidate}{row}", "")
+            if found and not _ANY_LABEL.match(found):
+                return found
+        return ""
 
-        return beside(row), beside(row + 2)
+    found: dict[str, str] = {key: "" for key in _LABELS}
+    for ref, value in text.items():
+        if not value:
+            continue
+        for key, pattern in _LABELS.items():
+            if not found[key] and pattern.match(value):
+                found[key] = value_beside(ref)
 
-    return "", ""
+    return found
 
 
 def read_best(path: str, config: dict) -> tuple[dict, int]:
@@ -782,7 +808,7 @@ def read_best(path: str, config: dict) -> tuple[dict, int]:
         # Opening each workbook twice would double a 35-minute read for the sake
         # of two strings, and the reader resolves a whole block of refs in one
         # go — asking for 240 more costs almost nothing.
-        record = read_record(path, {**cells, **_CLIENT_BLOCK})
+        record = read_record(path, {**cells, **_HEADER_BLOCK})
     except Exception:  # noqa: BLE001
         record = {}
 
@@ -791,7 +817,7 @@ def read_best(path: str, config: dict) -> tuple[dict, int]:
 
     for index, alternate in enumerate(config.get("alt_cells", []), start=1):
         try:
-            candidate = read_record(path, {**alternate, **_CLIENT_BLOCK})
+            candidate = read_record(path, {**alternate, **_HEADER_BLOCK})
         except Exception:  # noqa: BLE001
             continue
         if _plausible(candidate):
@@ -841,7 +867,11 @@ def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:
             form.location = clean(record.get("Location"))
             form.form_date = clean(record.get("Date"))
             form.status = clean(record.get("Status"))
-            form.client_name, form.client_address = client_from_grid(record)
+            header = header_from_grid(record)
+            form.client_name = header["client_name"]
+            form.client_address = header["client_address"]
+            form.contact_name = header["contact_name"]
+            form.contact_phone = header["contact_phone"]
             form.layout = layout
             if layout < 0 and not form.attention:
                 form.attention = (
@@ -1680,8 +1710,11 @@ def build_document(form: ParsedForm, customer: dict | None) -> dict:
         # has never heard of 25 of these sites — so the form fills both gaps.
         "clientName": (customer or {}).get("name", "") or form.client_name,
         "clientAddress": (customer or {}).get("address", "") or form.client_address,
-        "contactName": "",
-        "contactPhone": "",
+        # Per visit, from the form, which is the right grain: a returning
+        # customer gets a fresh contact each year, so this belongs on the
+        # calibration rather than on the customer.
+        "contactName": form.contact_name,
+        "contactPhone": form.contact_phone,
         "tests": {},
         "formData": {},
 
