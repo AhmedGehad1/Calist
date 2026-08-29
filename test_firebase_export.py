@@ -112,6 +112,66 @@ def test_gjaf_carries_its_second_layout_as_an_alternate():
     assert "D56" in dates
 
 
+# ── tombstones ────────────────────────────────────────────────────────────────
+#
+# When an engineer deletes a calibration in the app, the record goes and a
+# tombstone is written in its place. Without one the deletion would not stick:
+# this import is idempotent and keyed on the filename, so the next run recreates
+# whatever is on disk and the engineer watches a device they removed come back.
+
+
+class _FakeSnap:
+    def __init__(self, doc_id):
+        self.id = doc_id
+
+
+class _FakeCollection:
+    def __init__(self, ids, error=None):
+        self._ids = ids
+        self._error = error
+
+    def stream(self):
+        if self._error:
+            raise self._error
+        return [_FakeSnap(i) for i in self._ids]
+
+
+class _FakeDb:
+    def __init__(self, ids=(), error=None):
+        self._ids = ids
+        self._error = error
+
+    def collection(self, name):
+        assert name == "deletions"
+        return _FakeCollection(self._ids, self._error)
+
+
+def test_tombstones_are_read_as_a_set_of_ids():
+    assert firebase_export.load_tombstones(_FakeDb(["G302-BP001-0326", "x"])) == {
+        "G302-BP001-0326",
+        "x",
+    }
+
+
+def test_no_tombstones_is_an_empty_set_not_an_error():
+    assert firebase_export.load_tombstones(_FakeDb()) == set()
+
+
+def test_an_unreadable_tombstone_collection_does_not_stop_the_import(capsys):
+    """Fails soft, loudly.
+
+    Being unable to honour a deletion is a smaller problem than being unable to
+    import at all -- but a silent empty set would be indistinguishable from
+    "nobody has deleted anything", so it has to say so.
+    """
+    result = firebase_export.load_tombstones(_FakeDb(error=RuntimeError("no auth")))
+
+    assert result == set()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "may reappear" in out
+
+
 # ── the write guard ───────────────────────────────────────────────────────────
 
 

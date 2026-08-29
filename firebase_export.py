@@ -81,6 +81,16 @@ CALIBRATIONS = "calibrations"
 #: One document per site, keyed by customer code.
 CUSTOMERS = "customers"
 
+#: One tombstone per calibration an engineer deleted from the app, keyed by the
+#: record id it replaces.
+#:
+#: Deleting the record alone would not stick. This import is idempotent and
+#: keyed on the filename, so the next run over the archive recreates whatever it
+#: finds on disk — the engineer would watch a device they removed come back, and
+#: stop trusting the button. Every write path here reads this collection first
+#: and skips what it names.
+DELETIONS = "deletions"
+
 #: Cloud Storage prefix. Mirrors the on-disk shape so a storagePath stays
 #: legible to somebody reading a Firestore document.
 STORAGE_PREFIX = "archive"
@@ -966,8 +976,11 @@ def push_firestore(
     *,
     limit: int = 0,
     progress=None,
-) -> tuple[int, int]:
-    """Write calibration and customer documents. Returns (records, customers).
+) -> tuple[int, int, int]:
+    """Write calibration and customer documents.
+
+    Returns ``(records, customers, skipped)`` — the last being records an
+    engineer deleted from the app, which are passed over rather than rewritten.
 
     Idempotent: every document id is derived from the file it came from, so a
     re-run updates in place. That is not a nicety — an 87,000-file import will
@@ -1013,10 +1026,21 @@ def push_firestore(
     # Counted as *distinct documents*, not files written. Several files can map
     # to one record — copies of the same device's paperwork — and reporting the
     # file count would claim more records than the collection actually holds.
+    # Records an engineer deleted from the app. Skipped rather than written, or
+    # this run would undo their deletion.
+    tombstones = load_tombstones(db)
+    if tombstones:
+        print(f"  {len(tombstones):,} deleted record(s) will be skipped")
+
     written: set[str] = set()
+    skipped_deleted = 0
     batch = db.batch()
     pending = 0
     for index, form in enumerate(chosen):
+        if form.doc_id in tombstones:
+            skipped_deleted += 1
+            continue
+
         document = build_document(form, codes.get(form.customer_code))
         document["uploadedAt"] = fs.SERVER_TIMESTAMP
         batch.set(
@@ -1035,7 +1059,28 @@ def push_firestore(
     if progress:
         progress(len(chosen), len(chosen))
 
-    return len(written), customer_count
+    return len(written), customer_count, skipped_deleted
+
+
+def load_tombstones(db) -> set[str]:
+    """Record ids an engineer has deleted from the app.
+
+    Read once at the start of a write, because the alternative is checking each
+    of 87,000 documents individually. The collection holds one small document
+    per deletion and is expected to stay in the hundreds, so pulling it whole
+    costs almost nothing.
+
+    Deliberately fails soft: an import that cannot read the tombstones would
+    otherwise refuse to run at all, and being unable to honour a deletion is a
+    smaller problem than being unable to import. The count is reported so a
+    silent zero is never mistaken for "nobody has deleted anything".
+    """
+    try:
+        return {snap.id for snap in db.collection(DELETIONS).stream()}
+    except Exception as error:  # noqa: BLE001
+        print(f"  WARNING: could not read {DELETIONS}: {type(error).__name__}")
+        print("  Deleted records may reappear. Fix this before trusting the run.")
+        return set()
 
 
 def reachable(path: str) -> str:
@@ -1080,15 +1125,36 @@ def push_storage(
     if limit:
         chosen = chosen[:limit]
 
+    # A deleted record must not get its workbook back, and any copy uploaded
+    # before the deletion is now an orphan — a certificate for a device that,
+    # as far as the engineers are concerned, does not exist. This is where they
+    # are cleared: the app cannot do it, because clients have no write access to
+    # the bucket and granting it would let any handset erase any certificate.
+    tombstones = load_tombstones(db)
+    removed = 0
+
     uploaded = skipped = 0
     for index, form in enumerate(chosen):
         blob_name = f"{STORAGE_PREFIX}/{form.year}/{form.customer_code or 'UNKNOWN'}/{form.filename}"
         blob = bucket.blob(blob_name)
+
+        if form.doc_id in tombstones:
+            try:
+                if blob.exists():
+                    blob.delete()
+                    removed += 1
+            except Exception as error:  # noqa: BLE001
+                print(f"\n  could not clear {blob_name}: {type(error).__name__}")
+            continue
+
         try:
             if blob.exists():
                 skipped += 1
             else:
-                blob.upload_from_filename(reachable(form.path))
+                # Same 900 s as upload_pending: the default 120 is generous
+                # for a 129 KB form and hopeless for the handful carrying
+                # embedded images, which run to 14 MB.
+                blob.upload_from_filename(reachable(form.path), timeout=900)
                 uploaded += 1
             db.collection(CALIBRATIONS).document(form.doc_id).set(
                 {"storagePath": blob_name}, merge=True
@@ -1099,7 +1165,7 @@ def push_storage(
         if progress and (index % 25 == 0 or index == len(chosen) - 1):
             progress(index + 1, len(chosen))
 
-    return uploaded, skipped
+    return uploaded, skipped, removed
 
 
 def upload_pending(
@@ -1943,20 +2009,24 @@ def _run_push(args, root: Path) -> int:
     db, storage_module = connect(args.project)
 
     print("writing records…")
-    records, customers = push_firestore(
+    records, customers, skipped = push_firestore(
         forms, codes, db, limit=args.limit, progress=tick
     )
     print()
     print(f"  {records:,} calibrations, {customers:,} customers")
+    if skipped:
+        print(f"  {skipped:,} skipped — deleted by an engineer")
 
     if args.storage:
         print("uploading workbooks…")
-        uploaded, skipped = push_storage(
+        uploaded, skipped, removed = push_storage(
             forms, db, storage_module,
             years=storage_years, limit=args.limit, progress=tick,
         )
         print()
         print(f"  {uploaded:,} uploaded, {skipped:,} already there")
+        if removed:
+            print(f"  {removed:,} workbook(s) cleared for deleted records")
 
     print()
     print("Done. Re-run any time — it updates in place.")
