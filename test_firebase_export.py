@@ -6,6 +6,7 @@ Firebase. The module's other behaviour is exercised by its own --dry-run and
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -66,9 +67,20 @@ def test_a_deep_file_can_actually_be_read(tmp_path):
     with open(reachable(target), "wb") as handle:
         handle.write(b"x" * 1234)
 
-    with pytest.raises(OSError):
-        Path(target).stat()          # what used to happen
+    # The assertion that matters: the prefixed path always opens.
     assert Path(reachable(target)).stat().st_size == 1234
+
+    # Whether the *bare* path fails is a property of the machine, not of the
+    # code: MAX_PATH is lifted by the LongPathsEnabled policy, which the GitHub
+    # runner sets and most workstations do not. Asserting it unconditionally
+    # turned a green suite red on CI and blocked a release, so it is recorded
+    # only where it actually applies.
+    try:
+        Path(target).stat()
+    except OSError:
+        pass                          # the usual case, and why reachable exists
+    else:
+        assert sys.getwindowsversion().major >= 10, "long paths on an old Windows"
 
 
 # ── device aliases ────────────────────────────────────────────────────────────
