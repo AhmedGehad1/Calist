@@ -67,8 +67,27 @@ def form(
 #                  `cells` is always tried first and only a file it cannot read
 #                  sensibly falls through to an alternate, so adding one can
 #                  rescue old forms but can never change a file that already
-#                  reads correctly.  Read by firebase_export.py; calist.py
-#                  ignores it, so the register output is unaffected.
+#                  reads correctly.  Used by calist.read_best, so it does reach
+#                  the register — a form that used to import blank now imports
+#                  its readings.
+#
+# ── device_name vs. the master code list ──────────────────────────────────────
+#
+# `device_name` here and DEVICE_NAMES in device_names.py disagree for 24 codes,
+# and that is expected rather than a fault to fix.  This file holds the wording
+# engineers read in the register; the master document holds the wording the
+# site's code list uses, and it carries typos of its own ("Utrasound,Abdomen",
+# "Infrared lamb", "Bactrial identification device").
+#
+# Confirmed synonyms, not conflicts — do not "correct" these:
+#
+#   AH   SPO2 here, "Pulse Oximeter" in the master list.  Same device.
+#   AE   ESU here, "Diathermy,Cryo" there.
+#   CE   Sphygmomanometer here, "Mercury Meter" there.
+#   BB   Ultrasound here, "Utrasound,Abdomen" there.
+#
+# Changing any device_name rewrites that text in every register rebuilt
+# afterwards, so treat it as a data decision rather than a typo fix.
 # ──────────────────────────────────────────────────────────────────────────────
 
 DEVICE_CONFIGS: dict[str, dict] = {
@@ -119,6 +138,7 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AA": {"device_name": "Anesthesia",             "cells": form(17, "G33")},
     "BP": {"device_name": "Balance",                "cells": form(18, "G30")},
     "EO": {"device_name": "Pipet",                  "cells": form(18, "H29")},
+    # SPO2 and "Pulse Oximeter" (the master list's wording) are the same device.
     "AH": {"device_name": "SPO2",                   "cells": form(14, "G27")},
     "EE": {"device_name": "Flowmeter",              "cells": form(17, "G31")},
     "GP": {"device_name": "Holter machines",        "cells": form(18, "G26")},
