@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from device_config import DEVICE_CONFIGS
+import firebase_export
 from firebase_export import reachable
 
 
@@ -106,3 +107,18 @@ def test_gjaf_carries_its_second_layout_as_an_alternate():
     # at row 60.
     dates = [alt["Date"] for alt in DEVICE_CONFIGS["GJAF"]["alt_cells"]]
     assert "D56" in dates
+
+
+# ── the write guard ───────────────────────────────────────────────────────────
+
+
+def test_upload_only_refuses_without_yes(tmp_path, capsys):
+    """The write guard has to hold on the new mode too.
+
+    --upload-only skips the archive scan, so it reaches the point of writing far
+    sooner than --push does. It must still refuse without --yes, and it must
+    refuse *before* opening a connection — which is what makes this testable
+    with no credentials present.
+    """
+    assert firebase_export.main([str(tmp_path), "--upload-only"]) == 3
+    assert "Refusing to write without --yes" in capsys.readouterr().out

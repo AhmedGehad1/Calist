@@ -1102,6 +1102,152 @@ def push_storage(
     return uploaded, skipped
 
 
+def upload_pending(
+    db,
+    storage_module,
+    *,
+    years: set[int],
+    jobs: int = 16,
+    limit: int = 0,
+) -> tuple[int, int, list[tuple[str, str]]]:
+    """Finish the Storage upload, working from the records instead of the archive.
+
+    ``push_storage`` above is correct but slow: measured at **74 objects/minute**
+    against the real bucket, which is seven hours for one round of the archive.
+    At ~129 KB a file that is 159 KB/s — a fraction of the line — so it is not
+    bandwidth-bound, it is waiting. Three round trips per file, none overlapping:
+    ``exists()``, then the upload, then a single-document ``storagePath`` write.
+
+    This does the same work about fifteen times faster:
+
+    - **The bucket is listed once** into a set, rather than asking the server
+      about each file in turn. One listing replaces 47,478 round trips.
+    - **``storagePath`` is written in batches of 400.** Firestore takes 500
+      operations per round trip, so ~47,000 writes become ~120.
+    - **Uploads run on a thread pool.** They are independent and purely
+      I/O-bound, so the GIL is released for the whole of each one — the case
+      threads are actually good at.
+
+    The work list comes from Firestore rather than a fresh scan, because every
+    record already carries ``sourcePath``, ``sourceYear``, ``customerCode`` and
+    ``fileName``. Rebuilding it from the archive would mean re-reading 87,000
+    workbooks — 35 minutes before a single byte moved.
+
+    Safe to run repeatedly: anything already in the bucket is skipped, and a
+    record whose file is up but whose ``storagePath`` never got written (an
+    interrupted run) is stamped without re-uploading.
+
+    Returns ``(uploaded, stamped, failures)``.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import requests.adapters
+
+    bucket = storage_module.bucket()
+
+    # requests defaults to a pool of 10 connections. Workers beyond that queue
+    # silently on a free one, so the parallelism is added and then given away.
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=jobs, pool_maxsize=jobs * 2, max_retries=3
+    )
+    bucket.client._http.mount("https://", adapter)
+
+    print("  listing the bucket…", flush=True)
+    present = {blob.name for blob in bucket.list_blobs()}
+    print(f"    {len(present):,} objects already there", flush=True)
+
+    print("  reading records…", flush=True)
+    pending: list[tuple[str, str, str]] = []      # doc id, blob name, source path
+    stamp_only: list[tuple[str, str]] = []        # file is up, record never said so
+    for snap in (
+        db.collection(CALIBRATIONS)
+        .select(["sourceYear", "customerCode", "fileName", "sourcePath", "storagePath"])
+        .stream()
+    ):
+        record = snap.to_dict()
+        if record.get("sourceYear") not in years:
+            continue
+        filename = (record.get("fileName") or "").strip()
+        if not filename:
+            continue
+
+        site = record.get("customerCode") or "UNKNOWN"
+        blob_name = f"{STORAGE_PREFIX}/{record['sourceYear']}/{site}/{filename}"
+
+        if blob_name in present:
+            if record.get("storagePath") != blob_name:
+                stamp_only.append((snap.id, blob_name))
+        else:
+            pending.append((snap.id, blob_name, record.get("sourcePath") or ""))
+
+    if limit:
+        pending = pending[:limit]
+
+    print(f"    {len(pending):,} to upload, {len(stamp_only):,} to stamp only", flush=True)
+
+    done: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = []
+
+    def send(job: tuple[str, str, str]) -> tuple[str, str, str | None]:
+        doc_id, blob_name, source = job
+        try:
+            # The SDK defaults to 120 s, which is generous for the ~129 KB the
+            # average form weighs and far too short for the handful that carry
+            # embedded images — six workbooks run from 5 MB to 14 MB and timed
+            # out on every attempt until this was raised.
+            bucket.blob(blob_name).upload_from_filename(
+                reachable(source), timeout=900
+            )
+            return doc_id, blob_name, None
+        except Exception as error:  # noqa: BLE001
+            return doc_id, blob_name, f"{type(error).__name__}: {error}"
+
+    # Timed from here, not from the top: listing the bucket and streaming the
+    # records is a fixed couple of minutes, and folding that into the rate makes
+    # a fast upload look slow and the estimate useless.
+    upload_started = datetime.now()
+    if pending:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            futures = [pool.submit(send, job) for job in pending]
+            for index, future in enumerate(as_completed(futures)):
+                doc_id, blob_name, error = future.result()
+                if error:
+                    failures.append((blob_name, error))
+                else:
+                    done.append((doc_id, blob_name))
+                if index % 100 == 0 or index == len(futures) - 1:
+                    finished = index + 1
+                    mins = max(
+                        (datetime.now() - upload_started).total_seconds() / 60, 0.01
+                    )
+                    rate = finished / mins
+                    left = (len(futures) - finished) / rate if rate else 0
+                    print(f"\r  {finished:,}/{len(futures):,}  {rate:,.0f}/min  "
+                          f"~{left:,.0f} min left    ", end="", flush=True)
+
+    # One round trip per 400 records instead of one per record.
+    to_write = done + stamp_only
+    if to_write:
+        print(f"\n  writing storagePath for {len(to_write):,} records…", flush=True)
+        batch = db.batch()
+        pending_writes = 0
+        for doc_id, blob_name in to_write:
+            batch.set(
+                db.collection(CALIBRATIONS).document(doc_id),
+                {"storagePath": blob_name},
+                merge=True,
+            )
+            pending_writes += 1
+            if pending_writes >= 400:
+                batch.commit()
+                batch = db.batch()
+                pending_writes = 0
+        if pending_writes:
+            batch.commit()
+
+    return len(done), len(stamp_only), failures
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # The dry-run report
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1850,6 +1996,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="also upload the workbooks to Cloud Storage")
     parser.add_argument("--storage-years", default="2025,2026",
                         help="which years' workbooks to upload (default: 2025,2026)")
+    parser.add_argument("--upload-only", action="store_true",
+                        help="finish the Storage upload from the records already in "
+                             "Firestore; no archive scan, uploads run in parallel")
+    parser.add_argument("--jobs", type=int, default=16,
+                        help="parallel uploads for --upload-only (default: 16)")
     args = parser.parse_args(argv)
 
     # The report carries Arabic folder names and box-drawing rules, and the
@@ -1865,6 +2016,40 @@ def main(argv: list[str] | None = None) -> int:
     if not root.is_dir():
         print(f"error: {root} is not a folder", file=sys.stderr)
         return 2
+
+    if args.upload_only:
+        storage_years = {
+            int(y) for y in str(args.storage_years).split(",") if y.strip().isdigit()
+        }
+        print(f"Finishing the Storage upload for {sorted(storage_years)}, "
+              f"{args.jobs} at a time.")
+        print("Reading the work list from Firestore — the archive is not rescanned.")
+        if not args.yes:
+            print("\nRefusing to write without --yes. Re-run with --yes when ready.")
+            return 3
+
+        db, storage_module = connect(args.project)
+
+        started = datetime.now()
+        uploaded, stamped, failures = upload_pending(
+            db, storage_module,
+            years=storage_years, jobs=args.jobs, limit=args.limit,
+        )
+        minutes = max((datetime.now() - started).total_seconds() / 60, 0.01)
+
+        print()
+        print(f"  {uploaded:,} uploaded, {stamped:,} already up and now recorded")
+        print(f"  {minutes:.1f} min wall clock, including the listing and the "
+              f"record scan")
+        if failures:
+            print(f"\n  {len(failures):,} failed:")
+            for name, why in failures[:15]:
+                print(f"    {name}: {why[:90]}")
+            if len(failures) > 15:
+                print(f"    … and {len(failures) - 15:,} more")
+        print()
+        print("Done. Re-run any time — anything already up is skipped.")
+        return 0
 
     if args.discover:
         wanted = {c.strip().upper() for c in args.discover.split(",") if c.strip()}
