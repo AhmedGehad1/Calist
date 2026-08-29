@@ -83,7 +83,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
