@@ -112,6 +112,77 @@ def test_gjaf_carries_its_second_layout_as_an_alternate():
     assert "D56" in dates
 
 
+# ── the client header ─────────────────────────────────────────────────────────
+#
+# Every form names its client, and the address label sits exactly two rows below
+# the name label. The absolute position moves between device types -- C3 on the
+# Defibrillator sheet, C11 on the Nebulizer -- but that gap never does, which is
+# what lets one rule work across all 57 maps.
+
+
+def test_finds_the_name_and_the_address_two_rows_below():
+    grid = {
+        "C6": "Client Name:", "E6": "Alpha Eye Center",
+        "C8": "Client Address:", "E8": "Tolba Awaida St, Zagazig",
+    }
+    assert firebase_export.client_from_grid(grid) == (
+        "Alpha Eye Center",
+        "Tolba Awaida St, Zagazig",
+    )
+
+
+def test_the_label_may_sit_anywhere():
+    # Same rule, a different device type's layout.
+    grid = {
+        "D11": "Client Name", "F11": "Sohag Oncology Institute",
+        "D13": "Client Address", "F13": "Kornish Al Nile, Sohag",
+    }
+    assert firebase_export.client_from_grid(grid)[0] == "Sohag Oncology Institute"
+
+
+def test_the_labels_own_merged_span_is_skipped():
+    """The reason this is not just "take the next non-empty cell".
+
+    Calist resolves merged cells, so a label merged across C6:D6 reports its own
+    text for D6 as well. Taking the first non-empty neighbour would return
+    "Client Name:" as the hospital's name -- which is exactly what the first
+    version of this did.
+    """
+    grid = {
+        "C6": "Client Name:", "D6": "Client Name:", "E6": "Alpha Eye Center",
+        "C8": "Client Address:", "D8": "Client Address:", "E8": "Zagazig",
+    }
+    assert firebase_export.client_from_grid(grid) == ("Alpha Eye Center", "Zagazig")
+
+
+def test_a_form_with_no_client_header_yields_nothing():
+    # Some device types put their test data on the sheet the reader picks and
+    # the header elsewhere. The caller falls back to the code list.
+    assert firebase_export.client_from_grid({"A16": "Test parameter (mmHg)"}) == ("", "")
+
+
+def test_a_name_with_no_address_still_gives_the_name():
+    grid = {"C6": "Client Name:", "E6": "Alpha Eye Center"}
+    assert firebase_export.client_from_grid(grid) == ("Alpha Eye Center", "")
+
+
+def test_the_code_list_wins_on_the_name_and_the_form_supplies_the_address():
+    # The code list carries the official spelling, but has no addresses at all.
+    customer = firebase_export.build_customer(
+        "G302", {"name": "Official Name"}, "hospital", ("Form Name", "Some Street")
+    )
+    assert customer["name"] == "Official Name"
+    assert customer["address"] == "Some Street"
+
+
+def test_the_form_names_a_site_the_code_list_has_never_heard_of():
+    # 25 sites are missing from Hospital Codes.xlsx entirely, carrying 7,610
+    # calibrations between them. Their forms know perfectly well who they are.
+    customer = firebase_export.build_customer("F22", None, "hospital", ("Isis", "Luxor"))
+    assert customer["name"] == "Isis"
+    assert customer["address"] == "Luxor"
+
+
 # ── tombstones ────────────────────────────────────────────────────────────────
 #
 # When an engineer deletes a calibration in the app, the record goes and a

@@ -289,6 +289,13 @@ class ParsedForm:
     form_date: str = ""
     status: str = ""
 
+    #: The client as the *form* names it, read from the header rather than the
+    #: code list. Worth having for two reasons: it is the only source of an
+    #: address anywhere in the pipeline, and it covers sites the code list has
+    #: never heard of — 25 of them, carrying 7,610 calibrations between them.
+    client_name: str = ""
+    client_address: str = ""
+
     #: Which cell layout read this form: 0 is the device's primary map, 1+ an
     #: alternate. Reported so a form that changed between rounds is visible
     #: rather than silently handled.
@@ -692,6 +699,64 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
     return forms
 
 
+#: Columns and rows a form's client header can occupy.
+#:
+#: Read as one block and searched by label rather than pinned to fixed cells,
+#: because the header sits at a different row on almost every device type — C3
+#: on the Defibrillator sheet, C5 on Anaesthesia, C6 on the Patient Monitor, C11
+#: on the Nebulizer, D6 on the Baby Incubator. Pinning coordinates would mean 57
+#: more cell maps to maintain and get wrong.
+_CLIENT_COLS = "BCDEFGHIJK"
+_CLIENT_BLOCK = {
+    f"{col}{row}": f"{col}{row}"
+    for row in range(1, 25)
+    for col in _CLIENT_COLS
+}
+
+_CLIENT_LABEL = re.compile(r"^\s*client\s*(name|address)\s*:?\s*$", re.I)
+_CLIENT_NAME_LABEL = re.compile(r"^\s*client\s*name\s*:?\s*$", re.I)
+
+
+def client_from_grid(grid: dict) -> tuple[str, str]:
+    """The client's name and address, located by label.
+
+    **The address label is always exactly two rows below the name label.** The
+    absolute position moves between device types but that gap never does, which
+    is what makes one rule work across every form in the archive.
+
+    Returns empty strings when the form has no client header — some device
+    types, `CE` among them, put their test data on the sheet the reader picks
+    and the header elsewhere. The caller falls back to the code list.
+    """
+    text = {
+        ref: (str(value).strip() if value is not None else "")
+        for ref, value in grid.items()
+    }
+
+    for ref, value in text.items():
+        if not _CLIENT_NAME_LABEL.match(value):
+            continue
+
+        match = re.match(r"([A-Z]+)(\d+)", ref)
+        if not match:
+            continue
+        column, row = match.group(1), int(match.group(2))
+
+        def beside(target_row: int) -> str:
+            # Skips the label's own merged span. Calist resolves merged cells,
+            # so the cells beside a label report the label's text as well —
+            # taking the first non-empty neighbour would return "Client Name:".
+            for candidate in _CLIENT_COLS[_CLIENT_COLS.index(column) + 1:]:
+                found = text.get(f"{candidate}{target_row}", "")
+                if found and not _CLIENT_LABEL.match(found):
+                    return found
+            return ""
+
+        return beside(row), beside(row + 2)
+
+    return "", ""
+
+
 def read_best(path: str, config: dict) -> tuple[dict, int]:
     """Read a form, trying the device's alternate layouts if the primary fails.
 
@@ -713,7 +778,11 @@ def read_best(path: str, config: dict) -> tuple[dict, int]:
     """
     cells = config["cells"]
     try:
-        record = read_record(path, cells)
+        # The client header is read in the *same* pass as the mapped cells.
+        # Opening each workbook twice would double a 35-minute read for the sake
+        # of two strings, and the reader resolves a whole block of refs in one
+        # go — asking for 240 more costs almost nothing.
+        record = read_record(path, {**cells, **_CLIENT_BLOCK})
     except Exception:  # noqa: BLE001
         record = {}
 
@@ -722,7 +791,7 @@ def read_best(path: str, config: dict) -> tuple[dict, int]:
 
     for index, alternate in enumerate(config.get("alt_cells", []), start=1):
         try:
-            candidate = read_record(path, alternate)
+            candidate = read_record(path, {**alternate, **_CLIENT_BLOCK})
         except Exception:  # noqa: BLE001
             continue
         if _plausible(candidate):
@@ -772,6 +841,7 @@ def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:
             form.location = clean(record.get("Location"))
             form.form_date = clean(record.get("Date"))
             form.status = clean(record.get("Status"))
+            form.client_name, form.client_address = client_from_grid(record)
             form.layout = layout
             if layout < 0 and not form.attention:
                 form.attention = (
@@ -998,11 +1068,19 @@ def push_firestore(
     # Records reference a customer, so the site should exist before the
     # calibration that points at it. Categories come from the folder the files
     # were found in; names from the code list.
+    # Category from the folder, and the client header from whichever of the
+    # site's forms actually carries one — not every device type prints it, so
+    # the first form that does wins rather than the first form seen.
     seen: dict[str, str] = {}
+    named: dict[str, tuple[str, str]] = {}
     for form in chosen:
         code = form.customer_code
-        if code and code not in seen:
+        if not code:
+            continue
+        if code not in seen:
             seen[code] = form.folder_category or CATEGORY_OTHER
+        if code not in named and (form.client_name or form.client_address):
+            named[code] = (form.client_name, form.client_address)
 
     customer_count = 0
     batch = db.batch()
@@ -1010,7 +1088,7 @@ def push_firestore(
     for code, category in sorted(seen.items()):
         batch.set(
             db.collection(CUSTOMERS).document(code),
-            build_customer(code, codes.get(code), category),
+            build_customer(code, codes.get(code), category, named.get(code)),
             merge=True,
         )
         pending += 1
@@ -1597,8 +1675,11 @@ def build_document(form: ParsedForm, customer: dict | None) -> dict:
         "engineerCode": "",
         "engineerUid": "",
         "uploadedBy": "",
-        "clientName": (customer or {}).get("name", ""),
-        "clientAddress": (customer or {}).get("address", ""),
+        # The code list is authoritative for the name where it has one, because
+        # it carries the official spelling. It has no addresses at all, and it
+        # has never heard of 25 of these sites — so the form fills both gaps.
+        "clientName": (customer or {}).get("name", "") or form.client_name,
+        "clientAddress": (customer or {}).get("address", "") or form.client_address,
         "contactName": "",
         "contactPhone": "",
         "tests": {},
@@ -1643,7 +1724,12 @@ def build_document(form: ParsedForm, customer: dict | None) -> dict:
     return document
 
 
-def build_customer(code: str, info: dict | None, category: str) -> dict:
+def build_customer(
+    code: str,
+    info: dict | None,
+    category: str,
+    from_form: tuple[str, str] | None = None,
+) -> dict:
     """One customer document, in the shape ``Customer.fromJson`` reads.
 
     ``contactsByYear`` is left empty: the archive records a contact per *visit*
@@ -1654,8 +1740,11 @@ def build_customer(code: str, info: dict | None, category: str) -> dict:
     return {
         "code": code,
         "category": (info or {}).get("category", category) or CATEGORY_OTHER,
-        "name": (info or {}).get("name", ""),
-        "address": (info or {}).get("address", ""),
+        # The code list wins on the name — it carries the official spelling —
+        # but it has no addresses at all and does not know 25 of these sites, so
+        # the form's own header fills both gaps.
+        "name": (info or {}).get("name", "") or (from_form or ("", ""))[0],
+        "address": (info or {}).get("address", "") or (from_form or ("", ""))[1],
         "contactsByYear": {},
         "imported": True,
         # The spreadsheet's own wording, kept so collapsing ten categories into
