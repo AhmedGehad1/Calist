@@ -99,6 +99,16 @@ DELETIONS = "deletions"
 #: legible to somebody reading a Firestore document.
 STORAGE_PREFIX = "archive"
 
+#: Where the *app* puts a certificate it filed, as ``filed/{year}/{site}/
+#: {recordId}.xlsx``. Clients may write and delete there and nowhere else — see
+#: ``storage.rules`` in the MedCal Pro repo.
+#:
+#: This tool never writes to it. It only clears the twin, in two cases where
+#: nothing else can: a calibration that has since reached the archive (the
+#: archive copy becomes canonical and ``storagePath`` is re-stamped to it,
+#: stranding the ``filed/`` object), and one an engineer deleted.
+FILED_PREFIX = "filed"
+
 #: The app's CustomerCategory enum. Anything the code list calls something else
 #: lands in ``other`` rather than being silently forced into ``hospital``.
 CATEGORY_HOSPITAL = "hospital"
@@ -1120,6 +1130,40 @@ def push_firestore(
     return len(written), customer_count, skipped_deleted
 
 
+def filed_blob_name(doc_id: str, site: str, year) -> str:
+    """Where the app would have put this record's certificate.
+
+    Mirrors ``filedWorkbookPath`` in ``lib/services/upload_queue.dart``,
+    including its sanitiser: everything outside ``[A-Za-z0-9_-]`` becomes an
+    underscore, which is what makes ``..`` impossible rather than merely
+    unlikely. **If that function changes, this has to change with it** — the
+    two are only related by agreeing on the same string.
+    """
+    def segment(value: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", (value or "").strip())
+        return cleaned or "UNKNOWN"
+
+    return f"{FILED_PREFIX}/{year}/{segment(site)}/{segment(doc_id)}.xlsx"
+
+
+def clear_filed_twin(bucket, doc_id: str, site: str, year) -> bool:
+    """Removes the app's own copy of a certificate, if there is one.
+
+    Best-effort and silent about a miss: the overwhelming majority of records
+    never had one, because they came off the archive drive rather than out of
+    somebody's phone.
+    """
+    try:
+        blob = bucket.blob(filed_blob_name(doc_id, site, year))
+        if blob.exists():
+            blob.delete()
+            return True
+    except Exception as error:  # noqa: BLE001
+        print(f"\n  could not clear the filed copy of {doc_id}: "
+              f"{type(error).__name__}")
+    return False
+
+
 def load_tombstones(db) -> set[str]:
     """Record ids an engineer has deleted from the app.
 
@@ -1203,6 +1247,12 @@ def push_storage(
                     removed += 1
             except Exception as error:  # noqa: BLE001
                 print(f"\n  could not clear {blob_name}: {type(error).__name__}")
+            # The app may have uploaded its own copy before the engineer
+            # deleted it. A handset clears that itself when it can, but a
+            # deletion made offline on a phone that never came back would
+            # leave the object behind — so it is checked here too.
+            if clear_filed_twin(bucket, form.doc_id, form.customer_code, form.year):
+                removed += 1
             continue
 
         try:
@@ -1217,6 +1267,12 @@ def push_storage(
             db.collection(CALIBRATIONS).document(form.doc_id).set(
                 {"storagePath": blob_name}, merge=True
             )
+            # storagePath now names the archive copy, so anything the app
+            # uploaded for this record has just become unreachable. This is the
+            # only moment either side can clear it: the handset no longer knows
+            # where its copy went, and nothing else walks the filed/ prefix.
+            if clear_filed_twin(bucket, form.doc_id, form.customer_code, form.year):
+                removed += 1
         except Exception as error:  # noqa: BLE001
             debug = f"{type(error).__name__}: {error}"
             print(f"\n  upload failed for {form.filename}: {debug[:90]}")
@@ -1368,6 +1424,20 @@ def upload_pending(
                 pending_writes = 0
         if pending_writes:
             batch.commit()
+
+        # Every record above now points at the archive copy, so anything the
+        # app uploaded for it is unreachable. Derived from the blob name rather
+        # than carried through the tuples, because the name already encodes
+        # both halves: archive/{year}/{site}/{filename}.
+        cleared = 0
+        for doc_id, blob_name in to_write:
+            parts = blob_name.split("/")
+            if len(parts) < 4:
+                continue
+            if clear_filed_twin(bucket, doc_id, parts[2], parts[1]):
+                cleared += 1
+        if cleared:
+            print(f"  cleared {cleared:,} app-uploaded twin(s)", flush=True)
 
     return len(done), len(stamp_only), failures
 

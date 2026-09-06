@@ -328,3 +328,92 @@ def test_upload_only_refuses_without_yes(tmp_path, capsys):
     """
     assert firebase_export.main([str(tmp_path), "--upload-only"]) == 3
     assert "Refusing to write without --yes" in capsys.readouterr().out
+
+
+# ── the app's own uploads ─────────────────────────────────────────────────────
+#
+# The MedCal Pro app now puts the certificate it just filed into the bucket
+# under `filed/`, so a colleague can open it. This tool never writes there --
+# it only clears the twin, because there are two moments when nothing else can:
+# when the archive copy supersedes it, and when the engineer deleted the record.
+
+
+def test_a_filed_path_matches_the_app_that_writes_it():
+    """Byte-for-byte what `filedWorkbookPath` in upload_queue.dart produces.
+
+    The two are related only by agreeing on this string. Nothing checks it at
+    build time, so it is checked here.
+    """
+    assert firebase_export.filed_blob_name("B03-SN21953-2026", "B03", 2026) == (
+        "filed/2026/B03/B03-SN21953-2026.xlsx"
+    )
+
+
+def test_a_filed_path_is_never_the_archive():
+    """The one property that must hold whatever gets passed in.
+
+    A record id and a customer code both reach this from data, so neither can
+    be trusted to be a clean path segment.
+    """
+    hostile = firebase_export.filed_blob_name("../../etc/passwd", "../archive", 2026)
+
+    assert hostile.startswith("filed/2026/")
+    assert ".." not in hostile
+    assert hostile.count("/") == 3
+
+
+def test_an_empty_customer_code_still_produces_a_usable_key():
+    assert firebase_export.filed_blob_name("r1", "  ", 2026) == (
+        "filed/2026/UNKNOWN/r1.xlsx"
+    )
+
+
+class _FakeBlob:
+    def __init__(self, present):
+        self._present = present
+        self.deleted = False
+
+    def exists(self):
+        return self._present
+
+    def delete(self):
+        self.deleted = True
+
+
+class _FakeBucket:
+    def __init__(self, present=True, raises=None):
+        self._present = present
+        self._raises = raises
+        self.asked = []
+        self.blobs = {}
+
+    def blob(self, name):
+        self.asked.append(name)
+        if self._raises:
+            raise self._raises
+        self.blobs[name] = _FakeBlob(self._present)
+        return self.blobs[name]
+
+
+def test_clearing_a_twin_deletes_it_and_says_so():
+    bucket = _FakeBucket(present=True)
+
+    assert firebase_export.clear_filed_twin(bucket, "r1", "B03", 2026) is True
+    assert bucket.asked == ["filed/2026/B03/r1.xlsx"]
+    assert bucket.blobs["filed/2026/B03/r1.xlsx"].deleted
+
+
+def test_a_record_that_never_had_a_twin_is_not_an_error():
+    """The overwhelming majority. They came off the archive drive, not a phone."""
+    bucket = _FakeBucket(present=False)
+
+    assert firebase_export.clear_filed_twin(bucket, "r1", "B03", 2026) is False
+    assert not bucket.blobs["filed/2026/B03/r1.xlsx"].deleted
+
+
+def test_a_failed_cleanup_does_not_stop_the_import(capsys):
+    """An orphaned object is untidy. A halted import is not."""
+    bucket = _FakeBucket(raises=RuntimeError("bucket unreachable"))
+
+    assert firebase_export.clear_filed_twin(bucket, "r1", "B03", 2026) is False
+    assert "could not clear the filed copy" in capsys.readouterr().out
