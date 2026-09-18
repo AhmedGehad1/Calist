@@ -417,3 +417,536 @@ def test_a_failed_cleanup_does_not_stop_the_import(capsys):
 
     assert firebase_export.clear_filed_twin(bucket, "r1", "B03", 2026) is False
     assert "could not clear the filed copy" in capsys.readouterr().out
+
+
+# ── outcomes ──────────────────────────────────────────────────────────────────
+#
+# The importer used to collapse each form's Status cell to `passed`, and read
+# only the first box. A patient monitor recorded as "limited non" therefore
+# imported as `passed: False`, and the app's previous-calibration lookup threw
+# the whole record away — so a monitor the archive knew as AGH002 was filed as
+# a brand-new AGH005. `statuses` carries what the form actually said.
+
+from firebase_export import build_document, build_statuses, normalise_status
+
+
+def _form(**fields):
+    base = dict(
+        path="D:/x/G181-AGH002-0825.xlsx",
+        filename="G181-AGH002-0825.xlsx",
+        year=2025,
+        site="G181",
+        tag="AGH002",
+        device_code="AGH",
+        serial="AQ-17157179",
+    )
+    base.update(fields)
+    return firebase_export.ParsedForm(**base)
+
+
+def test_the_four_outcomes_are_the_apps_own_strings():
+    """Pinned against `CalibrationStatus.wire` in lib/models/calibration_status.dart.
+
+    The app parses exactly these and nothing else. A drift here would not
+    fail loudly: every backfilled outcome would quietly stop parsing and the
+    app would fall back to `passed`, which is the bug this exists to fix.
+    """
+    assert (
+        firebase_export.STATUS_PASS,
+        firebase_export.STATUS_CALIBRATED,
+        firebase_export.STATUS_LIMITED_NON,
+        firebase_export.STATUS_LIMITED,
+        firebase_export.STATUS_LIMITED_FAIL,
+        firebase_export.STATUS_FAIL,
+    ) == ("pass", "calibrated", "limited non", "limited", "limited fail", "fail")
+
+
+def test_everything_passed_already_accepted_is_a_pass():
+    # Nothing `passed` called a pass may become anything else.
+    for value in firebase_export._PASS_VALUES:
+        assert normalise_status(value.upper()) == "pass", value
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Calibrated", "calibrated"),
+    ("  CALIBRATED ", "calibrated"),
+    ("Limited Non", "limited non"),
+    ("limited none", "limited non"),
+    ("  LIMITED   non ", "limited non"),
+    ("Limited Fail", "limited fail"),
+    ("limited-fail", "limited fail"),
+    ("Fail", "fail"),
+    ("Failed", "fail"),
+    ("Faulty", "fail"),
+])
+def test_status_cells_read_as_the_outcome_they_name(raw, expected):
+    assert normalise_status(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [None, "", "limited sometimes", "N.A", "----", "see comment"])
+def test_a_cell_that_names_no_outcome_is_left_out_not_guessed(raw):
+    # Guessing "pass" would put a date on next year's certificate that the
+    # device never earned.
+    assert normalise_status(raw) is None
+
+
+def test_a_monitor_carries_both_its_verdicts():
+    # D39 is ECG, J39 is NIBP. The importer never read J39 at all.
+    document = build_document(_form(status="pass", status2="limited non"), None)
+    assert document["statuses"] == {"ecg": "pass", "nibp": "limited non"}
+
+
+def test_the_record_that_hid_agh002_now_says_what_it_was():
+    document = build_document(_form(status="limited non", status2="pass"), None)
+    # Unchanged, so a phone on the old build sees exactly what it saw before.
+    assert document["passed"] is False
+    # And the new build can tell a limitation from a failure.
+    assert document["statuses"] == {"ecg": "limited non", "nibp": "pass"}
+
+
+def test_a_monitor_box_that_names_nothing_is_dropped_on_its_own():
+    document = build_document(_form(status="see comment", status2="fail"), None)
+    assert document["statuses"] == {"nibp": "fail"}
+
+
+def test_calibrated_is_its_own_outcome_and_leaves_passed_alone():
+    form = _form(device_code="BP", tag="BP001", status="Calibrated")
+    document = build_document(form, None)
+    assert document["statuses"] == {"overall": "calibrated"}
+    # What a phone on the old build sees is unchanged.
+    assert document["passed"] is False
+
+
+def test_a_calibrated_box_ranks_after_a_pass_but_before_a_limitation():
+    assert build_statuses(_form(device_code="GC", status="Pass",
+                                status2="Calibrated")) == {"overall": "calibrated"}
+
+
+def test_a_single_status_form_is_one_overall_verdict():
+    form = _form(device_code="BP", tag="BP001", status="Pass")
+    assert build_statuses(form) == {"overall": "pass"}
+
+
+def test_a_vital_signs_monitor_keeps_both_its_modules():
+    # G38 is the SpO2 module, J38 the NIBP module. Collapsing them into one
+    # verdict would hide which module failed.
+    form = _form(device_code="VAH", status="OK", status2="Faulty")
+    assert build_statuses(form) == {"spo2": "pass", "nibp": "fail"}
+
+
+@pytest.mark.parametrize("code", ["AGH", "AG", "VAGH"])
+def test_every_code_a_patient_monitor_is_filed_under_keeps_both(code):
+    form = _form(device_code=code, status="limited fail", status2="pass")
+    assert build_statuses(form) == {"ecg": "limited fail", "nibp": "pass"}
+
+
+def test_every_form_with_a_second_status_box_says_what_both_boxes_are():
+    """A cell map with a Status2 and no entry would collapse two verdicts to one.
+
+    Nothing would fail: the device would import with a single worst-of status,
+    and the history would never show which of its two modules had the problem.
+    """
+    def has_second_box(config):
+        maps = [config["cells"], *config.get("alt_cells", [])]
+        return any("Status2" in cells for cells in maps)
+
+    two_box = {code for code, config in DEVICE_CONFIGS.items()
+               if has_second_box(config)}
+    assert two_box, "expected at least the patient monitor"
+    missing = two_box - set(firebase_export._PER_TEST_STATUS)
+    assert not missing, f"no meaning given for the second status box of {missing}"
+
+
+def test_nothing_classifiable_leaves_statuses_out_of_the_write():
+    # Absent, not empty: under a merge an absent field leaves the server's
+    # answer standing, and the app falls back to `passed`.
+    assert "statuses" not in build_document(_form(status="", status2=""), None)
+
+
+def test_a_rebuilt_document_never_sends_an_empty_map():
+    """An empty map under merge=True replaces what the server holds.
+
+    `tests` and `formData` were sent as {} on every run, which would erase the
+    form data of any imported record an engineer had since corrected in the app.
+    """
+    document = build_document(_form(status="pass"), None)
+    assert "tests" not in document
+    assert "formData" not in document
+    assert not [key for key, value in document.items() if value == {}]
+
+
+def test_the_histogram_counts_each_box_and_what_it_becomes():
+    forms = [
+        _form(status="Pass", status2="Limited Non"),
+        _form(status="Pass", status2="see comment"),
+        _form(device_code="BP", tag="BP001", status="OK"),
+    ]
+    rows, summary = firebase_export.status_histogram(forms)
+
+    assert ("AGH", "Status", "Pass", "pass", 2) in rows
+    assert ("AGH", "Status2", "Limited Non", "limited non", 1) in rows
+    assert ("AGH", "Status2", "see comment", None, 1) in rows
+    # BP has no second box, so none is counted for it.
+    assert not [row for row in rows if row[0] == "BP" and row[1] == "Status2"]
+    assert summary == {"forms": 3, "with_statuses": 3, "two_box_with_both": 1,
+                       "by_label": 0}
+
+
+# ── the statuses-only backfill ────────────────────────────────────────────────
+#
+# Re-running the full push to add one field would rewrite every field of every
+# record and re-derive every device number — and if the files on disk have
+# changed since the last import, a device could be renumbered. The backfill
+# writes `statuses` and nothing else, and only onto a record that exists and
+# whose serial matches.
+
+from firebase_export import collect_statuses, push_statuses
+
+
+class _Ref:
+    def __init__(self, doc_id):
+        self.id = doc_id
+
+
+class _StoredSnap:
+    def __init__(self, doc_id, data):
+        self.id = doc_id
+        self._data = data
+        self.exists = data is not None
+
+    def to_dict(self):
+        return None if self._data is None else dict(self._data)
+
+
+class _Batch:
+    def __init__(self, db):
+        self._db = db
+        self._ops = []
+
+    def update(self, ref, data):
+        self._ops.append((ref.id, data))
+
+    def commit(self):
+        self._db.commits.append(list(self._ops))
+
+
+class _StoreCollection:
+    def __init__(self, db, name):
+        self._db = db
+        self._name = name
+
+    def document(self, doc_id):
+        return _Ref(doc_id)
+
+    def stream(self):
+        assert self._name == "deletions"
+        return [_FakeSnap(i) for i in self._db.deleted]
+
+
+class _StoreDb:
+    """Just enough of firebase_admin's client: reads, batched updates, tombstones."""
+
+    def __init__(self, docs, deleted=()):
+        self.docs = docs
+        self.deleted = list(deleted)
+        self.commits = []
+        self.read = []
+
+    def collection(self, name):
+        return _StoreCollection(self, name)
+
+    def get_all(self, refs, field_paths=None):
+        for ref in refs:
+            self.read.append(ref.id)
+            yield _StoredSnap(ref.id, self.docs.get(ref.id))
+
+    def batch(self):
+        return _Batch(self)
+
+    @property
+    def written(self):
+        return {doc_id: data for commit in self.commits for doc_id, data in commit}
+
+
+def _record(doc_id, serial="AQ-17157179", status="pass", status2="", code="AGH"):
+    form = _form(device_code=code, serial=serial, status=status, status2=status2)
+    form.doc_id = doc_id
+    return form
+
+
+def test_one_entry_per_record_and_the_worse_copy_wins():
+    found = collect_statuses([
+        _record("G181-AGH002-0825", "AQ-1", "pass", "pass"),
+        # A duplicate copy of the same visit that says something worse.
+        _record("G181-AGH002-0825", "AQ-1", "pass", "limited non"),
+        _record("G181-AGH003-0825", "KN-9", "", ""),
+    ])
+    assert found == {
+        "G181-AGH002-0825": ("AQ-1", {"ecg": "pass", "nibp": "limited non"},
+                             {"D:/x/G181-AGH002-0825.xlsx"}),
+    }
+
+
+def test_a_form_that_never_got_an_id_is_not_collected():
+    assert collect_statuses([_record("", status="pass")]) == {}
+
+
+def test_only_the_statuses_field_is_written():
+    db = _StoreDb({"A": {"serialUpper": "AQ-1", "siteDevice": "G181-AGH002"}})
+    counts = push_statuses({"A": ("AQ-1", {"ecg": "pass", "nibp": "fail"})}, db)
+
+    assert db.written == {"A": {"statuses": {"ecg": "pass", "nibp": "fail"}}}
+    assert counts["updated"] == 1
+
+
+def test_a_record_whose_serial_differs_is_left_alone():
+    # The id shifted — a different device now answers to it. Writing would put
+    # one monitor's verdict on another.
+    db = _StoreDb({"A": {"serialUpper": "KN-97048765"}})
+    counts = push_statuses({"A": ("AQ-17157179", {"ecg": "fail"})}, db)
+
+    assert db.written == {}
+    assert counts["mismatched"] == 1
+
+
+def test_a_record_the_server_does_not_have_is_never_created():
+    db = _StoreDb({})
+    counts = push_statuses({"A": ("AQ-1", {"ecg": "pass"})}, db)
+
+    assert db.written == {}
+    assert counts["missing"] == 1
+
+
+def test_a_deleted_record_is_neither_read_nor_written():
+    db = _StoreDb({"A": {"serialUpper": "AQ-1"}}, deleted=["A"])
+    counts = push_statuses({"A": ("AQ-1", {"ecg": "pass"})}, db)
+
+    assert db.written == {}
+    assert db.read == []
+    assert counts["deleted"] == 1
+
+
+def test_every_record_is_reached_across_batches(monkeypatch):
+    monkeypatch.setattr(firebase_export, "BATCH_SIZE", 2)
+    docs = {f"R{i}": {"serialUpper": f"S{i}"} for i in range(5)}
+    found = {f"R{i}": (f"S{i}", {"overall": "pass"}) for i in range(5)}
+    db = _StoreDb(docs)
+
+    counts = push_statuses(found, db)
+
+    assert counts["updated"] == 5
+    assert len(db.commits) == 3
+    assert set(db.written) == set(docs)
+
+
+def test_statuses_only_refuses_without_yes_before_connecting(
+    tmp_path, monkeypatch, capsys
+):
+    form = _record("G181-AGH002-0825", status="pass", status2="limited non")
+    monkeypatch.setattr(firebase_export, "scan",
+                        lambda root, only_year=None, limit=0: [form])
+    monkeypatch.setattr(firebase_export, "deepen",
+                        lambda forms, sample=0, progress=None: len(forms))
+    monkeypatch.setattr(firebase_export, "assign_ids", lambda forms: (0, 0))
+
+    def no_connection(project):
+        raise AssertionError("connected without --yes")
+
+    monkeypatch.setattr(firebase_export, "connect", no_connection)
+
+    assert firebase_export.main([str(tmp_path), "--statuses-only"]) == 3
+    out = capsys.readouterr().out
+    assert "the `statuses` field only" in out
+    assert "Refusing to write" in out
+
+
+# ── finding the status box by its label ───────────────────────────────────────
+#
+# The balance map reads G30, where the app's own template puts the status.
+# Older balance forms print "Status" at G25 and the answer at G27, so ~70% of
+# the archive's balances read blank. The form's own label is what finds it.
+
+from firebase_export import status_from_grid
+
+
+def test_the_status_box_is_found_two_rows_under_its_label():
+    grid = {"G25": "Status", "G27": "pass", "C30": "Comment:"}
+    assert status_from_grid(grid) == "pass"
+
+
+def test_a_label_merged_down_over_two_rows_is_stepped_over():
+    # Calist resolves merges, so a label spanning G25:G26 reports at both.
+    assert status_from_grid({"G25": "Status", "G26": "Status", "G27": "Fail"}) == "Fail"
+
+
+def test_the_status_box_can_sit_to_the_right_of_its_label():
+    grid = {"E30": "Status:", "F30": "Status:", "G30": "Calibrated"}
+    assert status_from_grid(grid) == "Calibrated"
+
+
+def test_a_neighbour_that_is_not_a_status_is_never_taken():
+    assert status_from_grid({"G25": "Status", "G27": "-----"}) == ""
+    assert status_from_grid({"G25": "Status", "H25": "Comment:", "G27": "Large"}) == ""
+
+
+def test_a_label_to_the_right_does_not_hide_the_box_below():
+    grid = {"G25": "Status", "J25": "Comment:", "G27": "limited non"}
+    assert status_from_grid(grid) == "limited non"
+
+
+def test_no_label_means_no_status():
+    assert status_from_grid({"G27": "pass"}) == ""
+
+
+def test_a_single_box_form_falls_back_to_its_labelled_box():
+    form = _form(device_code="BP", tag="BP001", status="", status_by_label="Pass")
+    assert build_statuses(form) == {"overall": "pass"}
+
+
+def test_the_mapped_cell_wins_whenever_it_reads():
+    form = _form(device_code="BP", tag="BP001", status="Fail", status_by_label="Pass")
+    assert build_statuses(form) == {"overall": "fail"}
+
+
+def test_a_two_box_device_never_uses_the_label():
+    # The nearest label could be the other module's.
+    form = _form(device_code="AGH", status="", status2="pass", status_by_label="fail")
+    assert build_statuses(form) == {"nibp": "pass"}
+
+
+def test_the_fallback_never_changes_passed():
+    # `passed` is what a phone on the old build reads, and stays as it was.
+    form = _form(device_code="BP", tag="BP001", status="", status_by_label="Pass")
+    document = build_document(form, None)
+    assert document["passed"] is False
+    assert document["statuses"] == {"overall": "pass"}
+
+
+# ── identity by the exact source file ─────────────────────────────────────────
+#
+# The original import read the wrong cell as the serial on some forms: 749
+# records store none, 138 store "PASS", a ward name or a date. The serial check
+# alone refused them all, although they are the same file. `sourcePath` — the
+# exact file each record was built from — proves it; a file *name* would not,
+# because renumbered siblings share one.
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Passs", "pass"), ("Psss", "pass"), ("Pass.", "pass"),
+    ("Caibrated", "calibrated"), ("limeted non", "limited non"),
+])
+def test_the_archive_s_common_misspellings_are_read(raw, expected):
+    assert normalise_status(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["p", "ci", "0", "0.0", "."])
+def test_a_scrap_that_could_be_anything_stays_refused(raw):
+    assert normalise_status(raw) is None
+
+
+def test_a_record_with_no_serial_on_the_server_is_matched_by_its_file():
+    db = _StoreDb({"A": {"serialUpper": "", "sourcePath": "D:/x/A.xlsx"}})
+    counts = push_statuses({"A": ("TH001", {"overall": "pass"}, {"D:/x/A.xlsx"})}, db)
+
+    assert db.written == {"A": {"statuses": {"overall": "pass"}}}
+    assert counts["updated"] == 1
+
+
+def test_a_misread_serial_on_the_server_does_not_hide_the_same_file():
+    db = _StoreDb({"A": {"serialUpper": "PASS", "sourcePath": "D:/x/A.xlsx"}})
+    counts = push_statuses({"A": ("17029", {"overall": "fail"}, {"D:/x/A.xlsx"})}, db)
+
+    assert counts["updated"] == 1
+
+
+def test_a_different_file_with_a_different_serial_is_still_refused():
+    # A renumbered sibling: the id now belongs to another file of the same name.
+    db = _StoreDb({"A": {"serialUpper": "243058", "sourcePath": "D:/y/A.xlsx"}})
+    counts = push_statuses({"A": ("20946339", {"overall": "pass"}, {"D:/x/A.xlsx"})}, db)
+
+    assert db.written == {}
+    assert counts["mismatched"] == 1
+
+
+def test_an_empty_serial_on_both_sides_is_not_proof_of_anything():
+    db = _StoreDb({"A": {"serialUpper": "", "sourcePath": "D:/y/other.xlsx"}})
+    counts = push_statuses({"A": ("", {"overall": "pass"}, {"D:/x/A.xlsx"})}, db)
+
+    assert db.written == {}
+    assert counts["mismatched"] == 1
+
+
+# ── "Limited", and the monitor template's three boxes ─────────────────────────
+
+from firebase_export import module_statuses_from_grid
+
+
+def test_an_unqualified_limited_is_its_own_outcome():
+    assert normalise_status("Limited") == "limited"
+    assert normalise_status("LIMITED") == "limited"
+    # By the owner's decision, recorded the same way rather than as calibrated.
+    assert normalise_status("Limited Calibrated") == "limited"
+    # The qualified ones keep their meaning.
+    assert normalise_status("Limited Fail") == "limited fail"
+    assert normalise_status("Limited Non") == "limited non"
+
+
+def test_limited_ranks_above_limited_non_and_below_limited_fail():
+    assert build_statuses(_form(device_code="GC", status="limited non",
+                                status2="Limited")) == {"overall": "limited"}
+    assert build_statuses(_form(device_code="GC", status="Limited",
+                                status2="limited fail")) == {"overall": "limited fail"}
+
+
+_ROW = {"D38": "Ecg Status:", "G38": "Spo2 Status:", "J38": "NIBP Status:"}
+
+
+def test_the_three_boxes_are_read_under_their_labels():
+    grid = {**_ROW, "D39": "Pass", "G39": "0.0", "J39": "FAIL"}
+    assert module_statuses_from_grid(grid) == {"ecg": "Pass", "nibp": "FAIL"}
+
+
+def test_a_module_the_device_does_not_have_is_skipped():
+    # "----" under ECG is the template's own "no such module". It decides the
+    # ECG box; the "pass" further down belongs to something else.
+    grid = {**_ROW, "D39": "----", "D40": "pass", "G39": "Pass"}
+    assert module_statuses_from_grid(grid) == {"spo2": "Pass"}
+
+
+def test_one_module_never_takes_its_neighbour_s_answer():
+    # Nothing under ECG; to its right lie the SpO2 label and then SpO2's answer.
+    grid = {"D38": "Ecg Status:", "G38": "Spo2 Status:", "H38": "Pass"}
+    assert module_statuses_from_grid(grid) == {"spo2": "Pass"}
+
+
+def test_a_label_merged_across_two_cells_is_stepped_over():
+    grid = {"D38": "Ecg Status:", "D39": "Ecg Status:", "D40": "limited"}
+    assert module_statuses_from_grid(grid) == {"ecg": "limited"}
+
+
+def test_a_form_not_on_the_template_has_no_module_boxes():
+    assert module_statuses_from_grid({"G25": "Status", "G27": "pass"}) == {}
+
+
+def test_a_spo2_device_on_the_monitor_template_keeps_each_box():
+    form = _form(device_code="AH", tag="AH001", status="0.0",
+                 module_statuses={"spo2": "Pass", "nibp": "fail"})
+    assert build_statuses(form) == {"spo2": "pass", "nibp": "fail"}
+
+
+def test_a_monitor_gains_its_spo2_box_and_a_box_its_map_missed():
+    form = _form(device_code="AGH", status="0", status2="pass",
+                 module_statuses={"ecg": "Pass", "spo2": "PASS"})
+    assert build_statuses(form) == {"nibp": "pass", "ecg": "pass", "spo2": "pass"}
+
+
+def test_on_a_monitor_the_mapped_box_wins_over_the_label():
+    form = _form(device_code="AGH", status="fail", status2="pass",
+                 module_statuses={"ecg": "pass"})
+    assert build_statuses(form)["ecg"] == "fail"
+
+
+def test_a_vital_signs_form_whose_map_lands_on_the_labels_reads_below_them():
+    form = _form(device_code="VAH", status="Spo2 Status:", status2="NIBP Status:",
+                 module_statuses={"spo2": "Pass", "nibp": "pass"})
+    assert build_statuses(form) == {"spo2": "pass", "nibp": "pass"}

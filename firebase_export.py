@@ -279,6 +279,25 @@ class ParsedForm:
     form_date: str = ""
     status: str = ""
 
+    #: The second status box, on the forms that have one. On a patient monitor
+    #: ``status`` is ``Device data!D39`` — the ECG verdict — and this is
+    #: ``J39``, NIBP. It used to be read by Calist's register and never by this
+    #: importer, so an archive monitor's ``passed`` described its ECG alone and
+    #: a NIBP failure was recorded nowhere.
+    status2: str = ""
+
+    #: The Status box's text as found from the form's own printed "Status"
+    #: label, when the mapped cell held nothing readable — see
+    #: [status_from_grid]. Kept apart from ``status`` so ``passed`` is computed
+    #: exactly as it always was: this only ever feeds ``statuses``.
+    status_by_label: str = ""
+
+    #: The monitor template's own status boxes — ``(("ecg", "Pass"), ...)`` —
+    #: found under their printed "Ecg Status:" / "Spo2 Status:" / "NIBP Status:"
+    #: labels by [module_statuses_from_grid]. Raw text, as read. A tuple of
+    #: pairs rather than a dict so the dataclass default can be immutable.
+    module_statuses: tuple = ()
+
     #: The client as the *form* names it, read from the header rather than the
     #: code list. Worth having for two reasons: it is the only source of an
     #: address anywhere in the pipeline, and it covers sites the code list has
@@ -773,6 +792,132 @@ def header_from_grid(grid: dict) -> dict:
     return found
 
 
+#: A form's own printed "Status" label — "Status", "Status:", "STATUS".
+_STATUS_LABEL = re.compile(r"^\s*status[\s:.]*$", re.I)
+
+
+def status_from_grid(grid: dict) -> str:
+    """The Status box's text, found from the form's own label. "" if none.
+
+    The fallback for a form whose *mapped* Status cell is blank or holds
+    something that is not a status. The cell maps are right for most forms but
+    not all: the balance map reads ``G30``, where the app's own template puts
+    it, while older balance forms print "Status" at ``G25`` and the answer at
+    ``G27``. Measured over 594 real forms, 128 single-box forms read nothing
+    useful from their mapped cell; every one that could be opened had the
+    label, and the box beside or under it held a status on 92 of them — 88 of
+    those exactly two rows down.
+
+    Right of the label first, then below, **each direction on its own**: the
+    first filled cell in a direction decides that direction, so a "Comment:"
+    label to the right does not hide the box underneath. Cells repeating the
+    label are its own merged span — Calist resolves merges — and are stepped
+    over.
+
+    **Only text [normalise_status] recognises is returned.** That is what makes
+    searching safe: a stray value near the label — a number, an analyser name,
+    another caption — is refused, never guessed at.
+    """
+    text = {
+        ref: (str(value).strip() if value is not None else "")
+        for ref, value in grid.items()
+    }
+
+    labels = []
+    for ref, value in text.items():
+        if not value or not _STATUS_LABEL.match(value):
+            continue
+        match = re.match(r"([A-Z]+)(\d+)$", ref)
+        if match and match.group(1) in _HEADER_COLS:
+            labels.append(
+                (int(match.group(2)), _HEADER_COLS.index(match.group(1)))
+            )
+
+    directions = (
+        [(0, 1), (0, 2), (0, 3), (0, 4)],   # to the right
+        [(1, 0), (2, 0), (3, 0)],           # below
+    )
+    for row, col in sorted(labels):         # reading order
+        for offsets in directions:
+            for down, right in offsets:
+                column = col + right
+                if column >= len(_HEADER_COLS):
+                    break
+                value = text.get(f"{_HEADER_COLS[column]}{row + down}", "")
+                if not value or _STATUS_LABEL.match(value):
+                    continue
+                if normalise_status(value):
+                    return value
+                break                       # this direction holds no status
+    return ""
+
+
+#: The monitor template's per-module labels: "Ecg Status:", "Spo2 Status:",
+#: "NIBP Status:". Captures which module.
+_MODULE_LABEL = re.compile(r"^\s*(ecg|spo2|nibp)\s*status[\s:.]*$", re.I)
+
+#: Anything that reads as a caption rather than an answer.
+_CAPTION = re.compile(r"(status|item|comment|reason|by|device)[\s:.]*$|:\s*$", re.I)
+
+
+def module_statuses_from_grid(grid: dict) -> dict[str, str]:
+    """Each module's status box on the monitor template, by its own label.
+
+    The patient monitor's front sheet prints "Ecg Status:", "Spo2 Status:" and
+    "NIBP Status:" in a row with the answers beneath. The same template is used
+    for other devices — SpO2 devices (AH), digital blood pressure (CB),
+    endoscopy sets (CD), and monitor forms filed under their serial — whose cell
+    maps read one box or none. Those devices really do have two or three
+    verdicts, and this is what keeps them apart.
+
+    Below the label first, then to its right. **Another label ends a
+    direction**: in a row of labels, reading on past the SpO2 label would hand
+    the ECG box SpO2's answer. A cell repeating the *same* label is its own
+    merged span and is stepped over. Only text [normalise_status] recognises is
+    kept, so "0", "----" and blanks — a module the device does not have — drop
+    out.
+
+    Returns ``{"ecg": raw, "spo2": raw, "nibp": raw}`` for the boxes that hold a
+    status; empty when the form is not on this template.
+    """
+    text = {
+        ref: (str(value).strip() if value is not None else "")
+        for ref, value in grid.items()
+    }
+
+    labels = []
+    for ref, value in text.items():
+        match = _MODULE_LABEL.match(value) if value else None
+        ref_match = re.match(r"([A-Z]+)(\d+)$", ref)
+        if match and ref_match and ref_match.group(1) in _HEADER_COLS:
+            labels.append((int(ref_match.group(2)),
+                           _HEADER_COLS.index(ref_match.group(1)),
+                           match.group(1).lower(), value))
+
+    found: dict[str, str] = {}
+    for row, col, module, label in sorted(labels):
+        if module in found:
+            continue
+        for offsets in ([(1, 0), (2, 0), (3, 0)],             # below
+                        [(0, 1), (0, 2), (0, 3), (0, 4)]):    # to the right
+            answer = ""
+            for down, right in offsets:
+                column = col + right
+                if column >= len(_HEADER_COLS):
+                    break
+                value = text.get(f"{_HEADER_COLS[column]}{row + down}", "")
+                if not value or value == label:
+                    continue                    # empty, or the label's own span
+                if _MODULE_LABEL.match(value) or _CAPTION.search(value):
+                    break                       # another label: stop here
+                answer = value
+                break                           # the first answer decides
+            if answer and normalise_status(answer):
+                found[module] = answer
+                break
+    return found
+
+
 def read_best(path: str, config: dict) -> tuple[dict, int]:
     """Read a form, trying every layout Calist knows. See calist.read_best.
 
@@ -827,6 +972,17 @@ def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:
             form.location = clean(record.get("Location"))
             form.form_date = clean(record.get("Date"))
             form.status = clean(record.get("Status"))
+            form.status2 = clean(record.get("Status2"))
+            # The mapped cell is right on most forms but not all — see
+            # status_from_grid. Single-box devices only: on a two-box form the
+            # nearest label could belong to the other module, and a status
+            # filed under the wrong one is worse than none.
+            if (normalise_status(form.status) is None
+                    and form.device_code not in _PER_TEST_STATUS):
+                form.status_by_label = status_from_grid(record)
+            # The monitor template's per-module boxes, for every device: it is
+            # the template, not the device code, that says they are there.
+            form.module_statuses = tuple(module_statuses_from_grid(record).items())
             header = header_from_grid(record)
             form.client_name = header["client_name"]
             form.client_address = header["client_address"]
@@ -1648,6 +1804,144 @@ APP_TYPE_TO_CODE = {"balance": "BP", "patient-monitor": "AGH", "x-ray": "BF"}
 #: a comment — is recorded as not passed, because only an explicit pass is one.
 _PASS_VALUES = {"pass", "passed", "ok", "accepted", "conform", "conforms"}
 
+#: Status cells that unambiguously mean the device failed outright.
+_FAIL_VALUES = {"fail", "failed", "faulty"}
+
+#: The device was brought into specification by calibrating it. Its own
+#: outcome, shown in blue — and deliberately not added to `_PASS_VALUES`, which
+#: would change what `passed` says to phones on the old build.
+_CALIBRATED_VALUES = {"calibrated"}
+
+#: Misspellings that turn up in the archive often enough to matter, found by
+#: counting every Status text the classifier refused across all 87,492 forms.
+#: Only unambiguous ones: "p" or "ci" could be anything, so they stay refused.
+_TYPOS = {
+    "passs": "pass",
+    "psss": "pass",
+    "caibrated": "calibrated",
+    "limeted non": "limited non",
+}
+
+#: A limitation with no qualifier. "Limited Calibrated" is recorded the same
+#: way, by the owner's decision: kept simple rather than read as calibrated.
+_LIMITED_VALUES = {"limited", "limited calibrated"}
+
+#: The app's six outcomes, exactly as ``CalibrationStatus.wire`` spells them in
+#: ``lib/models/calibration_status.dart``. The two are related only by agreeing
+#: on these strings, so a test on each side pins them — the same arrangement as
+#: ``filed_blob_name`` and ``filedWorkbookPath``.
+STATUS_PASS = "pass"
+STATUS_CALIBRATED = "calibrated"
+STATUS_LIMITED_NON = "limited non"
+#: A limitation the form does not qualify — "Limited", "Limited Calibrated".
+#: Its own outcome rather than a guess at one of the two above.
+STATUS_LIMITED = "limited"
+STATUS_LIMITED_FAIL = "limited fail"
+STATUS_FAIL = "fail"
+
+#: What each box means, for every device whose form has two status boxes —
+#: ``Status`` then ``Status2``, in that order.
+#:
+#: Keyed per box so the app can show both, the way it does for the monitors it
+#: files itself. The keys are the app's own test keys (``testLabel`` in
+#: ``lib/models/device_type.dart`` turns them into "ECG", "SpO2", "NIBP"), so no
+#: new vocabulary is needed on the phone. **A cell map that gains a Status2
+#: must gain an entry here** — a test enforces it — or that device's two
+#: verdicts silently collapse into one.
+_PER_TEST_STATUS = {
+    # Patient monitor: Device data D39 is ECG, J39 is NIBP. AG and VAGH are the
+    # same form filed under a mistyped code, and share AGH's cell map.
+    "AGH": ("ecg", "nibp"),
+    "AG": ("ecg", "nibp"),
+    "VAGH": ("ecg", "nibp"),
+    # Vital signs monitor: G38 is the SpO2 module, J38 the NIBP module.
+    "VAH": ("spo2", "nibp"),
+}
+
+#: Worse is higher. An unqualified "limited" ranks above "limited non": a
+#: limitation nobody said was harmless is not assumed to be.
+_SEVERITY = {STATUS_PASS: 0, STATUS_CALIBRATED: 1, STATUS_LIMITED_NON: 2,
+             STATUS_LIMITED: 3, STATUS_LIMITED_FAIL: 4, STATUS_FAIL: 5}
+
+
+def normalise_status(raw: str | None) -> str | None:
+    """One Status cell's text as one of the app's four outcomes, or None.
+
+    **None is an answer, not a failure.** It means "this cell does not say", and
+    the caller leaves the outcome out of the document entirely, so the app falls
+    back to ``passed`` exactly as it always has. Guessing would be worse: an
+    unreadable cell classed as a pass puts a date on next year's certificate
+    that the device never earned.
+    """
+    text = " ".join((raw or "").strip().lower().split())
+    # A trailing full stop ("Pass.") and the known misspellings.
+    text = text.rstrip(" .")
+    text = _TYPOS.get(text, text)
+    if not text:
+        return None
+    if text in _PASS_VALUES:
+        return STATUS_PASS
+    if text in _CALIBRATED_VALUES:
+        return STATUS_CALIBRATED
+    if text in _FAIL_VALUES:
+        return STATUS_FAIL
+    if "limited" in text:
+        if "fail" in text:
+            return STATUS_LIMITED_FAIL
+        # "limited non" is the sheet's own spelling; "none" is how it gets
+        # typed.
+        if "non" in text.split("limited", 1)[1]:
+            return STATUS_LIMITED_NON
+        # Unqualified: its own outcome, never promoted to either of the two
+        # above. Anything else with "limited" in it names nothing we know.
+        if text in _LIMITED_VALUES:
+            return STATUS_LIMITED
+    return None
+
+
+def build_statuses(form: "ParsedForm") -> dict[str, str]:
+    """The form's outcomes, keyed the way the app reads them. Empty if none.
+
+    A two-status device keeps both, named by [_PER_TEST_STATUS] — a patient
+    monitor becomes ``{"ecg": ..., "nibp": ...}``, a vital signs monitor
+    ``{"spo2": ..., "nibp": ...}``. A single-status form becomes one
+    ``{"overall": ...}``. Unclassifiable boxes are dropped rather than guessed.
+    """
+    first = normalise_status(form.status)
+    second = normalise_status(form.status2)
+    modules = {}
+    for key, raw in dict(form.module_statuses).items():
+        value = normalise_status(raw)
+        if value:
+            modules[key] = value
+
+    keys = _PER_TEST_STATUS.get(form.device_code)
+    if keys:
+        read = {key: value
+                for key, value in zip(keys, (first, second)) if value}
+        # The mapped cells win where they read. The labels fill a box the map
+        # missed — a vital signs form whose map lands on the labels themselves
+        # — and add the SpO2 box, which no monitor cell map has at all.
+        for key, value in modules.items():
+            read.setdefault(key, value)
+        return read
+
+    # A single-status device filled in on the monitor template. Its boxes are
+    # named by their own labels, so they stay apart exactly as a monitor's do,
+    # rather than being collapsed into one verdict that hides which failed.
+    if modules:
+        return modules
+
+    # A single-box form whose mapped cell said nothing: the box as found from
+    # the form's own "Status" label. Never reached for a two-box device — that
+    # returned above — where the nearest label could be the other module's.
+    if not first:
+        first = normalise_status(form.status_by_label)
+    known = [value for value in (first, second) if value]
+    if not known:
+        return {}
+    return {"overall": max(known, key=_SEVERITY.__getitem__)}
+
 
 def _parse_form_date(text: str) -> str | None:
     """Turn a form's Date cell into an ISO date, or None if it is not one.
@@ -1735,8 +2029,15 @@ def build_document(form: ParsedForm, customer: dict | None) -> dict:
         # calibration rather than on the customer.
         "contactName": form.contact_name,
         "contactPhone": form.contact_phone,
-        "tests": {},
-        "formData": {},
+        # `tests` and `formData` are deliberately absent, not empty.
+        #
+        # Every write here is `merge=True`, and under a merge an empty map is
+        # not "nothing" — it enters the field mask as a leaf of its own and
+        # *replaces* what the server holds. Engineers may correct an imported
+        # record from the app, so re-running this import used to erase every
+        # such correction's form data. The app's own `toRemoteJson` omits both
+        # when empty for exactly this reason, and every reader already handles
+        # a document without them.
 
         # ── Archive-only ──
         "imported": True,
@@ -1781,6 +2082,15 @@ def build_document(form: ParsedForm, customer: dict | None) -> dict:
         "needsAttention": bool(attention),
         "attentionReason": attention,
     }
+
+    # The outcome as the form recorded it, alongside the collapsed `passed`
+    # rather than instead of it: a phone still running the old build reads
+    # `passed` and must see exactly what it saw before. Omitted when nothing
+    # could be classified, so a re-run leaves an earlier answer standing and
+    # the app falls back to `passed`.
+    statuses = build_statuses(form)
+    if statuses:
+        document["statuses"] = statuses
     return document
 
 
@@ -2182,6 +2492,296 @@ def _run_push(args, root: Path) -> int:
     return 0
 
 
+def collect_statuses(
+    forms: list[ParsedForm],
+) -> dict[str, tuple[str, dict[str, str], set[str]]]:
+    """Each record's outcomes: ``{id: (serial, statuses, source paths)}``.
+
+    One entry per *record*, not per file — duplicate copies of the same visit
+    collapse onto one id. If two copies disagree the worse outcome wins, the
+    conservative reading of paperwork that contradicts itself. Records with
+    nothing classifiable are left out entirely.
+
+    The serial and the paths travel with it because [push_statuses] refuses to
+    write to a record it cannot show is the same one — see there.
+    """
+    found: dict[str, tuple[str, dict[str, str], set[str]]] = {}
+    for form in forms:
+        if not form.doc_id:
+            continue
+        statuses = build_statuses(form)
+        if not statuses:
+            continue
+        _, merged, paths = found.setdefault(
+            form.doc_id, (form.serial.strip().upper(), {}, set())
+        )
+        paths.add(form.path)
+        for key, value in statuses.items():
+            current = merged.get(key)
+            if current is None or _SEVERITY[value] > _SEVERITY[current]:
+                merged[key] = value
+    return found
+
+
+def push_statuses(
+    found: dict[str, tuple[str, dict[str, str]]],
+    db,
+    *,
+    progress=None,
+) -> dict[str, int]:
+    """Write ``statuses`` onto records that already exist. Touch nothing else.
+
+    The narrow alternative to re-running [push_firestore], which rewrites every
+    field of every record and re-derives every device number. For a backfill of
+    one field that is far more than is needed, and it carries a real risk: if
+    the files on disk have changed since the last import, [assign_ids] can number
+    a device differently and the full push would rewrite its tag.
+
+    So this:
+
+    * **only updates** — ``update`` never creates a document, and a record the
+      server does not have is counted and skipped;
+    * **checks identity first** — each record is read back and must be shown to
+      be the same one: either its stored ``serialUpper`` equals the form's, or
+      its stored ``sourcePath`` — the exact file it was built from — is one of
+      this record's files. A status can never land on a different device
+      because an id shifted. A record passing neither is counted and left alone.
+
+      The path half exists because the original import read the wrong cell as
+      the serial on some forms — 749 records store none, 138 store things like
+      ``"PASS"``, ``"NICU SURGERY"`` or a date — and a serial check alone
+      refused all of them. A file *name* would not do: renumbered siblings
+      share one, since files on disk are never renamed;
+    * **writes one field** — ``{"statuses": ...}``, replacing that map whole and
+      nothing beside it;
+    * **honours deletions** — a tombstoned record is neither read nor written.
+
+    Returns counts: ``updated``, ``missing``, ``mismatched``, ``deleted``.
+    """
+    tombstones = load_tombstones(db)
+    items = []
+    for doc_id, entry in sorted(found.items()):
+        if doc_id in tombstones:
+            continue
+        # The paths are optional: without them identity rests on the serial.
+        serial, statuses, *rest = entry
+        items.append((doc_id, serial, statuses, set(rest[0]) if rest else set()))
+    counts = {
+        "updated": 0,
+        "missing": 0,
+        "mismatched": 0,
+        "deleted": len(found) - len(items),
+    }
+
+    collection = db.collection(CALIBRATIONS)
+    for start in range(0, len(items), BATCH_SIZE):
+        chunk = items[start:start + BATCH_SIZE]
+        refs = [collection.document(doc_id) for doc_id, _, _, _ in chunk]
+        # One round trip per chunk, and only the fields the check needs.
+        stored = {
+            snap.id: snap
+            for snap in db.get_all(refs, field_paths=["serialUpper", "sourcePath"])
+        }
+
+        batch = db.batch()
+        pending = 0
+        for (doc_id, serial, statuses, paths), ref in zip(chunk, refs):
+            snap = stored.get(doc_id)
+            if snap is None or not snap.exists:
+                counts["missing"] += 1
+                continue
+            data = snap.to_dict() or {}
+            same_serial = bool(serial) and data.get("serialUpper", "") == serial
+            same_file = bool(paths) and data.get("sourcePath", "") in paths
+            if not (same_serial or same_file):
+                counts["mismatched"] += 1
+                continue
+            batch.update(ref, {"statuses": statuses})
+            pending += 1
+
+        if pending:
+            batch.commit()
+            counts["updated"] += pending
+        if progress:
+            progress(min(start + BATCH_SIZE, len(items)), len(items))
+
+    return counts
+
+
+def _run_statuses_only(args, root: Path) -> int:
+    """The backfill write path. Says what it will do and refuses without --yes."""
+    print("scanning…")
+    forms = scan(root, only_year=args.year, limit=args.limit)
+    print(f"  {len(forms):,} forms")
+
+    print("reading workbooks (all of them — this is the slow part)…")
+
+    def tick(done: int, total: int) -> None:
+        if done % 200 == 0 or done == total:
+            print(f"\r  {done:,}/{total:,}", end="", flush=True)
+
+    deepen(forms, sample=0, progress=tick)
+    print()
+    assign_ids(forms)
+
+    if args.year or args.limit:
+        print()
+        print("  NOTE: a partial scan can number devices differently from the full")
+        print("  import. The serial check refuses any record that does not match,")
+        print("  so nothing lands on the wrong device — but use a full run for the")
+        print("  real backfill.")
+
+    found = collect_statuses(forms)
+    records = len({form.doc_id for form in forms if form.doc_id})
+    print()
+    print(f"  {records:,} records, {len(found):,} with a status the app can read")
+    if not found:
+        print("Nothing to write.")
+        return 0
+
+    reads = len(found)
+    # An upper bound: missing and mismatched records are read but not written.
+    writes = len(found)
+    emulator = using_emulator()
+
+    print()
+    if emulator:
+        print(f"ABOUT TO WRITE — EMULATOR ({os.environ['FIRESTORE_EMULATOR_HOST']})")
+        print("  Nothing here is billable and nothing reaches the real project.")
+    else:
+        print(f"ABOUT TO WRITE — LIVE PROJECT '{args.project}'  ** THIS COSTS MONEY **")
+    print(f"  reads   {reads:,}  — each record's serial, checked before it is touched")
+    print(f"  writes  up to {writes:,}  — the `statuses` field only")
+    print("  No other field is written, no record is created, and no device is")
+    print("  renumbered.")
+
+    if not emulator:
+        # List prices, after the daily free tier, so a figure on screen is an
+        # upper bound rather than a hope.
+        read_cost = max(0, reads - 50_000) / 100_000 * 0.06
+        write_cost = max(0, writes - 20_000) / 100_000 * 0.18
+        print()
+        print("  ESTIMATED COST")
+        print(f"    reads   ~${read_cost:,.2f}")
+        print(f"    writes  ~${write_cost:,.2f}")
+        print(f"    total   ~${read_cost + write_cost:,.2f}")
+        print()
+        print("  Try it on the emulator first — same code, no cost:")
+        print("    firebase emulators:start --only firestore,auth,storage")
+        print("    set FIRESTORE_EMULATOR_HOST=localhost:8080")
+
+    print()
+    if not args.yes:
+        print("Refusing to write without --yes. Re-run with --yes when ready.")
+        return 3
+
+    db, _storage = connect(args.project)
+
+    print("writing statuses…")
+    counts = push_statuses(found, db, progress=tick)
+    print()
+    print(f"  {counts['updated']:,} records updated")
+    if counts["mismatched"]:
+        print(f"  {counts['mismatched']:,} left alone — neither the serial nor the "
+              f"source file matched")
+    if counts["missing"]:
+        print(f"  {counts['missing']:,} left alone — no such record on the server")
+    if counts["deleted"]:
+        print(f"  {counts['deleted']:,} skipped — deleted by an engineer")
+    print()
+    print("Done. Re-run any time — it writes the same answer again.")
+    return 0
+
+
+def status_histogram(
+    forms: list[ParsedForm],
+) -> tuple[list[tuple[str, str, str, str | None, int]], dict[str, int]]:
+    """Every distinct Status text, per device code and box, with its count.
+
+    Returns ``(rows, summary)``. Each row is ``(device_code, box, raw text,
+    outcome it normalises to or None, count)``, most frequent first. The second
+    box is counted only for device codes whose cell map has one, so a balance is
+    not reported as having a blank Status2 on every form.
+
+    This is the gate before a backfill costs anything: it is the only way to see
+    what the classifier actually has to handle, and how many records would gain
+    an outcome at all.
+    """
+    from collections import Counter
+
+    counts: Counter = Counter()
+    with_statuses = 0
+    two_box_with_both = 0
+    by_label = 0
+    for form in forms:
+        cells = DEVICE_CONFIGS.get(form.device_code, {}).get("cells", {})
+        boxes = [("Status", form.status)]
+        if "Status2" in cells:
+            boxes.append(("Status2", form.status2))
+        for box, raw in boxes:
+            counts[(form.device_code, box, raw)] += 1
+
+        statuses = build_statuses(form)
+        if statuses:
+            with_statuses += 1
+        if form.status_by_label and normalise_status(form.status) is None:
+            by_label += 1
+        if len(statuses) >= 2:
+            two_box_with_both += 1
+
+    rows = [
+        (code, box, raw, normalise_status(raw), count)
+        for (code, box, raw), count in counts.most_common()
+    ]
+    summary = {
+        "forms": len(forms),
+        "with_statuses": with_statuses,
+        "two_box_with_both": two_box_with_both,
+        "by_label": by_label,
+    }
+    return rows, summary
+
+
+def _run_status_histogram(args, root: Path) -> int:
+    """Print the histogram. Local only — no connection is opened."""
+    print("scanning…")
+    forms = scan(root, only_year=args.year, limit=args.limit)
+    print(f"  {len(forms):,} forms")
+
+    wanted = max(args.sample, 0)
+    print(f"opening {'every' if not wanted else f'{wanted:,}'} workbook(s)…")
+
+    def tick(done: int, total: int) -> None:
+        if done % 50 == 0 or done == total:
+            print(f"\r  {done:,}/{total:,}", end="", flush=True)
+
+    read = deepen(forms, sample=wanted, progress=tick)
+    print()
+
+    # Only forms that were actually opened say anything about their status.
+    opened = [form for form in forms if form.serial or form.status or form.status2]
+    rows, summary = status_histogram(opened)
+
+    print()
+    print(f"{'code':<6} {'box':<8} {'count':>7}  {'becomes':<13} text")
+    for code, box, raw, outcome, count in rows:
+        shown = raw if raw else "(blank)"
+        print(f"{code:<6} {box:<8} {count:>7,}  {outcome or '— left out':<13} {shown}")
+
+    total = max(summary["forms"], 1)
+    print()
+    print(f"  {read:,} workbooks opened, {summary['forms']:,} readable")
+    print(f"  {summary['with_statuses']:,} would gain `statuses` "
+          f"({100 * summary['with_statuses'] / total:.1f}%)")
+    print(f"  {summary['two_box_with_both']:,} two-status devices with both boxes read")
+    print(f"  {summary['by_label']:,} found from the form's own \"Status\" label "
+          f"(the mapped cell said nothing)")
+    print()
+    print("Nothing was written. A --push writes every record once (merge), so its")
+    print("Firestore cost does not depend on how many of these gain an outcome.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="firebase_export",
@@ -2220,6 +2820,15 @@ def main(argv: list[str] | None = None) -> int:
                              "Firestore; no archive scan, uploads run in parallel")
     parser.add_argument("--jobs", type=int, default=16,
                         help="parallel uploads for --upload-only (default: 16)")
+    parser.add_argument("--status-histogram", action="store_true",
+                        help="open workbooks and count every Status cell's text and "
+                             "the outcome it becomes; opens no connection, writes "
+                             "nothing. Uses --sample (0 = every workbook)")
+    parser.add_argument("--statuses-only", action="store_true",
+                        help="backfill each archive record's `statuses` field and "
+                             "nothing else: never creates a record, never "
+                             "renumbers, and skips any record whose stored serial "
+                             "does not match. Needs --yes to write")
     args = parser.parse_args(argv)
 
     # The report carries Arabic folder names and box-drawing rules, and the
@@ -2348,6 +2957,12 @@ def main(argv: list[str] | None = None) -> int:
         for line in findings:
             print(f"  {line}")
         return 1
+
+    if args.status_histogram:
+        return _run_status_histogram(args, root)
+
+    if args.statuses_only:
+        return _run_statuses_only(args, root)
 
     if args.push:
         return _run_push(args, root)
