@@ -14,7 +14,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
-python -m pytest                            # the whole suite (174 tests)
+python -m pytest                            # the whole suite (273 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -25,8 +25,10 @@ $env:CALIST_ONEDIR=1; pyinstaller calist.spec    # -> dist/Calist/    (folder)
 python docs/make_icon.py                         # redraw the app icon
 ```
 
-Three test files, all runnable without a display: `test_calist.py` (the pipeline),
-`test_access.py` (the PIN gate) and `test_settings.py`. There is no linter configured.
+Five test files, all runnable without a display: `test_calist.py` (the pipeline),
+`test_firebase_export.py` (the archive export), `test_access.py` (the PIN gate),
+`test_settings.py` and `test_device_config.py` (the cell maps the Calystra app also writes).
+There is no linter configured.
 
 **Releases are built by CI, not locally.** Bump `__version__` in `calist.py`, then
 `git tag vX.Y.Z && git push origin vX.Y.Z` — [release.yml](.github/workflows/release.yml) runs the
@@ -139,22 +141,40 @@ on every file the moment it is added, which is how a bad name or an unrecognised
 before a long run instead of after it. It must stay I/O-free; a test asserts it works on a path that
 does not exist.
 
-### Filename format check (`strict_names`)
+### Filename format check (`strict_names`) — three settings, not two
 
-Optional, off by default, surfaced as a switch next to the dedup one. Enforces
-`G302-AGH001-0425` — site code (letters then digits), device code and number, then MMYY with the
-month range-checked.
+Off by default, surfaced as a switch next to the dedup one. The switch **cycles through three
+positions**, `NAME_CHECK_OFF` → `NAME_CHECK_CODES` → `NAME_CHECK_FULL` → off:
+
+| Level | Accepts | Regex |
+|---|---|---|
+| `OFF` (0) | anything | — |
+| `CODES` (1) | `G302-AGH001-` and the second dash, **tail free** | `_CODES_RE` |
+| `FULL` (2) | `G302-AGH001-0425`, month range-checked | `_NAME_RE` |
+
+The middle one exists because a round is often named to the house shape in its *codes* while the
+trailing date is written half a dozen ways (`-june`, `-rev2-final`, `-`). Rejecting those loses real
+work; accepting anything loses the check that catches a mistyped code.
+
+A switch has two positions and this setting has three, so **the middle state is told apart by colour
+and wording**, not by the switch itself: `WARNING` amber and "Accept filenames starting
+G302-AGH001-". `_STRICT_LABEL` / `_show_strict()` in `ui.py` own that.
 
 The performance shape is deliberate and worth preserving:
 
-- `check_filename_format()` is **one precompiled `_NAME_RE.match()`** on the accepting path — no
+- `check_filename_format()` is **one precompiled match** on the accepting path at *every* level — no
   splitting, no allocation. ~0.7 µs, so 300 names re-validate in ~0.2 ms and the table can refresh
   on the same click that flips the switch.
 - `_explain_bad_filename()` does the per-part diagnosis and is **only reached for names that already
   failed**. A correctly named folder never pays for it. Keep it that way — moving the diagnosis onto
-  the hot path would make toggling feel sluggish on a large folder.
+  the hot path would make toggling feel sluggish on a large folder. It takes the level too, so
+  level 1 never complains about a date it does not ask for.
 
-With the switch on, the format is checked **before** the device lookup: the user has asked for that
+`name_check_level()` coerces a `bool` to a level (`False`→0, `True`→2), so every existing caller and
+every saved settings file keeps working; `_remember` writes both `name_check` and the old
+`strict_names` key so an older build still reads the setting.
+
+Whatever the level, the format is checked **before** the device lookup: the user has asked for that
 shape specifically, so a malformed name is the finding worth reporting even when a device code could
 still be salvaged. `test_format_is_checked_before_the_device_code` pins this.
 
@@ -237,6 +257,12 @@ indistinguishable from one an engineer left empty.
 Steps 3–4 are the net for shifts nobody has recorded yet. `alt_cells` still earns its place: it is
 cheaper (no whole-grid read) and auditable.
 
+**An alternate whose identity cells repeat the primary's can never be reached**, because an alternate
+is only tried when the whole record is implausible — and if the primary's Model and S.N read, so do
+its twin's. Three such entries existed (`BZ`, `AL`, `VAGH`), each written to name a *different Status
+cell*, which is not something this mechanism can express. That is now `_settle_status`'s job.
+`test_an_alternate_that_repeats_the_primary_identity_is_never_added` pins it.
+
 **The configured map always wins when it produces a plausible record**, so this can only rescue a
 file the map got wrong and can never change one it already got right.
 
@@ -259,6 +285,54 @@ Four things there are load-bearing:
 - **A value that is itself a caption is not a value.** The Therapeutic Ultrasound form heads a table
   `Model | S.N.` at row 11 and puts the real fields at row 69; taking the first match read the model
   as the string `"S.N."`.
+
+### The Status box moves on its own (`_settle_status`)
+
+**`read_best` cannot fix a wrong Status, and this is the trap.** `plausible()` asks for a serial and
+a model, so a map that places the identity block perfectly and misses the verdict box produces a
+*plausible* record — the primary wins, no fallback is ever reached, and the miss is silent. Every
+one of these was found that way, not by anything failing:
+
+- `DG` read `H32`, a row the form does not reach: **0 of 953**.
+- `AM` read `G33`, which serves the older template: 148 of 250 forms use `G31`.
+- `AK` read the Model from `D72`, which is *Next calibration* — a **date in the Model column**.
+- `BZ`, `AL`, `GC`, `FW`, `DU` had alternates pointing at column J/K, where `Safety:`,
+  `Syringe brand:` and `Contact Person Name:` are printed. Those captions were the register's verdict
+  on ~1,450 Phototherapy forms alone.
+
+So `read_best` settles `Status` separately, after the layout search, on every route it can return by.
+Three steps, in order:
+
+1. The value **already reads as a status** → kept untouched. One set lookup, no extra read. This is
+   why the 10 devices whose box never moves (`AGH`, `FJ`, `CF`, `AG`, `BC`, `CK`, `CZ`, `DE`, `FD`,
+   `GI`) are completely unaffected, and why this can never change a file the map got right.
+2. Otherwise the box is found from the form's **own printed `Status:` label** — `status_from_grid`.
+3. Nothing found → the original text is kept, **unless it is a caption or an answer to a different
+   question** (`_NOT_A_VERDICT`: `Small`, `Large`, `N.A`, `----`), which is dropped to `""`.
+
+Four things there are load-bearing:
+
+- **Label-anchored, never an offset search.** Boxes move *sideways* more than they move down:
+  measured over all 81 mapped Status cells, 33 devices have forms whose box is in a different
+  column (`AO` `H32`→`A31`, `BM` `K22`→`J17`, `ED` `G43`→`J38`). Head to head on the forms where
+  the mapped cell misses, the label found **230** that a same-column search missed, against **1**
+  the other way — and where they disagreed, the offset search was returning the **legend**. These
+  forms print `Pass | Fail | Limited non | limited fail` across columns **B–E on the answer's own
+  row**, so every one of those cells reads as a status. Only starting from the label avoids them.
+- **`_STATUS_BAND_ROWS = 18` is the whole cost.** `values()` scans the sheet once per reference, so
+  the price is linear in the band. Reading the whole `A1:N95` grid to find one cell took a form from
+  2.5 ms to 14 ms — a five-fold regression on the path the reader exists to keep fast. 18 rows
+  recovers 2,499 of the 2,548 the whole grid finds, for a quarter of the cost. Only the 19.5% whose
+  mapped cell missed ever pay, and 76% of those come back with a status.
+- **A two-box device gets the caption guard and nothing else.** One printed `Status` label cannot say
+  whether it belongs to the ECG or the NIBP, so filling a missing one from the nearest label would
+  put one module's verdict against the other. `Status2` devices skip step 2 entirely.
+- **A device with no Status box skips everything.** `CT`, `MRI`, `Dexa` and the air mattress map
+  `Status` to `""` deliberately; with no anchor there is nothing to search around and no read to pay.
+
+Proven the way this repo proves reader changes — whole-corpus, before and after, 3,004 forms:
+**0 regressions**, 617 forms gained a status, 95 captions went to zero. The harness is
+`validate.py` + `diffrun.py`; rebuild the baseline with `git show HEAD:calist.py`.
 
 ### Never read the calibrator as the device
 

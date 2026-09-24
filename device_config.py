@@ -128,8 +128,16 @@ DEVICE_CONFIGS: dict[str, dict] = {
         "device_name": "Phototherapy",
         "cells": form(28, "F37", col="D", val="J"),
         "alt_cells": [
-            form(28, "J36", col="D", val="J", date_gap=4),
-            form(35, "J43", col="D", val="J", date_gap=4),
+            # There used to be a row-28 entry ahead of this one, differing from
+            # the primary only in date_gap and Status. Its Model and S.N were
+            # the primary's, so it could never be reached — see
+            # test_an_alternate_that_repeats_the_primary_identity_is_never_added.
+            #
+            # Status was J43, which on these forms is the "Safety:" caption —
+            # written into the register as the device's verdict on 183 of 300
+            # sampled files. The answer box is F44/G44; C44/D44 beside it is
+            # the printed legend, not an answer.
+            form(35, "F44", col="D", val="J", date_gap=4),
         ],
     },
 
@@ -142,20 +150,31 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AH": {"device_name": "SPO2",                   "cells": form(14, "G27")},
     "EE": {"device_name": "Flowmeter",              "cells": form(17, "G31")},
     "GP": {"device_name": "Holter machines",        "cells": form(18, "G26")},
-    # Named "OR light" here; the master code list calls it a light source.
+    # The master code list calls it a light source; the engineers call it the
+    # OR light, and that is the wording the register carries.
     # ~400 of the 1,005 files use the ordinary E/K block instead of row 15.
+    # The alternate's K22 Status is correct — checked, 119/119 real statuses —
+    # unlike the column changes in AL, BZ, GC, FW and DU, which land on captions.
     "DV": {
-        "device_name": "Light source",
+        "device_name": "OR Light",
         "cells": form(15, "G24"),
         "alt_cells": [form(18, "K22")],
     },
     "AS": {"device_name": "Centrifuge",             "cells": form(18, "K25")},
     "AJ": {"device_name": "Suction",                "cells": form(23, "G32")},
-    "AM": {"device_name": "Ventilator",             "cells": form(17, "G33")},
+    # Status was G33, which is right for the older template only: of 250 forms
+    # sampled, 148 put the box at G31 and 69 at G33. The identity block does
+    # NOT move with it, so read_best never falls through — the majority simply
+    # read blank until the box was found by its own label.
+    "AM": {"device_name": "Ventilator",             "cells": form(17, "G31")},
     "FG": {"device_name": "ACT",                    "cells": form(18, "H32"),
            "alt_cells": [form(17, "H31"), form(19, "H33")]},
-    "DG": {"device_name": "CBC Analyzer",           "cells": form(18, "H32"),
-           "alt_cells": [form(15, "H29")]},
+    # Status was H32 — a row this form does not even reach — and read blank on
+    # every one of 300 files sampled. The box is K22, labelled "Status:" at I22;
+    # it now reads on 771 of 937. The alternate's H29 was wrong the same way:
+    # that layout labels F27/G27 and answers at F29/G29.
+    "DG": {"device_name": "CBC Analyzer",           "cells": form(18, "K22"),
+           "alt_cells": [form(15, "G29")]},
     "AU": {"device_name": "Chemistry analyzer",     "cells": form(18, "K22")},
     "AX": {"device_name": "Lab Incubator",          "cells": form(18, "H32")},
     "EY": {"device_name": "Freezer",                "cells": form(18, "H32")},
@@ -190,13 +209,13 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # of them had been copied from the other.
     "AO": {"device_name": "Thermometer, patient",   "cells": form(18, "H32")},
     # A second layout sits one row up with an extra line above the date. Its
-    # status cell carries no printed label, so K23 follows the +4 offset every
-    # other form of this shape uses — unverified, and only the serial and model
-    # decide whether a layout is accepted anyway.
+    # status cell was guessed at K23, following the +4 offset forms of this
+    # shape usually use. The guess was wrong: K23 read blank on all 132 sampled
+    # files that use this layout, and the box is at F32/G32.
     "GC": {
         "device_name": "Portable Data Logger",
         "cells": form(20, "G33"),
-        "alt_cells": [form(19, "K23", date_gap=4)],
+        "alt_cells": [form(19, "G32", date_gap=4)],
     },
     "DA": {"device_name": "Shaker",                 "cells": form(18, "H29")},
     "GI": {"device_name": "Bacteria Analyzer",      "cells": form(18, "K22")},
@@ -259,14 +278,23 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # The original map is row 26 and stays primary; a four-year import found
     # ~820 files it could not read, and probing those showed rows 25 and 27 in
     # circulation. Confirmed against the printed labels, not inferred.
+    # The status box is in column G on every one of these layouts. The alternates
+    # named K, which is where "Safety:" and "Syringe brand:" are printed — so a
+    # form that fell through to an alternate had a caption recorded as its
+    # verdict. ~7.6% of the 18,219 syringe forms use alt 0, and its K35 read
+    # 'Syringe brand:' on 50 of 61 and 'Safety:' on 7; the real box is G34.
+    #
+    # A fourth entry used to sit here with the primary's own identity cells and
+    # only a different Status. read_best tries an alternate only when the whole
+    # record is implausible, so an entry whose identity matches the primary can
+    # never be reached — it was dead. A Status box that moves on its own is now
+    # found by the form's printed label instead.
     "BZ": {
         "device_name": "Syringe",
         "cells": form(26, "G35", date_gap=4),
         "alt_cells": [
-            form(27, "K35", date_gap=4),
-            form(25, "K33", date_gap=4),
-            # Same rows as the primary, but the status sits in K rather than G.
-            form(26, "K34", date_gap=4),
+            form(27, "G34", date_gap=4),
+            form(25, "G35", date_gap=4),
         ],
     },
     "CE": {"device_name": "Sphygmomanometer",       "cells": form(47, "H59", date_gap=4)},
@@ -318,10 +346,14 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "CP": {"device_name": "Vertebral Column Stretcher", "cells": form(18, "K22", date_gap=4)},
 
     # Two forms in circulation for these; the older one sits three rows higher.
+    # On that older layout J27 is the "Contact Person Name:" caption, not a
+    # status — checked on every file of each that uses it. The box is at F29/G29.
     "FW": {"device_name": "Blood Culture System",   "cells": form(18, "K22", date_gap=4),
-           "alt_cells": [form(15, "J27", date_gap=4)]},
+           "alt_cells": [form(15, "G29", date_gap=4)]},
     "DU": {"device_name": "Immunoassay Analyzer",   "cells": form(18, "K22", date_gap=4),
-           "alt_cells": [form(15, "J27", date_gap=4)]},
+           "alt_cells": [form(15, "G29", date_gap=4)]},
+    # AY is the same pair of layouts the other way round, and its K22 alternate
+    # is correct — 40 of 48 real statuses. Left alone deliberately.
     "AY": {"device_name": "Virus & PCR Analyzer",   "cells": form(15, "J27", date_gap=4),
            "alt_cells": [form(18, "K22", date_gap=4)]},
 
@@ -365,7 +397,15 @@ DEVICE_CONFIGS: dict[str, dict] = {
         "device_name": "Baby Incubator",
         "cells": {
             "Manufacturer": "D74",
-            "Model": "D72",
+            # Model sits *below* Manufacturer on this form, as it does on the
+            # older one below — the standard E/K orientation is inverted here.
+            # This read D72, which is the "Next calibration:" date, so the
+            # register showed a date in the Model column. Confirmed against the
+            # printed labels in column B: "Manufacturer:" r74, "Model:" r76.
+            #
+            # The alternate could not rescue it: D72 and L72 both hold values,
+            # so the record looked plausible and read_best stopped at the primary.
+            "Model": "D76",
             "S.N": "L72",
             "Location": "D78",   # in the label column, 6 rows down
             "Date": "D70",
@@ -423,19 +463,27 @@ DEVICE_CONFIGS["AG"] = {
     "second_row": {"device_name": "NIBP", "code_replace": ("AG", "AGCB")},
 }
 
-# "VAGH" is "AGH" with a stray V typed in front — 6 files at one site, confirmed
-# by the owner. Same treatment as AG above: the cell map is shared by reference
-# so the two can never drift, and the second row gets its own code_replace
-# because AGH's ("AGH" -> "AGCB") would rewrite "VAGH001" to "VAGCB001".
+# "VAGH" is "AGH" with a stray V typed in front — 12 files at one site, confirmed
+# by the owner. The second row gets its own code_replace because AGH's
+# ("AGH" -> "AGCB") would rewrite "VAGH001" to "VAGCB001".
 #
-# The sampled files put the Date at E14 rather than AGH's E16, so that layout is
-# carried as an alternate. Alternates are only reached when the primary cannot
-# read a file sensibly, so this can rescue the shifted forms without touching any
-# that already read correctly.
+# The cell map used to be shared with AGH by reference, to stop the two drifting.
+# It cannot be: these forms are filled in on the *vital signs* template, not the
+# patient-monitor one. All 12 carry their verdicts at G38/J38 — VAH's cells —
+# and AGH's D39/J39 are empty on every one, so both statuses read blank.
+# The identity block is identical on the two templates (E18/K18/E20/K20), which
+# is why nothing ever flagged it: the record looked perfectly plausible.
+#
+# The alternate that used to sit here named the same Model and S.N as the
+# primary and differed only in Date and Status. read_best tries an alternate
+# only when the whole record is implausible, so it could never be reached.
+#
+# Note for the owner: the model on these files is a Contec CMS 51000, a vital
+# signs monitor. The device_name and the NIBP sub-row are left as they are,
+# because changing them rewrites the text in every register built afterwards.
 DEVICE_CONFIGS["VAGH"] = {
     "device_name": DEVICE_CONFIGS["AGH"]["device_name"],
-    "cells": DEVICE_CONFIGS["AGH"]["cells"],
-    "alt_cells": [form(18, "D39", date_gap=4, extra={"Status2": "J39"})],
+    "cells": form(18, "G38", extra={"Status2": "J38"}),
     "second_row": {"device_name": "NIBP", "code_replace": ("VAGH", "AGCB")},
 }
 

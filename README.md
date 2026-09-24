@@ -17,7 +17,7 @@ de-duplicated equipment register — automatically, without opening a single fil
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![Tests passing](https://img.shields.io/badge/tests-174%20passing-brightgreen)
+![Tests passing](https://img.shields.io/badge/tests-273%20passing-brightgreen)
 ![Device types](https://img.shields.io/badge/device%20types-95-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
@@ -389,8 +389,17 @@ row is recoverable, a wrong one might never be noticed.
 
 ### Enforcing the house format
 
-By default any filename is accepted so long as a device code can be read from it. Flip on
-**Accept only filenames like G302-AGH001-0425** and the full house format becomes mandatory:
+The filename switch has **three positions**. Click it to cycle through them:
+
+| Position | What it accepts | Example |
+|---|---|---|
+| **Accept any filename** | anything a device code can be read from | `Clinic-AGH001.xlsx` |
+| **Accept filenames starting G302-AGH001-** | both codes and the dash — whatever follows is yours | `G302-AGH001-june` |
+| **Accept only filenames like G302-AGH001-0425** | the full house format | `G302-AGH001-0425` |
+
+The middle one is for the common case: a round named correctly in its *codes* while the trailing
+date is written half a dozen different ways. It still catches a mistyped site or device code, which
+is the mistake that actually costs you a row in the register.
 
 ```
 G302  -  AGH001  -  0425
@@ -400,7 +409,7 @@ G302  -  AGH001  -  0425
 ```
 
 Anything that breaks it is flagged **before you build**, with the specific reason rather than a
-useless blanket "invalid":
+useless blanket "invalid" (on the strictest setting):
 
 | Filename | Reported as |
 |---|---|
@@ -606,14 +615,15 @@ pip install pytest
 python -m pytest
 ```
 
-**174 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
+**273 tests**, run in CI against Python 3.10, 3.11 and 3.12 on every push:
 
 | Suite | Covers |
 |---|---|
-| [`test_calist.py`](test_calist.py) — 107 tests | Filename parsing and format validation, value handling, sheet selection, merged-cell resolution, layout fallback (including that the calibrator is never read as the device), ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
+| [`test_calist.py`](test_calist.py) — 123 tests | Filename parsing and format validation, value handling, sheet selection, merged-cell resolution, layout fallback (including that the calibrator is never read as the device), ordering, de-duplication (including that the warning names the two files involved), second-row generation, pre-flight classification, cancellation, attribution, plus end-to-end runs against workbooks built on the fly |
 | [`test_access.py`](test_access.py) — 35 tests | The daily code: known-date vectors, zero-padding, rejection of malformed input, midnight relocking, and cooldown escalation |
 | [`test_settings.py`](test_settings.py) — 7 tests | Preference persistence, including BOM-tolerant reading, corrupt files, and unwritable profiles |
-| [`test_firebase_export.py`](test_firebase_export.py) — 25 tests | The archive export: long-path handling, device aliases, and the files that are not forms |
+| [`test_firebase_export.py`](test_firebase_export.py) — 107 tests | The archive export: long-path handling, device aliases, status classification, and the files that are not forms |
+| [`test_device_config.py`](test_device_config.py) — 1 test | The five cell maps the Calystra app writes from its own Dart copy of `form()` |
 
 Several tests exist purely to stop a future change quietly weakening something:
 

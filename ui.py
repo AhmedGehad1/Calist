@@ -33,8 +33,11 @@ import customtkinter as ctk
 import access
 import calist
 from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, BAD_FORMAT,
-                    CANCELLED, ERROR, FILENAME_EXAMPLE, OK, READY,
-                    UNKNOWN_CODE, UNSUPPORTED, FileOutcome, RunResult)
+                    CANCELLED, ERROR, FILENAME_EXAMPLE, FILENAME_PREFIX_EXAMPLE,
+                    OK, READY, UNKNOWN_CODE, UNSUPPORTED, FileOutcome, RunResult)
+from calist import NAME_CHECK_CODES as CODES
+from calist import NAME_CHECK_FULL as FULL
+from calist import NAME_CHECK_OFF as OFF
 
 # Drag-and-drop is a bonus, never a requirement: without tkinterdnd2 the drop
 # zone is simply click-only.
@@ -65,6 +68,17 @@ DANGER = "#f2585f"
 #: Turbo. The wordmark takes TURBO, so "on" is unmistakable at a glance.
 TURBO = "#ff4d2d"
 TURBO_HOVER = "#ff6f52"
+
+#: What the filename switch says in each of its three positions. The middle one
+#: has to name what it accepts, because the switch itself looks the same as the
+#: third — a switch has two positions and this setting has three, so the
+#: wording and the colour carry the difference.
+_STRICT_LABEL = {
+    OFF: "Accept any filename",
+    CODES: f"Accept filenames starting  {FILENAME_PREFIX_EXAMPLE}",
+    FULL: f"Accept only filenames like  {FILENAME_EXAMPLE}",
+}
+_STRICT_LOG = {OFF: "off", CODES: "codes only", FULL: "full format"}
 
 FONT = "Segoe UI"
 MONO = "Consolas"
@@ -539,7 +553,11 @@ class App(_Root):
         self._files: dict[str, FileOutcome] = {}       # path → latest outcome
         self._template = tk.StringVar(value=self._initial_template())
         self._dedup = tk.BooleanVar(value=self._settings.get("deduplicate", False))
-        self._strict = tk.BooleanVar(value=self._settings.get("strict_names", False))
+        # Three settings, not two — see calist.NAME_CHECK_*. Older settings
+        # files hold a bool under the old key; name_check_level reads either.
+        self._strict = tk.IntVar(value=calist.name_check_level(
+            self._settings.get("name_check",
+                               self._settings.get("strict_names", False))))
         self._turbo = tk.BooleanVar(value=self._settings.get("turbo", False))
         self._cancel: threading.Event | None = None
         self._scan: threading.Event | None = None
@@ -913,13 +931,18 @@ class App(_Root):
         )
         self._switch_dedup.grid(row=0, column=0, sticky="w")
 
+        # A switch has two positions and this setting has three, so the switch
+        # is driven by its own bool and the third state is told apart by colour
+        # and wording. Clicking cycles off -> codes -> full -> off.
+        self._strict_on = tk.BooleanVar(value=self._strict.get() != OFF)
         self._switch_strict = ctk.CTkSwitch(
-            switches, text=f"Accept only filenames like  {FILENAME_EXAMPLE}",
-            variable=self._strict, font=ctk.CTkFont(FONT, 12), text_color=TEXT,
+            switches, text="", variable=self._strict_on,
+            font=ctk.CTkFont(FONT, 12), text_color=TEXT,
             progress_color=PRIMARY, button_color=TEXT, fg_color=BORDER,
             command=self._on_strict_toggled,
         )
         self._switch_strict.grid(row=0, column=1, sticky="e", padx=(24, 0))
+        self._show_strict()
 
     def _build_action(self) -> None:
         self._action = ctk.CTkFrame(self._page, fg_color="transparent")
@@ -1045,7 +1068,7 @@ class App(_Root):
         self._scan = None
         # Reset any previous run's per-file statuses back to pre-flight, under
         # whatever the current settings are.
-        strict = bool(self._strict.get())
+        strict = int(self._strict.get())
         for path in list(self._files):
             self._files[path] = calist.classify_file(path, strict)
         self._filter.set("All")
@@ -1137,7 +1160,7 @@ class App(_Root):
 
     def _add_paths(self, paths: list[str]) -> None:
         """Absorb a batch of paths. Folders are walked on a worker thread."""
-        strict = bool(self._strict.get())      # threading rule 1: read it here
+        strict = int(self._strict.get())       # threading rule 1: read it here
         before = len(self._files)
         folders, singles = [], []
         for raw in paths:
@@ -1155,7 +1178,7 @@ class App(_Root):
         else:
             self._finish_intake(added)
 
-    def _absorb(self, filepaths: list[str], strict: bool) -> int:
+    def _absorb(self, filepaths: list[str], strict: int) -> int:
         added = 0
         for key in filepaths:
             if key not in self._files:
@@ -1169,7 +1192,7 @@ class App(_Root):
             calist.log.info("Added %d device(s). Total: %d", added, len(self._files))
         self._enter_setup()
 
-    def _start_scan(self, folders: list[str], strict: bool, before: int) -> None:
+    def _start_scan(self, folders: list[str], strict: int, before: int) -> None:
         """Walk folders on a worker, so a big or networked tree cannot freeze.
 
         The walk used to run inline: a stat per entry, the whole listing built
@@ -1261,8 +1284,12 @@ class App(_Root):
             self._refresh_all()
 
     def _remember(self) -> None:
+        # `strict_names` is written alongside the new key so that an older
+        # build reading this file still gets the setting it understands.
+        level = int(self._strict.get())
         self._settings.update(deduplicate=bool(self._dedup.get()),
-                              strict_names=bool(self._strict.get()),
+                              name_check=level,
+                              strict_names=level == FULL,
                               turbo=bool(self._turbo.get()))
 
         # A folder that has since been deleted or unmounted must not be carried
@@ -1436,16 +1463,26 @@ class App(_Root):
         self._summary_box.insert("1.0", "\n".join(self._summary_lines(result)))
         self._summary_box.configure(state="disabled")
 
+    def _show_strict(self) -> None:
+        """Put the switch in the position the current level describes."""
+        level = self._strict.get()
+        self._strict_on.set(level != OFF)
+        self._switch_strict.configure(
+            text=_STRICT_LABEL[level],
+            progress_color=WARNING if level == CODES else PRIMARY,
+        )
+
     def _on_strict_toggled(self) -> None:
-        """Re-check every loaded name against the new setting, immediately.
+        """Cycle off -> codes -> full -> off, and re-check every loaded name.
 
         Cheap enough to do inline — the format check is a single precompiled
-        match, so even a few hundred devices re-resolve in well under a
-        millisecond and the table updates on the same click.
+        match at every level, so even a few hundred devices re-resolve in well
+        under a millisecond and the table updates on the same click.
         """
+        self._strict.set((self._strict.get() + 1) % 3)
+        self._show_strict()
         self._remember()
-        calist.log.info("Filename format check %s",
-                        "on" if self._strict.get() else "off")
+        calist.log.info("Filename format check: %s", _STRICT_LOG[self._strict.get()])
         self._enter_setup()
 
     # ── rendering ────────────────────────────────────────────────────────────
@@ -1698,7 +1735,7 @@ class App(_Root):
         files = sorted(self._files)
         template = self._template.get()
         deduplicate = bool(self._dedup.get())
-        strict_names = bool(self._strict.get())
+        strict_names = int(self._strict.get())
         output_dir = self._outdir.get() or None
         turbo = bool(self._turbo.get())
 

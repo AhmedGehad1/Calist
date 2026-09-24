@@ -1164,3 +1164,220 @@ def test_a_form_with_no_status_field_maps_status_to_nothing():
     """
     for code in ("BW", "BX", "FP", "DW"):
         assert DEVICE_CONFIGS[code]["cells"]["Status"] == "", code
+
+
+# ── The Status column: captions, and a box that has moved ─────────────────────
+#
+# Two separate faults met here. A cell map can place the identity block
+# perfectly and still miss the verdict box, and `plausible()` asks only for a
+# serial and a model — so read_best never falls through and the miss is silent.
+# Where the map then landed on a caption, that caption was written into the
+# register as the device's outcome.
+
+
+class _Grid:
+    """Stands in for an open workbook: answers values() from a dict."""
+
+    def __init__(self, cells):
+        self._cells = cells
+        self.reads = 0
+
+    def values(self, refs):
+        self.reads += 1
+        return {ref: self._cells.get(ref, "") for ref in refs}
+
+
+def test_a_caption_is_never_written_as_a_status():
+    """A caption is printed beside the box, never in it.
+
+    A syringe form that fell through to an alternate had its verdict recorded
+    as 'Syringe brand:' on 50 of 61 sampled files, and 'Safety:' on 7 more. A
+    blank is honest; that was not. None of these may reach the register.
+    """
+    for caption in ("Safety:", "Syringe brand:", "Contact Person Name:",
+                    "Phone No.:", "Status", "Status:"):
+        record = {"Status": caption}
+        calist._settle_status(_Grid({}), {"Status": "G35"}, record)
+        assert record["Status"] == "", caption
+
+
+def test_an_answer_to_a_different_question_is_never_written_as_a_status():
+    """A map one column out reports the Safety size, which reads like an answer.
+
+    "Large" is not a caption, so the caption guard cannot catch it — and left
+    alone it looks entirely plausible to somebody reading a register.
+    """
+    for value in ("Large", "Small", "N.A", "----"):
+        record = {"Status": value}
+        calist._settle_status(_Grid({}), {"Status": "K22"}, record)
+        assert record["Status"] == "", value
+
+
+def test_a_status_that_already_reads_is_never_second_guessed():
+    """Step 1 returns before anything is searched.
+
+    This is what keeps a device whose box never moves completely unaffected —
+    10 of the 81 mapped Status cells read on every form sampled — and it is why
+    the fallback cannot change a file the map already got right, even with
+    another status sitting next to it.
+    """
+    grid = _Grid({"G35": "Pass", "G33": "Status:", "G34": "Fail"})
+    record = {"Status": "Pass"}
+    calist._settle_status(grid, {"Status": "G35"}, record)
+    assert record["Status"] == "Pass"
+    assert grid.reads == 0, "a readable status must cost no extra read"
+
+
+def test_a_box_that_moved_sideways_is_found_by_its_label():
+    """Boxes move across columns, not just down rows.
+
+    Measured over 81 device maps: 33 have forms where the box sits in a
+    different column. An offset search in the mapped column cannot find those,
+    which is why the form's own printed label is what anchors the search.
+    """
+    grid = _Grid({"H32": "", "I22": "Status:", "K22": "Calibrated"})
+    record = {"Status": ""}
+    calist._settle_status(grid, {"Status": "H32"}, record)
+    assert record["Status"] == "Calibrated"
+
+
+def test_the_printed_legend_is_never_mistaken_for_the_answer():
+    """These forms print the options across B-E on the answer's own row.
+
+    Every one of those cells reads as a status, so a search that starts
+    anywhere but the label will happily return one of them. The answer is the
+    box the label points at.
+    """
+    grid = _Grid({
+        "G33": "Status:",
+        "B34": "Pass", "C34": "Fail", "D34": "Limited non", "E34": "limited fail",
+        "G34": "Fail",                      # the real answer
+    })
+    record = {"Status": ""}
+    calist._settle_status(grid, {"Status": "G35"}, record)
+    assert record["Status"] == "Fail"
+
+
+def test_a_two_box_device_is_never_given_one_verdict_for_both():
+    """One printed "Status" label cannot say which module it belongs to.
+
+    A patient monitor's D39 is the ECG and J39 the NIBP. Filling a missing one
+    from the nearest label would put one module's verdict against the other.
+    """
+    grid = _Grid({"G30": "Status:", "G31": "Pass"})
+    record = {"Status": "", "Status2": ""}
+    calist._settle_status(grid, {"Status": "D39", "Status2": "J39"}, record)
+    assert record == {"Status": "", "Status2": ""}
+    assert grid.reads == 0
+
+
+def test_a_blank_status_stays_blank_when_the_form_says_nothing():
+    """A form nobody filled in must not acquire a verdict from anywhere."""
+    grid = _Grid({"E18": "BC-5000", "K18": "SN-9"})
+    record = {"Status": ""}
+    calist._settle_status(grid, {"Status": "G35"}, record)
+    assert record["Status"] == ""
+
+
+# ── The cell maps these faults were found through ────────────────────────────
+
+
+def test_the_maps_that_read_the_wrong_cell_stay_fixed():
+    """Each of these read blank, or read the wrong thing, on real forms.
+
+    Pinned because they are one-character edits that a later tidy-up could undo
+    without anything failing: a wrong Status reads blank, and a blank is
+    indistinguishable from a form nobody filled in.
+    """
+    # CBC: H32 is a row this form does not reach. 0 of 300 files read it.
+    assert DEVICE_CONFIGS["DG"]["cells"]["Status"] == "K22"
+    assert DEVICE_CONFIGS["DG"]["alt_cells"][0]["Status"] == "G29"
+    # Ventilator: G33 serves the older template; 148 of 250 use G31.
+    assert DEVICE_CONFIGS["AM"]["cells"]["Status"] == "G31"
+    # Vital signs filed under a patient-monitor code: the verdicts are at
+    # G38/J38, and AGH's D39/J39 are empty on all 12 files.
+    assert DEVICE_CONFIGS["VAGH"]["cells"]["Status"] == "G38"
+    assert DEVICE_CONFIGS["VAGH"]["cells"]["Status2"] == "J38"
+
+
+def test_the_incubator_reads_the_model_below_the_manufacturer():
+    """This form is inverted, and the map was not.
+
+    Model sat where "Next calibration" is printed, so the register showed a
+    date in the Model column. The alternate could not rescue it: that cell and
+    the serial both held values, so the record looked plausible and read_best
+    stopped at the primary.
+    """
+    for cells in [DEVICE_CONFIGS["AK"]["cells"]] + DEVICE_CONFIGS["AK"]["alt_cells"]:
+        model, manufacturer = cells["Model"], cells["Manufacturer"]
+        assert model[0] == manufacturer[0]
+        assert int(model[1:]) == int(manufacturer[1:]) + 2, cells
+
+
+def test_every_status_cell_is_a_real_reference_or_deliberately_empty():
+    """A Status is either a cell, or "" for a form that has no box at all.
+
+    There is no useful rule about *which* column: the legend that makes B-E
+    dangerous on the F/G-answer forms does not exist on the patient monitor,
+    whose answer genuinely sits at D39 and reads on every file. So the legend
+    is guarded where it can actually be hit — at the search, by anchoring on
+    the printed label — not by a column rule that would be false here.
+    """
+    for code, config in DEVICE_CONFIGS.items():
+        maps = [("cells", config["cells"])]
+        maps += [(f"alt {i}", a) for i, a in enumerate(config.get("alt_cells", []))]
+        for name, cells in maps:
+            status = cells.get("Status", "")
+            if status:
+                assert re.fullmatch(r"[A-Z]+\d+", status), f"{code} {name}: {status}"
+
+
+# ── Filename format: three settings, not two ─────────────────────────────────
+
+
+def test_the_middle_setting_checks_the_codes_and_lets_the_tail_be():
+    """The shape a round is named in is not always the shape of its date."""
+    for stem in ("G302-AGH001-0626", "G302-AGH001-june", "G302-AGH001-",
+                 "G302-AGH001-rev2-final"):
+        assert calist.check_filename_format(
+            stem, calist.NAME_CHECK_CODES) is None, stem
+
+
+def test_the_middle_setting_still_wants_both_codes_and_the_dash():
+    """Without the dash it is not the house shape, it is just two words."""
+    for stem in ("G302-AGH001", "Clinic-AGH001-0626", "G302-AG#01-0626",
+                 "AGH001-0626"):
+        assert calist.check_filename_format(stem, calist.NAME_CHECK_CODES), stem
+
+
+def test_the_middle_setting_never_complains_about_a_date():
+    """It does not ask for one, so naming one in the reason would be nonsense."""
+    why = calist.check_filename_format("G302-AGH001", calist.NAME_CHECK_CODES)
+    assert "date" not in why.lower() and "MMYY" not in why
+
+
+def test_the_full_setting_is_unchanged():
+    for stem in ("G302-AGH001-june", "G302-AGH001-", "G302-AGH001-1326"):
+        assert calist.check_filename_format(stem, calist.NAME_CHECK_FULL), stem
+    assert calist.check_filename_format("G302-AGH001-0626",
+                                        calist.NAME_CHECK_FULL) is None
+
+
+def test_the_old_boolean_still_means_what_it_always_did():
+    """Saved settings and every existing caller pass a bool."""
+    assert calist.name_check_level(False) == calist.NAME_CHECK_OFF
+    assert calist.name_check_level(True) == calist.NAME_CHECK_FULL
+    assert calist.classify_file(
+        "G302-AGH001-june.xlsx", True).status == calist.BAD_FORMAT
+    assert calist.classify_file(
+        "G302-AGH001-june.xlsx", False).status != calist.BAD_FORMAT
+    # A level out of range is off rather than an exception.
+    assert calist.name_check_level(9) == calist.NAME_CHECK_OFF
+    assert calist.name_check_level(None) == calist.NAME_CHECK_OFF
+
+
+def test_the_format_is_still_checked_before_the_device_code_at_every_level():
+    """The user asked for a shape; a malformed name is the finding worth having."""
+    for level in (calist.NAME_CHECK_CODES, calist.NAME_CHECK_FULL):
+        outcome = calist.classify_file("nonsense.xlsx", level)
+        assert outcome.status == calist.BAD_FORMAT, level

@@ -90,9 +90,37 @@ def test_a_deep_file_can_actually_be_read(tmp_path):
 # the forms.
 
 
-def test_vagh_shares_agh_cells_by_reference():
-    # Shared by reference so the two can never drift apart, exactly as AG does.
-    assert DEVICE_CONFIGS["VAGH"]["cells"] is DEVICE_CONFIGS["AGH"]["cells"]
+def test_vagh_reads_its_verdicts_off_the_vital_signs_template():
+    """VAGH's cells are VAH's, not AGH's, however its code and name read.
+
+    These files were sharing AGH's map by reference, on the assumption that a
+    stray "V" was the only difference. It was not: all 12 are filled in on the
+    vital signs template and carry their verdicts at G38/J38, while AGH's
+    D39/J39 are empty on every one -- so both statuses imported blank.
+
+    Nothing caught it because the identity block is identical on the two
+    templates, so the record looked entirely plausible.
+    """
+    cells = DEVICE_CONFIGS["VAGH"]["cells"]
+    assert cells["Status"] == DEVICE_CONFIGS["VAH"]["cells"]["Status"] == "G38"
+    assert cells["Status2"] == DEVICE_CONFIGS["VAH"]["cells"]["Status2"] == "J38"
+    assert cells["Status"] != DEVICE_CONFIGS["AGH"]["cells"]["Status"]
+
+
+def test_an_alternate_that_repeats_the_primary_identity_is_never_added():
+    """An alternate is only tried when the whole record is implausible.
+
+    So one whose Model and S.N match the primary's can never be reached -- it
+    is dead weight that reads as a written-down layout. Two used to exist: BZ's
+    fourth entry and VAGH's, both there only to name a different Status cell.
+    A Status box that moves on its own is found by its printed label instead.
+    """
+    for code, config in DEVICE_CONFIGS.items():
+        identity = ("Model", "S.N", "Manufacturer", "Location")
+        primary = tuple(config["cells"].get(f, "") for f in identity)
+        for index, alternate in enumerate(config.get("alt_cells", [])):
+            assert tuple(alternate.get(f, "") for f in identity) != primary, \
+                f"{code} alt {index} repeats the primary's identity cells"
 
 
 def test_vagh_rewrites_its_own_code_for_the_second_row():

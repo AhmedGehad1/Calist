@@ -230,21 +230,62 @@ def clean(value: object) -> str:
 
 FILENAME_EXAMPLE = "G302-AGH001-0425"
 
+#: What the middle setting asks for: the two codes and the dash after them.
+#: Whatever follows is the engineer's business — a date, a revision, a word.
+FILENAME_PREFIX_EXAMPLE = "G302-AGH001-"
+
+#: How hard to be on filenames. Three settings rather than two, because a round
+#: can be named to the house shape in its codes while the trailing date is
+#: written half a dozen ways — and rejecting those loses real work, while
+#: accepting anything at all loses the check that catches a mistyped code.
+NAME_CHECK_OFF = 0
+NAME_CHECK_CODES = 1
+NAME_CHECK_FULL = 2
+
 _NAME_RE = re.compile(r"[A-Za-z]+\d+-[A-Za-z]+\d+-(?:0[1-9]|1[0-2])\d{2}\Z")
+#: Site code, device code, and the dash after them. No `\Z`: the tail is free.
+#: `[A-Za-z]+\d+` cannot match a `-`, so this still pins both codes exactly.
+_CODES_RE = re.compile(r"[A-Za-z]+\d+-[A-Za-z]+\d+-")
 _PART_RE = re.compile(r"[A-Za-z]+\d+\Z")
 _DATE_RE = re.compile(r"\d{4}\Z")
 
 
-def check_filename_format(stem: str) -> str | None:
-    """None if the stem matches the house format, else why it doesn't."""
-    if _NAME_RE.match(stem):
+def check_filename_format(stem: str,
+                          level: int = NAME_CHECK_FULL) -> str | None:
+    """None if the stem passes at this level, else why it doesn't.
+
+    The accepting path stays **one precompiled match and nothing else** — no
+    splitting, no allocation — because this runs on every file the moment it is
+    added, and on every file again each time the setting changes. The per-part
+    diagnosis below is only reached by a name that has already failed.
+    """
+    if level == NAME_CHECK_OFF:
         return None
-    return _explain_bad_filename(stem)
+    if level == NAME_CHECK_CODES:
+        if _CODES_RE.match(stem):
+            return None
+    elif _NAME_RE.match(stem):
+        return None
+    return _explain_bad_filename(stem, level)
 
 
-def _explain_bad_filename(stem: str) -> str:
+def _explain_bad_filename(stem: str, level: int = NAME_CHECK_FULL) -> str:
     """Say which part is wrong. Only reached for names that already failed."""
     parts = stem.split("-")
+
+    if level == NAME_CHECK_CODES:
+        # Two codes and a dash. Say what is missing without mentioning a date,
+        # which is exactly what this setting does not ask for.
+        if len(parts) < 3:
+            return (f"expected at least {FILENAME_PREFIX_EXAMPLE}, "
+                    f"found {len(parts)} part(s)")
+        if not _PART_RE.match(parts[0]):
+            return f"site code '{parts[0]}' should be letters then digits, like G302"
+        if not _PART_RE.match(parts[1]):
+            return (f"device code '{parts[1]}' should be letters then digits, "
+                    f"like AGH001")
+        return f"does not start with {FILENAME_PREFIX_EXAMPLE}"
+
     if len(parts) != 3:
         return (f"expected 3 parts like {FILENAME_EXAMPLE}, "
                 f"found {len(parts)}")
@@ -261,7 +302,24 @@ def _explain_bad_filename(stem: str) -> str:
     return f"does not match {FILENAME_EXAMPLE}"
 
 
-def classify_file(filepath: str, strict_names: bool = False) -> FileOutcome:
+def name_check_level(strict_names: bool | int) -> int:
+    """Read the setting as one of the three levels.
+
+    Accepts a bool so that every existing caller — and every saved settings
+    file — keeps working: ``False`` is off, ``True`` is the full format it has
+    always meant.
+    """
+    if isinstance(strict_names, bool):
+        return NAME_CHECK_FULL if strict_names else NAME_CHECK_OFF
+    try:
+        level = int(strict_names)
+    except (TypeError, ValueError):
+        return NAME_CHECK_OFF
+    return level if NAME_CHECK_OFF <= level <= NAME_CHECK_FULL else NAME_CHECK_OFF
+
+
+def classify_file(filepath: str,
+                  strict_names: bool | int = False) -> FileOutcome:
     """Work out what a file *would* produce, without opening it.
 
     Extension check, optional filename-format check, and a filename-to-config
@@ -269,9 +327,10 @@ def classify_file(filepath: str, strict_names: bool = False) -> FileOutcome:
     moment it is added. That is what lets a bad name or an unrecognised device
     surface before a long run rather than after it.
 
-    With ``strict_names`` the house format is enforced first: when it is on,
-    the user has asked for that shape specifically, so a malformed name is the
-    finding worth reporting even if a device code could still be salvaged.
+    ``strict_names`` is a level — see [name_check_level]. Whichever is asked
+    for, the format is checked **first**: the user has asked for that shape
+    specifically, so a malformed name is the finding worth reporting even if a
+    device code could still be salvaged.
     """
     path = Path(filepath)
     filename = path.name
@@ -280,8 +339,9 @@ def classify_file(filepath: str, strict_names: bool = False) -> FileOutcome:
         return FileOutcome(filename, filepath, UNSUPPORTED,
                            detail=f"Unsupported format '{path.suffix}'")
 
-    if strict_names:
-        problem = check_filename_format(path.stem)
+    level = name_check_level(strict_names)
+    if level != NAME_CHECK_OFF:
+        problem = check_filename_format(path.stem, level)
         if problem:
             return FileOutcome(filename, filepath, BAD_FORMAT, detail=problem)
 
@@ -997,10 +1057,18 @@ _LABEL_COLUMNS = "ABCDEFGHIJKLMN"
 _LABEL_MAX_ROW = 95
 
 #: Other things printed on these sheets that are captions, never values.
+#:
+#: The trailing ``|.*:`` alternative is the load-bearing one. Naming captions
+#: individually did not scale: the list already held "safety" and still let
+#: "Syringe brand:", "Contact Person Name:" and "Phone No.:" through into the
+#: Status column, because those were simply not on it. **Anything ending in a
+#: colon is a caption** — no status the archive uses ends in one, and "Pass."
+#: is handled by the trailing-stop strip in `normalise_status`.
 _OTHER_CAPTIONS = re.compile(
     r"^\s*(date\s*(of\s*receipt)?|issue\s*date.*|status|type|class|"
     r"prev\.?\s*calib\.?|next\s*calib\.?.*|tested\s*by|entered\s*by|"
-    r"revised\s*by|safety|remark s?|accessories)\s*:?\s*$",
+    r"revised\s*by|safety|remark s?|accessories)\s*:?\s*$"
+    r"|^.*\S\s*:\s*$",
     re.I,
 )
 
@@ -1009,6 +1077,171 @@ def _is_a_label(text: str) -> bool:
     """True when a cell holds a caption rather than an answer."""
     return (any(pattern.match(text) for _, pattern in _FIELD_LABEL_PATTERNS)
             or bool(_OTHER_CAPTIONS.match(text)))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# What a Status cell says
+#
+# This vocabulary used to live in firebase_export, which imports this module.
+# It moved here because the register needs it too: a mapped Status cell that
+# lands on a caption — "Safety:", "Syringe brand:" — was being written into the
+# register verbatim, and recognising a real status is what makes it possible to
+# refuse one. firebase_export re-exports every name below, so nothing there
+# changed.
+#
+# Keeping ONE vocabulary matters more than where it lives. Two copies would
+# drift, and the register and the phone would then disagree about what the same
+# cell said.
+# ──────────────────────────────────────────────────────────────────────────────
+
+#: A status cell that means the device passed. Anything else — "Fail", a blank,
+#: a comment — is recorded as not passed, because only an explicit pass is one.
+_PASS_VALUES = {"pass", "passed", "ok", "accepted", "conform", "conforms"}
+
+#: Status cells that unambiguously mean the device failed outright.
+_FAIL_VALUES = {"fail", "failed", "faulty"}
+
+#: The device was brought into specification by calibrating it. Its own
+#: outcome, and deliberately not added to `_PASS_VALUES`.
+_CALIBRATED_VALUES = {"calibrated"}
+
+#: Misspellings that turn up in the archive often enough to matter, found by
+#: counting every Status text the classifier refused across all 87,492 forms.
+#: Only unambiguous ones: "p" or "ci" could be anything, so they stay refused.
+_TYPOS = {
+    "passs": "pass",
+    "psss": "pass",
+    "caibrated": "calibrated",
+    "limeted non": "limited non",
+}
+
+#: A limitation with no qualifier. "Limited Calibrated" is recorded the same
+#: way, by the owner's decision: kept simple rather than read as calibrated.
+_LIMITED_VALUES = {"limited", "limited calibrated"}
+
+#: The app's six outcomes, exactly as ``CalibrationStatus.wire`` spells them in
+#: ``lib/models/calibration_status.dart``. The two are related only by agreeing
+#: on these strings, so a test on each side pins them.
+STATUS_PASS = "pass"
+STATUS_CALIBRATED = "calibrated"
+STATUS_LIMITED_NON = "limited non"
+#: A limitation the form does not qualify — "Limited", "Limited Calibrated".
+#: Its own outcome rather than a guess at one of the two above.
+STATUS_LIMITED = "limited"
+STATUS_LIMITED_FAIL = "limited fail"
+STATUS_FAIL = "fail"
+
+#: Worse is higher. An unqualified "limited" ranks above "limited non": a
+#: limitation nobody said was harmless is not assumed to be.
+_SEVERITY = {STATUS_PASS: 0, STATUS_CALIBRATED: 1, STATUS_LIMITED_NON: 2,
+             STATUS_LIMITED: 3, STATUS_LIMITED_FAIL: 4, STATUS_FAIL: 5}
+
+
+def normalise_status(raw: str | None) -> str | None:
+    """One Status cell's text as one of the app's outcomes, or None.
+
+    **None is an answer, not a failure.** It means "this cell does not say", and
+    the caller leaves the outcome out rather than guessing. Guessing would be
+    worse: an unreadable cell classed as a pass puts a date on next year's
+    certificate that the device never earned.
+    """
+    text = " ".join((raw or "").strip().lower().split())
+    # A trailing full stop ("Pass.") and the known misspellings.
+    text = text.rstrip(" .")
+    text = _TYPOS.get(text, text)
+    if not text:
+        return None
+    if text in _PASS_VALUES:
+        return STATUS_PASS
+    if text in _CALIBRATED_VALUES:
+        return STATUS_CALIBRATED
+    if text in _FAIL_VALUES:
+        return STATUS_FAIL
+    if "limited" in text:
+        if "fail" in text:
+            return STATUS_LIMITED_FAIL
+        # "limited non" is the sheet's own spelling; "none" is how it gets
+        # typed.
+        if "non" in text.split("limited", 1)[1]:
+            return STATUS_LIMITED_NON
+        # Unqualified: its own outcome, never promoted to either of the two
+        # above. Anything else with "limited" in it names nothing we know.
+        if text in _LIMITED_VALUES:
+            return STATUS_LIMITED
+    return None
+
+
+#: A form's own printed "Status" label — "Status", "Status:", "STATUS".
+_STATUS_LABEL = re.compile(r"^\s*status[\s:.]*$", re.I)
+
+#: Answers that belong to a *different* question on these sheets, and so can
+#: never be a calibration verdict.
+#:
+#: "Safety:" is printed beside the status box on most of these forms and its
+#: answer is a size. A cell map that lands one column off therefore reports
+#: "Large" as the device's outcome — which reads as a real answer to anyone
+#: scanning the register, and is not one. The caption guard cannot catch these
+#: because they are values, not captions.
+_NOT_A_VERDICT = {"small", "large", "n.a", "na", "n/a", "---", "----"}
+
+#: The columns a status box is ever found in. Deliberately the same set the
+#: export has always used, so both sides read a form identically.
+_STATUS_COLS = "ABCDEFGHIJKL"
+
+
+def status_from_grid(grid: dict) -> str:
+    """The Status box's text, found from the form's own label. "" if none.
+
+    The fallback for a form whose *mapped* Status cell is blank or holds
+    something that is not a status. The cell maps are right for most forms but
+    not all, and a box that has moved is the common case: measured over 81
+    device maps, 33 of them have forms where the box sits in a different
+    *column*, not merely a different row — so an offset search cannot find it
+    and only the printed label can.
+
+    Right of the label first, then below, **each direction on its own**: the
+    first filled cell in a direction decides that direction, so a "Comment:"
+    label to the right does not hide the box underneath. Cells repeating the
+    label are its own merged span — merges are resolved — and are stepped over.
+
+    **Only text [normalise_status] recognises is returned.** That is what makes
+    searching safe, and it is what keeps the legend off the answer: these forms
+    print "Pass | Fail | Limited non | limited fail" across columns B-E on the
+    answer's own row, and every one of those cells reads as a status. The
+    search never starts from them because it starts from the *label*.
+    """
+    text = {
+        ref: (str(value).strip() if value is not None else "")
+        for ref, value in grid.items()
+    }
+
+    labels = []
+    for ref, value in text.items():
+        if not value or not _STATUS_LABEL.match(value):
+            continue
+        match = re.match(r"([A-Z]+)(\d+)$", ref)
+        if match and match.group(1) in _STATUS_COLS:
+            labels.append(
+                (int(match.group(2)), _STATUS_COLS.index(match.group(1)))
+            )
+
+    directions = (
+        [(0, 1), (0, 2), (0, 3), (0, 4)],   # to the right
+        [(1, 0), (2, 0), (3, 0)],           # below
+    )
+    for row, col in sorted(labels):         # reading order
+        for offsets in directions:
+            for down, right in offsets:
+                column = col + right
+                if column >= len(_STATUS_COLS):
+                    break
+                value = text.get(f"{_STATUS_COLS[column]}{row + down}", "")
+                if not value or _STATUS_LABEL.match(value):
+                    continue
+                if normalise_status(value):
+                    return value
+                break                       # this direction holds no status
+    return ""
 
 
 def locate_by_labels(values: dict[str, object]) -> dict[str, str]:
@@ -1113,6 +1346,91 @@ def _read_with(source, cell_map: dict[str, str]) -> Record:
             for field, ref in cell_map.items()}
 
 
+#: How far above and below the mapped Status cell to look for the real box.
+#:
+#: **This number is the whole cost of the fallback**, because `values()` scans
+#: the sheet once per reference it is asked for — so the price is linear in the
+#: band, and reading the whole A1:N95 grid to find one cell is what a naive
+#: version does. Measured over 1,200 real forms, warm:
+#:
+#:     whole grid   50.9 s      band 24   14.2 s
+#:     band 32      15.6 s      band 18   13.1 s   <- here
+#:     baseline      9.0 s      band 12   12.1 s
+#:
+#: and what each band recovers, over 3,004 forms:
+#:
+#:     whole grid   2548        band 18   2499     band 12   2480
+#:
+#: 18 is the knee: 98% of everything the whole grid finds, for a quarter of its
+#: cost. The median form is unaffected either way (2.5 ms -> 4.3 ms) because
+#: only the 19.5% whose mapped cell missed ever pay, and 76% of those come back
+#: with a real status.
+_STATUS_BAND_ROWS = 18
+
+
+def _status_band(anchor: str) -> set[str]:
+    """The cells worth reading to find a Status box that has moved.
+
+    Every column, because a moved box is usually in a different one, but only
+    the rows near where the map said it would be.
+    """
+    match = re.match(r"([A-Z]+)(\d+)$", anchor)
+    if not match:
+        return set()
+    row = int(match.group(2))
+    lo = max(1, row - _STATUS_BAND_ROWS)
+    hi = min(_LABEL_MAX_ROW, row + _STATUS_BAND_ROWS)
+    # _STATUS_COLS, not _LABEL_COLUMNS: status_from_grid indexes into A-L and
+    # ignores anything beyond, so reading M and N would cost and never be read.
+    return {f"{c}{r}" for r in range(lo, hi + 1) for c in _STATUS_COLS}
+
+
+def _settle_status(source, cells: dict[str, str], record: Record) -> None:
+    """Refuse a caption in the Status column, and find a box that has moved.
+
+    Modifies ``record`` in place. Three outcomes, in order:
+
+    1. The value already **reads as a status** — kept untouched. This is the
+       common path and it costs one set lookup. It is also why a device whose
+       box never moves is completely unaffected: 10 of the 81 mapped Status
+       cells read on every form sampled, and for those this function stops here
+       every time.
+    2. Otherwise the box is looked up by the form's **own printed label**. A
+       moved box is usually in a different column, not merely a different row —
+       33 device maps have forms like that — so an offset search cannot find it
+       and only the label can. See [status_from_grid].
+    3. Nothing found: the original text is kept, **unless it is a caption or an
+       answer to a different question**, which is dropped. "Safety:" and
+       "Syringe brand:" were reaching the register as a device's verdict, and a
+       map one column out reports that question's answer, "Large". A blank is
+       honest and neither of those was.
+
+    Only ``Status`` is searched, and only on a form with a single box. Where a
+    device has a ``Status2`` the two verdicts belong to different modules and
+    one printed "Status" label cannot say which is which — so those forms get
+    the caption guard and nothing else, rather than a confident wrong answer.
+    """
+    single_box = not cells.get("Status2")
+
+    for field in ("Status", "Status2"):
+        raw = record.get(field, "")
+        if not raw or normalise_status(raw):
+            continue                        # blank stays blank; a status stays
+
+        if _is_a_label(raw) or raw.strip().lower().rstrip(".") in _NOT_A_VERDICT:
+            record[field] = ""              # never write a caption, or a size
+
+    anchor = cells.get("Status", "")
+    if not anchor or not single_box or normalise_status(record.get("Status", "")):
+        # No box on this form at all (CT, MRI, Dexa), two boxes, or one that
+        # already read. Nothing to look for, and no read to pay for.
+        return
+
+    found = status_from_grid(source.values(_status_band(anchor)))
+    if found:
+        record["Status"] = clean(found)
+
+
 def read_best(filepath: str, config: dict,
               extra: dict[str, str] | None = None) -> tuple[Record, str]:
     """Read a form, falling back through every layout we know before giving up.
@@ -1125,6 +1443,11 @@ def read_best(filepath: str, config: dict,
     already got right. Every later step costs an extra read, and 94.7% of forms
     stop at the first.
 
+    The Status column is settled separately afterwards by [_settle_status],
+    because a map can place the identity block perfectly and still miss the
+    verdict box — `plausible()` asks for a serial and a model, so a form whose
+    Status alone has moved never reaches any of the fallbacks below.
+
     ``extra`` is merged into every read, for a caller that wants more of the
     sheet in the same pass — firebase_export takes the client header that way
     rather than opening all 47,000 workbooks twice.
@@ -1132,55 +1455,72 @@ def read_best(filepath: str, config: dict,
     cells = {**config["cells"], **(extra or {})}
     source = _open_workbook(filepath)
     try:
-        record = _read_with(source, cells)
-        if plausible(record):
-            return record, "primary"
-
-        for index, alternate in enumerate(config.get("alt_cells", []), start=1):
-            candidate = _read_with(source, {**alternate, **(extra or {})})
-            if plausible(candidate):
-                return candidate, f"alt {index}"
-
-        # Nothing written down fits. Ask the form where its fields are.
-        grid = {f"{c}{r}": f"{c}{r}"
-                for r in range(1, _LABEL_MAX_ROW + 1) for c in _LABEL_COLUMNS}
-        located = locate_by_labels(source.values(set(grid)))
-        if located:
-            candidate = {**cells, **located}
-            # Carry Date and Status along when the form has simply shifted:
-            # they have no label to find, and leaving them behind is how the
-            # caption "Status:" ends up in the register instead of "Calibrated".
-            rows = _uniform_offset(cells, located)
-            if rows is not None:
-                for field in ("Date", "Status", "Status2", "S.N2"):
-                    if cells.get(field):
-                        candidate[field] = _shift(cells[field], rows)
-            found = _read_with(source, candidate)
-            if plausible(found):
-                return found, "labels"
-
-        # Still nothing: the device details may be on another tab entirely.
-        for name in getattr(source, "sheet_names", []):
-            if name == getattr(source, "sheet_name", None):
-                continue
-            if not source.select_sheet(name):
-                continue
-            located = locate_by_labels(source.values(set(grid)))
-            if not located:
-                continue
-            # Only what was actually located on THIS sheet. The configured
-            # references describe a different tab, so carrying them across
-            # reads whatever happens to sit at those coordinates here — which
-            # is how a Nebulizer's date came back as "Gas Flow Analyser".
-            # A blank field is honest; a confident wrong one is not.
-            found = _read_with(source, {field: located.get(field, "")
-                                        for field in cells})
-            if plausible(found):
-                return found, f"labels on {name!r}"
-
-        return record, "none"
+        record, how = _best_layout(source, cells, config, extra)
+        _settle_status(source, cells, record)
+        return record, how
     finally:
         source.close()
+
+
+def _best_layout(source, cells: dict[str, str], config: dict,
+                 extra: dict[str, str] | None) -> tuple[Record, str]:
+    """Try every written-down layout, then the form's own labels. See read_best."""
+    record = _read_with(source, cells)
+    if plausible(record):
+        return record, "primary"
+
+    for index, alternate in enumerate(config.get("alt_cells", []), start=1):
+        candidate = _read_with(source, {**alternate, **(extra or {})})
+        if plausible(candidate):
+            return candidate, f"alt {index}"
+
+    # Nothing written down fits. Ask the form where its fields are.
+    grid = {f"{c}{r}": f"{c}{r}"
+            for r in range(1, _LABEL_MAX_ROW + 1) for c in _LABEL_COLUMNS}
+    located = locate_by_labels(source.values(set(grid)))
+    if located:
+        candidate = {**cells, **located}
+        # Carry Date and Status along when the form has simply shifted:
+        # they have no label to find, and leaving them behind is how the
+        # caption "Status:" ends up in the register instead of "Calibrated".
+        rows = _uniform_offset(cells, located)
+        if rows is not None:
+            for field in ("Date", "Status", "Status2", "S.N2"):
+                if cells.get(field):
+                    candidate[field] = _shift(cells[field], rows)
+        found = _read_with(source, candidate)
+        if plausible(found):
+            return found, "labels"
+
+    # Still nothing: the device details may be on another tab entirely.
+    #
+    # Remember which sheet we started on. Walking the other tabs leaves the
+    # source pointing at the last one tried, and the caller reads the Status
+    # box off whatever sheet it is handed — so a failed search must put the
+    # source back, or the verdict gets read from a tab the record did not come
+    # from.
+    opening_sheet = getattr(source, "sheet_name", None)
+    for name in getattr(source, "sheet_names", []):
+        if name == opening_sheet:
+            continue
+        if not source.select_sheet(name):
+            continue
+        located = locate_by_labels(source.values(set(grid)))
+        if not located:
+            continue
+        # Only what was actually located on THIS sheet. The configured
+        # references describe a different tab, so carrying them across
+        # reads whatever happens to sit at those coordinates here — which
+        # is how a Nebulizer's date came back as "Gas Flow Analyser".
+        # A blank field is honest; a confident wrong one is not.
+        found = _read_with(source, {field: located.get(field, "")
+                                    for field in cells})
+        if plausible(found):
+            return found, f"labels on {name!r}"
+
+    if opening_sheet is not None:
+        source.select_sheet(opening_sheet)
+    return record, "none"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1221,7 +1561,7 @@ def extract_records(
     source_files: Iterable[str],
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
-    strict_names: bool = False,
+    strict_names: bool | int = False,
     quiet: bool = False,
 ) -> tuple[list[Record], list[FileOutcome]]:
     """Read every source file, returning the records and a per-file outcome.
@@ -1229,7 +1569,8 @@ def extract_records(
     ``on_file(outcome, index, total)`` fires after each file. ``cancel`` is
     checked between files, so a long run can be stopped without waiting for it
     to finish; files not reached are reported as CANCELLED. ``strict_names``
-    enforces the house filename format, skipping anything that breaks it.
+    enforces the house filename format at one of three levels, skipping
+    anything that breaks it — see [name_check_level].
 
     ``quiet`` drops the line-per-file commentary in favour of a heartbeat.
     Problems are still reported in full — it is the forty thousand successes
@@ -1502,7 +1843,7 @@ def process_files(
     template_file: str,
     *,
     deduplicate: bool = False,
-    strict_names: bool = False,
+    strict_names: bool | int = False,
     output_dir: str | os.PathLike | None = None,
     on_file: ProgressHook | None = None,
     cancel: threading.Event | None = None,
@@ -1512,7 +1853,8 @@ def process_files(
 
     Always returns a RunResult; check ``.succeeded`` or ``.output_path``. A
     cancelled run writes nothing and comes back with ``cancelled=True``.
-    ``strict_names`` skips any file whose name breaks the house format.
+    ``strict_names`` skips any file whose name breaks the house format, at
+    whichever of the three levels is asked for.
     ``output_dir`` overrides where the register is written. ``quiet`` trades
     the line-per-file log for a heartbeat, which is what makes a run of tens of
     thousands readable.
@@ -1668,6 +2010,16 @@ def main() -> None:
         if len(args) != 2:
             print("usage: python calist.py --inspect <form.xlsx>")
             raise SystemExit(2)
+        # The report draws a box-rule and the forms carry Arabic site names,
+        # and the Windows console still defaults to cp1252, which can encode
+        # neither. Without this, --inspect does all its work and then dies on
+        # the first print — on the one tool you reach for when a field is
+        # blank, which is exactly when you need to see the output.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):   # not a real console
+                pass
         logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
         raise SystemExit(inspect_form(args[1]))
 

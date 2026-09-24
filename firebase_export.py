@@ -57,6 +57,12 @@ from calist import (
     ERROR,
     LOCK_PREFIX,
     READY,
+    STATUS_CALIBRATED,
+    STATUS_FAIL,
+    STATUS_LIMITED,
+    STATUS_LIMITED_FAIL,
+    STATUS_LIMITED_NON,
+    STATUS_PASS,
     UNKNOWN_CODE,
     UNSUPPORTED,
     build_second_row,
@@ -66,9 +72,16 @@ from calist import (
     extract_device_code,
     find_source_files,
     locate_by_labels,
+    normalise_status,
     plausible,
     read_record,
+    status_from_grid,
 )
+# The status vocabulary and the label-anchored box finder live in calist now:
+# the register needs them too, and one copy cannot drift from itself. They are
+# imported rather than re-implemented, and re-exported here so this module's
+# own callers and tests see no change.
+from calist import _PASS_VALUES, _SEVERITY  # noqa: F401  (used below; re-exported)
 from device_config import DEVICE_CONFIGS
 from device_names import DEVICE_NAMES
 
@@ -790,66 +803,6 @@ def header_from_grid(grid: dict) -> dict:
                 found[key] = value_beside(ref)
 
     return found
-
-
-#: A form's own printed "Status" label — "Status", "Status:", "STATUS".
-_STATUS_LABEL = re.compile(r"^\s*status[\s:.]*$", re.I)
-
-
-def status_from_grid(grid: dict) -> str:
-    """The Status box's text, found from the form's own label. "" if none.
-
-    The fallback for a form whose *mapped* Status cell is blank or holds
-    something that is not a status. The cell maps are right for most forms but
-    not all: the balance map reads ``G30``, where the app's own template puts
-    it, while older balance forms print "Status" at ``G25`` and the answer at
-    ``G27``. Measured over 594 real forms, 128 single-box forms read nothing
-    useful from their mapped cell; every one that could be opened had the
-    label, and the box beside or under it held a status on 92 of them — 88 of
-    those exactly two rows down.
-
-    Right of the label first, then below, **each direction on its own**: the
-    first filled cell in a direction decides that direction, so a "Comment:"
-    label to the right does not hide the box underneath. Cells repeating the
-    label are its own merged span — Calist resolves merges — and are stepped
-    over.
-
-    **Only text [normalise_status] recognises is returned.** That is what makes
-    searching safe: a stray value near the label — a number, an analyser name,
-    another caption — is refused, never guessed at.
-    """
-    text = {
-        ref: (str(value).strip() if value is not None else "")
-        for ref, value in grid.items()
-    }
-
-    labels = []
-    for ref, value in text.items():
-        if not value or not _STATUS_LABEL.match(value):
-            continue
-        match = re.match(r"([A-Z]+)(\d+)$", ref)
-        if match and match.group(1) in _HEADER_COLS:
-            labels.append(
-                (int(match.group(2)), _HEADER_COLS.index(match.group(1)))
-            )
-
-    directions = (
-        [(0, 1), (0, 2), (0, 3), (0, 4)],   # to the right
-        [(1, 0), (2, 0), (3, 0)],           # below
-    )
-    for row, col in sorted(labels):         # reading order
-        for offsets in directions:
-            for down, right in offsets:
-                column = col + right
-                if column >= len(_HEADER_COLS):
-                    break
-                value = text.get(f"{_HEADER_COLS[column]}{row + down}", "")
-                if not value or _STATUS_LABEL.match(value):
-                    continue
-                if normalise_status(value):
-                    return value
-                break                       # this direction holds no status
-    return ""
 
 
 #: The monitor template's per-module labels: "Ecg Status:", "Spo2 Status:",
@@ -1800,45 +1753,6 @@ def verify_maps(forms: list[ParsedForm], per_code: int = 6) -> list[str]:
 #: from 2023 can be recognised as the same kind of device.
 APP_TYPE_TO_CODE = {"balance": "BP", "patient-monitor": "AGH", "x-ray": "BF"}
 
-#: A status cell that means the device passed. Anything else — "Fail", a blank,
-#: a comment — is recorded as not passed, because only an explicit pass is one.
-_PASS_VALUES = {"pass", "passed", "ok", "accepted", "conform", "conforms"}
-
-#: Status cells that unambiguously mean the device failed outright.
-_FAIL_VALUES = {"fail", "failed", "faulty"}
-
-#: The device was brought into specification by calibrating it. Its own
-#: outcome, shown in blue — and deliberately not added to `_PASS_VALUES`, which
-#: would change what `passed` says to phones on the old build.
-_CALIBRATED_VALUES = {"calibrated"}
-
-#: Misspellings that turn up in the archive often enough to matter, found by
-#: counting every Status text the classifier refused across all 87,492 forms.
-#: Only unambiguous ones: "p" or "ci" could be anything, so they stay refused.
-_TYPOS = {
-    "passs": "pass",
-    "psss": "pass",
-    "caibrated": "calibrated",
-    "limeted non": "limited non",
-}
-
-#: A limitation with no qualifier. "Limited Calibrated" is recorded the same
-#: way, by the owner's decision: kept simple rather than read as calibrated.
-_LIMITED_VALUES = {"limited", "limited calibrated"}
-
-#: The app's six outcomes, exactly as ``CalibrationStatus.wire`` spells them in
-#: ``lib/models/calibration_status.dart``. The two are related only by agreeing
-#: on these strings, so a test on each side pins them — the same arrangement as
-#: ``filed_blob_name`` and ``filedWorkbookPath``.
-STATUS_PASS = "pass"
-STATUS_CALIBRATED = "calibrated"
-STATUS_LIMITED_NON = "limited non"
-#: A limitation the form does not qualify — "Limited", "Limited Calibrated".
-#: Its own outcome rather than a guess at one of the two above.
-STATUS_LIMITED = "limited"
-STATUS_LIMITED_FAIL = "limited fail"
-STATUS_FAIL = "fail"
-
 #: What each box means, for every device whose form has two status boxes —
 #: ``Status`` then ``Status2``, in that order.
 #:
@@ -1857,47 +1771,6 @@ _PER_TEST_STATUS = {
     # Vital signs monitor: G38 is the SpO2 module, J38 the NIBP module.
     "VAH": ("spo2", "nibp"),
 }
-
-#: Worse is higher. An unqualified "limited" ranks above "limited non": a
-#: limitation nobody said was harmless is not assumed to be.
-_SEVERITY = {STATUS_PASS: 0, STATUS_CALIBRATED: 1, STATUS_LIMITED_NON: 2,
-             STATUS_LIMITED: 3, STATUS_LIMITED_FAIL: 4, STATUS_FAIL: 5}
-
-
-def normalise_status(raw: str | None) -> str | None:
-    """One Status cell's text as one of the app's four outcomes, or None.
-
-    **None is an answer, not a failure.** It means "this cell does not say", and
-    the caller leaves the outcome out of the document entirely, so the app falls
-    back to ``passed`` exactly as it always has. Guessing would be worse: an
-    unreadable cell classed as a pass puts a date on next year's certificate
-    that the device never earned.
-    """
-    text = " ".join((raw or "").strip().lower().split())
-    # A trailing full stop ("Pass.") and the known misspellings.
-    text = text.rstrip(" .")
-    text = _TYPOS.get(text, text)
-    if not text:
-        return None
-    if text in _PASS_VALUES:
-        return STATUS_PASS
-    if text in _CALIBRATED_VALUES:
-        return STATUS_CALIBRATED
-    if text in _FAIL_VALUES:
-        return STATUS_FAIL
-    if "limited" in text:
-        if "fail" in text:
-            return STATUS_LIMITED_FAIL
-        # "limited non" is the sheet's own spelling; "none" is how it gets
-        # typed.
-        if "non" in text.split("limited", 1)[1]:
-            return STATUS_LIMITED_NON
-        # Unqualified: its own outcome, never promoted to either of the two
-        # above. Anything else with "limited" in it names nothing we know.
-        if text in _LIMITED_VALUES:
-            return STATUS_LIMITED
-    return None
-
 
 def build_statuses(form: "ParsedForm") -> dict[str, str]:
     """The form's outcomes, keyed the way the app reads them. Empty if none.
