@@ -32,6 +32,7 @@ import customtkinter as ctk
 
 import access
 import calist
+import theme
 from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, CANCELLED, COPY,
                     ERROR, LEFT_OUT, OK, READY, UNKNOWN_CODE, UNSUPPORTED,
                     FileOutcome, RunResult)
@@ -48,23 +49,36 @@ except Exception:                                    # pragma: no cover
 # Appearance
 # ──────────────────────────────────────────────────────────────────────────────
 
-BG = "#17171b"          # window
-SURFACE = "#1f1f25"     # cards
-SURFACE_2 = "#26262e"   # table, inputs
-BORDER = "#33333d"
-TEXT = "#e8e8ee"
-MUTED = "#9494a4"
-FAINT = "#6a6a78"
+# Every colour is a (light, dark) pair from theme.py. CustomTkinter widgets
+# take the pair and switch by themselves; Tk-native ones (the device table, its
+# scrollbar, the flame) take live(pair) and are re-coloured by _apply_theme.
+_P = theme.PALETTE
+BG = _P["bg"]                   # window
+SURFACE = _P["surface"]         # cards
+SURFACE_2 = _P["surface_2"]     # table, inputs
+BORDER = _P["border"]
+TEXT = _P["text"]
+MUTED = _P["muted"]
+FAINT = _P["faint"]
 
-PRIMARY = "#4c8dff"
-PRIMARY_HOVER = "#3b74d9"
-SUCCESS = "#3fb950"
-WARNING = "#d9a020"
-DANGER = "#f2585f"
+PRIMARY = _P["accent"]
+PRIMARY_HOVER = _P["accent_hover"]
+SELECTION = _P["selection"]
+SUCCESS = _P["success"]
+WARNING = _P["warning"]
+DANGER = _P["danger"]
 
 #: Turbo. The wordmark takes TURBO, so "on" is unmistakable at a glance.
-TURBO = "#ff4d2d"
-TURBO_HOVER = "#ff6f52"
+TURBO = _P["turbo"]
+TURBO_HOVER = _P["turbo_hover"]
+
+#: The appearance a fresh install opens in.
+DEFAULT_APPEARANCE = "dark"
+
+
+def live(colour) -> str:
+    """The side of a (light, dark) pair the window is showing right now."""
+    return theme.pick(colour, dark=ctk.get_appearance_mode() == "Dark")
 
 #: The "real device forms only" switch. On, anything that is not a device form
 #: — a device list, a 000 template, a name with no customer code — is left out
@@ -137,6 +151,12 @@ def forms_only_setting(settings: dict) -> bool:
         return bool(int(remembered))
     except (TypeError, ValueError):
         return False
+
+
+def appearance_setting(settings: dict) -> str:
+    """"dark" or "light", as remembered; anything else is the default."""
+    value = str(settings.get("appearance", "")).lower()
+    return value if value in ("dark", "light") else DEFAULT_APPEARANCE
 
 
 def save_settings(data: dict) -> None:
@@ -220,7 +240,7 @@ class TurboFlame(tk.Canvas):
 
     def __init__(self, master):
         super().__init__(master, width=self.W, height=self.H, bd=0,
-                         highlightthickness=0, bg=BG)
+                         highlightthickness=0, bg=live(BG))
         self._phase = 0.0
         self._job: str | None = None
 
@@ -313,6 +333,29 @@ def human_duration(seconds: float) -> str:
     return f"{minutes}m {secs:02d}s"
 
 
+def tint_title_bar(window) -> None:
+    """Colour the title bar to match the window, on Windows 11.
+
+    DWMWA_CAPTION_COLOR (35) and DWMWA_TEXT_COLOR (36) exist from Windows 11
+    only. Windows 10 answers with an error code and keeps the dark or light
+    title bar CustomTkinter already set, which is the right fallback — so the
+    result is ignored, and nothing here may raise.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        for attribute, colour in ((35, BG), (36, TEXT)):
+            rgb = live(colour).lstrip("#")
+            # COLORREF is 0x00BBGGRR.
+            value = ctypes.c_int(int(rgb[4:6] + rgb[2:4] + rgb[0:2], 16))
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        log_ui.debug("Could not tint the title bar", exc_info=True)
+
+
 def reveal_in_explorer(path: Path) -> None:
     """Open the containing folder with the file selected."""
     if sys.platform == "win32":
@@ -342,27 +385,30 @@ def style_treeview() -> None:
     style = ttk.Style()
     style.theme_use("clam")
 
+    # ttk takes one colour, not a pair — so this resolves the pair for the
+    # current appearance, and _apply_theme calls it again on every switch.
     style.configure(
         "Calist.Treeview",
-        background=SURFACE_2, fieldbackground=SURFACE_2, foreground=TEXT,
+        background=live(SURFACE_2), fieldbackground=live(SURFACE_2),
+        foreground=live(TEXT),
         rowheight=32, borderwidth=0, relief="flat", font=(FONT, 10),
     )
     style.configure(
         "Calist.Treeview.Heading",
-        background=SURFACE, foreground=MUTED, relief="flat",
+        background=live(SURFACE), foreground=live(MUTED), relief="flat",
         borderwidth=0, padding=(10, 8), font=(FONT, 9, "bold"),
     )
     style.map("Calist.Treeview",
-              background=[("selected", "#2f4f86")],
-              foreground=[("selected", TEXT)])
-    style.map("Calist.Treeview.Heading", background=[("active", SURFACE_2)])
+              background=[("selected", live(SELECTION))],
+              foreground=[("selected", live(TEXT))])
+    style.map("Calist.Treeview.Heading", background=[("active", live(SURFACE_2))])
     # Drop the default border box.
     style.layout("Calist.Treeview",
                  [("Calist.Treeview.treearea", {"sticky": "nswe"})])
 
     style.configure("Calist.Vertical.TScrollbar",
-                    background=SURFACE_2, troughcolor=SURFACE,
-                    bordercolor=SURFACE, arrowcolor=MUTED,
+                    background=live(SURFACE_2), troughcolor=live(SURFACE),
+                    bordercolor=live(SURFACE), arrowcolor=live(MUTED),
                     borderwidth=0, relief="flat")
 
 
@@ -552,10 +598,12 @@ class App(_Root):
         super().__init__()
 
         self.title("Calist")
-        self.geometry("1020x700")
         self.minsize(880, 600)
+        self._zoom_job: str | None = None
+        self._size_to_screen()
         self.configure(fg_color=BG)
         self._apply_icon()
+        self.after(300, lambda: tint_title_bar(self))
 
         self._settings = load_settings()
         self._files: dict[str, FileOutcome] = {}       # path → latest outcome
@@ -618,6 +666,31 @@ class App(_Root):
 
         apply()
         self.after(250, apply)
+
+    #: The window a normal screen opens with, in CustomTkinter's logical units.
+    WINDOW_W, WINDOW_H = 1180, 780
+    #: At or below this many logical pixels of screen height — a 1366x768
+    #: laptop, the machine most engineers carry — the window opens maximised,
+    #: because every row it gives up is a row of the device table.
+    SMALL_SCREEN_H = 800
+
+    def _size_to_screen(self) -> None:
+        """Open centred on a roomy screen, maximised on a laptop.
+
+        Maximising is scheduled, never done here: CustomTkinter hides and
+        re-shows the window on its first mainloop pass, and a state set before
+        that is not the state it restores.
+        """
+        scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        screen_w = self.winfo_screenwidth() / scale
+        screen_h = self.winfo_screenheight() / scale
+        width = int(min(self.WINDOW_W, screen_w - 40))
+        height = int(min(self.WINDOW_H, screen_h - 90))
+        x = max(0, int((screen_w - width) / 2))
+        y = max(0, int((screen_h - height) / 2) - 20)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        if screen_h <= self.SMALL_SCREEN_H:
+            self._zoom_job = self.after(80, lambda: self.state("zoomed"))
 
     def _initial_template(self) -> str:
         """The remembered template, else the one shipped with the app.
@@ -818,8 +891,9 @@ class App(_Root):
         self._filter.set("All")
         self._filter.grid(row=0, column=2, sticky="e")
 
-        body = tk.Frame(wrap, bg=SURFACE_2, highlightthickness=0, bd=0)
+        body = tk.Frame(wrap, bg=live(SURFACE_2), highlightthickness=0, bd=0)
         body.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 10))
+        self._table_body = body
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
@@ -845,11 +919,7 @@ class App(_Root):
         # wheel would scroll the page instead of the list under the pointer.
         self._tree.bind("<MouseWheel>", self._wheel_over(self._tree))
 
-        self._tree.tag_configure("ready", foreground=MUTED)
-        self._tree.tag_configure("ok", foreground=SUCCESS)
-        self._tree.tag_configure("warn", foreground=WARNING)
-        self._tree.tag_configure("error", foreground=DANGER)
-        self._tree.tag_configure("muted", foreground=FAINT)
+        self._colour_tags()
 
         self._tree.bind("<Double-1>", self._reveal_selected)
         self._tree.bind("<Delete>", self._remove_selected)
@@ -1040,11 +1110,34 @@ class App(_Root):
         for any event whose widget chain reaches its canvas — which is every
         widget on the page. A widget binding runs first, so returning "break"
         here keeps the scroll where the user is pointing.
+
+        CustomTkinter 6 exempts its own CTkTextbox from that, but not a ttk
+        Treeview, so the device table still needs this.
         """
         def handler(event):
             widget.yview_scroll(-int(event.delta / 120), "units")
             return "break"
         return handler
+
+    def _colour_tags(self) -> None:
+        """Row colours by status. Treeview tags take one colour, not a pair."""
+        for tag, colour in (("ready", MUTED), ("ok", SUCCESS), ("warn", WARNING),
+                            ("error", DANGER), ("muted", FAINT)):
+            self._tree.tag_configure(tag, foreground=live(colour))
+
+    def _apply_theme(self, mode: str) -> None:
+        """Switch between light and dark, Tk-native widgets included.
+
+        CustomTkinter re-colours its own widgets from their (light, dark)
+        pairs; everything else here was given one resolved colour and has to be
+        given the other.
+        """
+        ctk.set_appearance_mode(mode)
+        style_treeview()
+        self._colour_tags()
+        self._table_body.configure(bg=live(SURFACE_2))
+        self._flame.configure(bg=live(BG))
+        self.after(50, lambda: tint_title_bar(self))
 
     def _attach_logging(self) -> None:
         handler = TkLogHandler(self._log_box)
@@ -2034,7 +2127,7 @@ def run() -> None:
         except Exception:
             pass
 
-    ctk.set_appearance_mode("dark")
+    ctk.set_appearance_mode(appearance_setting(load_settings()))
     ctk.set_default_color_theme("blue")
 
     # One window, shown once, never withdrawn — see LockPanel for why that

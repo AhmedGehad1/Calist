@@ -80,3 +80,16 @@ def test_saved_file_has_no_bom(settings_file):
 ])
 def test_the_switch_reads_the_setting_it_replaced(stored, on):
     assert ui.forms_only_setting(stored) is on
+
+
+# ── Appearance ───────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("stored, mode", [
+    ({}, "dark"),                           # a fresh install opens dark
+    ({"appearance": "light"}, "light"),
+    ({"appearance": "Dark"}, "dark"),
+    ({"appearance": "system"}, "dark"),     # not a choice the app offers
+    ({"appearance": 1}, "dark"),
+])
+def test_the_appearance_reads_back_or_falls_back_to_dark(stored, mode):
+    assert ui.appearance_setting(stored) == mode
