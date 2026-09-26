@@ -1203,7 +1203,24 @@ class _WriteDb:
         return _WriteBatch(self)
 
 
-def test_a_deletion_follows_its_file_to_the_repaired_id(tmp_path):
+@pytest.fixture
+def firestore_stub(monkeypatch):
+    """Stand in for firebase_admin, which CI deliberately does not install.
+
+    push_firestore imports it only for SERVER_TIMESTAMP, so a module carrying
+    that one sentinel lets the write path run everywhere instead of passing
+    only on a machine that happens to have the SDK.
+    """
+    import types
+    firestore = types.ModuleType("firebase_admin.firestore")
+    firestore.SERVER_TIMESTAMP = object()
+    package = types.ModuleType("firebase_admin")
+    package.firestore = firestore
+    monkeypatch.setitem(sys.modules, "firebase_admin", package)
+    monkeypatch.setitem(sys.modules, "firebase_admin.firestore", firestore)
+
+
+def test_a_deletion_follows_its_file_to_the_repaired_id(tmp_path, firestore_stub):
     """Deleted as x_2026_…, it must not come back as G414-CA002-0426."""
     form = _archive(tmp_path, [".G414-CA002-0426.xlsm"])[".G414-CA002-0426.xlsm"]
     form.doc_id = form.base_doc_id
