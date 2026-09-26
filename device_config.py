@@ -110,7 +110,11 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "BB": {"device_name": "Ultrasound",
            "cells": form(17, "H30", col="F", val="L", extra={"S.N2": "L21"}),
            "alt_cells": [form(18, "H31", col="F", val="L", extra={"S.N2": "L22"}),
-                         form(16, "H29", col="F", val="L", extra={"S.N2": "L20"})]},
+                         form(16, "H29", col="F", val="L", extra={"S.N2": "L20"})],
+           # Some 2024 forms print "Date of receipt" one row lower (F16), with
+           # the issue date at F14 and F15 empty. Only read when F15 holds no
+           # date — see _pick_field_cells.
+           "field_alternates": {"Date": ["F16", "F14"]}},
     "BF": {"device_name": "X-ray",      "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
     # Was "X-ray ()" — an unfinished edit this file carried a TODO about. The
     # site's master code list settles it: CA is the dental x-ray. It shares BF's
@@ -138,6 +142,10 @@ DEVICE_CONFIGS: dict[str, dict] = {
             # sampled files. The answer box is F44/G44; C44/D44 beside it is
             # the printed legend, not an answer.
             form(35, "F44", col="D", val="J", date_gap=4),
+            # Two more, from the certificates' formulas: 58 forms eight rows
+            # down, 4 forms thirty-one rows down.
+            form(36, "F45", col="D", val="J"),
+            form(59, "F68", col="D", val="J"),
         ],
     },
 
@@ -160,7 +168,10 @@ DEVICE_CONFIGS: dict[str, dict] = {
         "cells": form(15, "G24"),
         "alt_cells": [form(18, "K22")],
     },
-    "AS": {"device_name": "Centrifuge",             "cells": form(18, "K25")},
+    # On the .xls variant K25 is the "Tested by" box — its "JTE-40" was being
+    # written as the verdict. The form captions K22 as Status there.
+    "AS": {"device_name": "Centrifuge",             "cells": form(18, "K25"),
+           "field_alternates": {"Status": ["K22"]}},
     "AJ": {"device_name": "Suction",                "cells": form(23, "G32")},
     # Status was G33, which is right for the older template only: of 250 forms
     # sampled, 148 put the box at G31 and 69 at G33. The identity block does
@@ -243,8 +254,20 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # below was derived from the form's own printed labels ("Model:", "Serial
     # No.:", "Location") across four files spread over different sites and
     # years — never copied from a similar device.
-    "BM": {"device_name": "Hemodialysis Machine",   "cells": form(18, "K22")},
-    "BN": {"device_name": "Therapeutic Ultrasound", "cells": form(18, "K22")},
+    # "Final"-type workbooks state the verdict as a Conclusion sentence, whose
+    # row moves (A119-A132). Identity: this map, then the cover page, then the
+    # Word certificate beside the workbook — see calist.read_best.
+    "BM": {"device_name": "Hemodialysis Machine",   "cells": form(18, "K22"),
+           "conclusion_tab": r"^\s*final\s*$"},
+    # The device block sits low on the "data entry" tab, in D/J, and its height
+    # varies — so its identity is found by the form's printed labels (the map
+    # below fits almost none of them, deliberately left as it was). Mapping
+    # the block's rows directly was tried and read test readings ("4.1",
+    # "6.9") on 105 fields. What the labels cannot place is the Date, which
+    # sits two rows above the Model wherever the block is — hence
+    # label_offsets (see calist._best_layout).
+    "BN": {"device_name": "Therapeutic Ultrasound", "cells": form(18, "K22"),
+           "label_offsets": {"Date": ("Model", -2)}},
     "CN": {"device_name": "Microwave",              "cells": form(18, "K22")},
     "GE": {"device_name": "Temperature Calibration Tester", "cells": form(18, "K22"),
            "alt_cells": [form(17, "K21")]},
@@ -291,7 +314,10 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # found by the form's printed label instead.
     "BZ": {
         "device_name": "Syringe",
-        "cells": form(26, "G35", date_gap=4),
+        # Date is E24, the calibration date: 90 forms read the wrong day from
+        # E22. Four forms print a date only at E22, so it stays a candidate.
+        "cells": form(26, "G35"),
+        "field_alternates": {"Date": ["E22"]},
         "alt_cells": [
             form(27, "G34", date_gap=4),
             form(25, "G35", date_gap=4),
@@ -299,7 +325,10 @@ DEVICE_CONFIGS: dict[str, dict] = {
     },
     "CE": {"device_name": "Sphygmomanometer",       "cells": form(47, "H59", date_gap=4)},
     "CB": {"device_name": "Digital blood pressure", "cells": form(18, "G26", date_gap=4)},
-    "AE": {"device_name": "ESU",                    "cells": form(15, "G24", date_gap=4)},
+    # Date is E13, the calibration date; E11 matched it only by coincidence
+    # (886 forms) and was wrong on 5. Proven by value on every form: 0 broken.
+    "AE": {"device_name": "ESU",                    "cells": form(15, "G24"),
+           "field_alternates": {"Date": ["E11"]}},
     "BL": {"device_name": "Autoclave",              "cells": form(18, "K22", date_gap=4)},
     "AN": {"device_name": "Thermo",                 "cells": form(18, "H32", date_gap=4),
            "alt_cells": [form(19, "H33", date_gap=4), form(20, "H34", date_gap=4)]},
@@ -310,8 +339,11 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # NOTE: Location is K19. Every other standard form puts it 2 rows below the
     # S.N (which is K18 here), i.e. K20 — this looks like a typo worth checking
     # against the actual Lab Oven form.
-    "EU": {"device_name": "Lab Oven", "cells": form(18, "H32", extra={"Location": "K19"}),
-           "alt_cells": [form(17, "H31"), form(19, "H33")]},
+    # Location is K20 like every other standard form (68 forms fixed); two B14
+    # forms print it at K19, so that stays a candidate the caption can choose.
+    "EU": {"device_name": "Lab Oven", "cells": form(18, "H32"),
+           "alt_cells": [form(17, "H31"), form(19, "H33")],
+           "field_alternates": {"Location": ["K19"]}},
 
     # ── Devices the master code list names but nobody had mapped ──────────────
     #
@@ -377,7 +409,7 @@ DEVICE_CONFIGS: dict[str, dict] = {
 
     # Manufacturer and Location sit four rows below the Model here, not two.
     "CD": {"device_name": "Endoscopic Set",
-           "cells": form(18, "K26", date_gap=4,
+           "cells": form(18, "K26",
                          extra={"Manufacturer": "E22", "Location": "K22"})},
     # Location two rows lower again, as on the other imaging-suite forms.
     "EN": {"device_name": "Catheter Lab",
@@ -447,6 +479,21 @@ DEVICE_CONFIGS: dict[str, dict] = {
     },
 
     # "FV": {"device_name": "Endoscopy", "cells": form(18, "K22")},  # unverified
+
+    # ── Mapped in the 2026 archive audit ──────────────────────────────────────
+    # High Flow Nasal Cannula. Three forms use the standard block; the 2023
+    # batch keeps its only device block on a tab called "cert", reached by the
+    # label search once "Equipment Data" counts as the device's heading.
+    "FC": {"device_name": "High Flow Nasal Cannula", "cells": form(18, "K22")},
+    # ICU electrical bed: the standard Data-entry block on every form.
+    "GO": {"device_name": "ICU Bed",                 "cells": form(18, "K22")},
+    # Mammography: the workbook is the vendor's QC template, whose header is
+    # boilerplate on every file ("GE / Alpha st / Gona Hospital", 2012) and
+    # whose "Model" caption belongs to the X-ray TUBE. The device is only in
+    # the same-named Word certificate beside it, which carries no verdict.
+    "BD": {"device_name": "Mammography", "source": "word",
+           "cells": {"Manufacturer": "", "Model": "", "S.N": "", "Location": "",
+                     "Date": "", "Status": ""}},
 }
 
 # "AG" is "AGH" with the H dropped — the same Patient Monitor form, typed short.

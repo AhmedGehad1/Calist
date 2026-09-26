@@ -14,7 +14,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter
 
-python -m pytest                            # the whole suite (273 tests)
+python -m pytest                            # the whole suite (419 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -72,7 +72,8 @@ The pipeline is a chain of small functions orchestrated by
 [`process_files()`](calist.py#L1165), which does no work itself:
 
 1. [`extract_device_code()`](calist.py#L305) — filename stem, split on the first `-`, leading letters
-   of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`.
+   of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`. The register's Code is the stem with
+   its typing slips undone — see *Filenames are repaired, never renamed*.
 2. `DEVICE_CONFIGS[code]["cells"]` — maps field names to A1 refs.
 3. [`read_best()`](calist.py#L998) — asks [`_XlsxSource`](calist.py#L491) (or
    [`_XlsSource`](calist.py#L751) for `.xls`) for the whole cell map at once, falling through to
@@ -135,48 +136,129 @@ the progress card says *Writing the register…* instead, which is the honest an
 
 ### Pre-flight
 
-`classify_file(path, strict_names=False)` resolves a filename to a device **without opening the
-workbook** — extension check, optional format check, code extraction, config lookup. The UI runs it
+`classify_file(path, real_forms_only=False)` resolves a filename to a device **without opening the
+workbook** — extension check, the optional real-device-forms check, code extraction, config lookup,
+and the repaired name (`FileOutcome.code`). The UI runs it
 on every file the moment it is added, which is how a bad name or an unrecognised code surfaces
 before a long run instead of after it. It must stay I/O-free; a test asserts it works on a path that
 does not exist.
 
-### Filename format check (`strict_names`) — three settings, not two
+### Filenames are repaired, never renamed (`repair_name`)
 
-Off by default, surfaced as a switch next to the dedup one. The switch **cycles through three
-positions**, `NAME_CHECK_OFF` → `NAME_CHECK_CODES` → `NAME_CHECK_FULL` → off:
+**By the owner's decision the files on disk are never renamed.** What is repaired is the name Calist
+*uses* — the register's Code column, and the id the Firebase export gives a record. Measured over
+the archive's 89,538 workbooks, the slips `repair_name` undoes are:
 
-| Level | Accepts | Regex |
-|---|---|---|
-| `OFF` (0) | anything | — |
-| `CODES` (1) | `G302-AGH001-` and the second dash, **tail free** | `_CODES_RE` |
-| `FULL` (2) | `G302-AGH001-0425`, month range-checked | `_NAME_RE` |
+| Slip | Example | Repaired | Marked? |
+|---|---|---|---|
+| leading dot, quote, backtick, invisible mark | `.G414-CA002-0426` | `G414-CA002-0426` | no |
+| spaces around a dash, before `.xlsx`; lower case | `G119-CE007 -0525 `, `k116-AX001-0123` | `G119-CE007-0525` | no |
+| `Copy of ` / `Final ` in front | `Copy of B14-BB036-0126` | `B14-BB036-0126` | yes |
+| a letter O for the zero of the customer code | `JO8-AGH001-1025` | `J08-AGH001-1025` | yes |
+| anything after the date | `G302-BB001-0326-pending`, ` (2)`, ` FAIL` | `G302-BB001-0326` | yes (dots/dashes only: no) |
+| a date that cannot be one | `G302-BB001-0329` (2029), `1525`, `00324` | from the form's Date: `-0326` | yes |
 
-The middle one exists because a round is often named to the house shape in its *codes* while the
-trailing date is written half a dozen ways (`-june`, `-rev2-final`, `-`). Rejecting those loses real
-work; accepting anything loses the check that catches a mistyped code.
+"Marked" is the amber cell and note of `_flags`, on **Code**, naming the real file — only for a
+repair that changes what the name *says*; a space is not worth a person's time. A name that is not
+the house shape at all (`GE  TEC850  OR  SQAX00871`, `5071938426`, `H58-BM010` with no date) is left
+exactly as it is: there is nothing to repair it toward. `test_a_name_is_written_with_its_slips_undone`
+holds every example. **Proof: on all 89,538 archive names, 0 of the 78,923 already-correct names
+change.**
 
-A switch has two positions and this setting has three, so **the middle state is told apart by colour
-and wording**, not by the switch itself: `WARNING` amber and "Accept filenames starting
-G302-AGH001-". `_STRICT_LABEL` / `_show_strict()` in `ui.py` own that.
+Rules that are load-bearing:
 
-The performance shape is deliberate and worth preserving:
+- **An impossible date is taken from the form, and the form is trusted** (owner's decision) — month
+  and all, whenever its Date reads as a date. `repair_name` is I/O-free, so it only marks such a
+  name `DATE_CHECK`; `settle_name_date` finishes it after the read. A form with no date leaves the
+  typed digits, marked. "Impossible" means not four digits, month not 01–12, or a year after
+  `latest_year` — this year in the app, the folder's year + 1 in the export (the old export rule).
+- **A name dated in the future confirms nothing.** `repair_date` used the name's MMYY to fix a form's
+  mistyped date; for `H39-AG025-0233` that would bend `01-02-20233` into 2033, so it now refuses.
+- **`_LEAD` is a list, not "anything but a letter".** Arabic text in front of a name is a different
+  kind of file, not a slip.
+- **The device part must end where it seems to.** `H59-BZ00F-1025` is not the `000` template
+  `BZ00` with an F after it; it is a name nobody can repair, left as it is.
 
-- `check_filename_format()` is **one precompiled match** on the accepting path at *every* level — no
-  splitting, no allocation. ~0.7 µs, so 300 names re-validate in ~0.2 ms and the table can refresh
-  on the same click that flips the switch.
-- `_explain_bad_filename()` does the per-part diagnosis and is **only reached for names that already
-  failed**. A correctly named folder never pays for it. Keep it that way — moving the diagnosis onto
-  the hot path would make toggling feel sluggish on a large folder. It takes the level too, so
-  level 1 never complains about a date it does not ask for.
+**Copies** (`_settle_copies`, per run). Cutting text can land a name on a file already in the run:
+`D38-AGH090-0225 (2)` beside `D38-AGH090-0225`. By the owner's decision **only the original is
+kept — when it is the same device**:
 
-`name_check_level()` coerces a `bool` to a level (`False`→0, `True`→2), so every existing caller and
-every saved settings file keeps working; `_remember` writes both `name_check` and the old
-`strict_names` key so an older build still reads the setting.
+- a copy whose serial matches the original's, or that has none, is dropped: status `COPY`, listed,
+  and its module row goes with it;
+- a copy with a **different** serial is a different device filed under a copy's name (`F21-BZ010-0624
+  (2)` is pump 14007615, the original 14007302) — kept, marked;
+- where **no** file is the plain original, the extra text is what tells them apart (`G341-AB00-0626-SEVO`
+  and `-Iso` are two vaporizers; `-3.5 MHZ` / `-7.5 MHZ` two probes) — so none of them is cut.
 
-Whatever the level, the format is checked **before** the device lookup: the user has asked for that
-shape specifically, so a malformed name is the finding worth reporting even when a device code could
-still be salvaged. `test_format_is_checked_before_the_device_code` pins this.
+In the archive that was 77 same-serial copies, 9 different-serial ones and 23 groups with no plain
+original.
+
+### The "real device forms only" switch (`real_forms_only`)
+
+It **replaced the three-position filename check** (off / codes / full), by the owner's decision.
+Off by default. On, anything that is not a device form is `LEFT_OUT` — hidden from the table, not a
+problem, listed under Details with the reason, and never in the register:
+
+- **no customer code** — the name must start (after the slips above) with **one letter then
+  digits**: 834 of the 835 codes in Hospital Codes.xlsx are. `AG035-SMB176400052HA` is a device code
+  and a serial, `DG169-EC001-0524` a typo nobody can repair; both are left out. ≈8,900 archive files;
+- **device number all zeros** — `BZ000`, `AGH00`, `BP0` — the blank a round's forms are copied from,
+  even when a serial was typed in (owner's decision). 172 files;
+- **a device list** (`_is_device_list`, as before) and **a blank form**: nothing filled in on the
+  record or any tab (`read_best(forms_only=True)` raises `LeftOut`). These need the workbook, so
+  they drop out during the run rather than when added.
+
+The name checks (`left_out_because`) are I/O-free and run in `classify_file`, **before** the device
+lookup: the user asked for device forms, so a non-form is the finding, not its code. With the switch
+off a blank form named for a device is read as it always was, a row of blanks.
+
+Old settings files hold the replaced check as `name_check` (0–2) or `strict_names` (bool);
+`ui.forms_only_setting` reads any non-off position as on. `_remember` **drops** both old keys rather
+than writing them alongside — an older build reading `strict_names` would enforce the filename format
+this switch replaced.
+
+### In the Firebase export
+
+The same repair and the same rule, by the owner's decision ("both"):
+
+- **Ids come from the repaired name** whenever it carries a real date — `.G414-CA002-0426`, which used
+  to be `x_2026_<hash of its path>`, is now `G414-CA002-0426`. `_adopt_repair` compares first, so a
+  name the repair leaves alone keeps exactly the id and the attention it had
+  (`test_a_name_that_needs_no_repair_keeps_exactly_what_it_had`). The old reading is kept as
+  `ParsedForm.legacy` / `legacy_id`, and is what stands when an impossible date finds no date on the
+  form.
+- **The rule is always on in the export** (there is no switch there): `form.excluded` says why, and
+  `exported()` is what reaches `assign_ids` and Firestore. `settle_copies` is `_settle_copies` for the
+  archive, grouped by base id — and it only judges forms `deepen` actually opened, because the dry run
+  reads a sample and an unread serial is not an empty one.
+- **No existing record moves** (`assign_ids_stable`). Letting repaired files into the numbering as
+  equals moved **333** records the repair never touched, measured: `G114-BP001-00324`, once its date
+  was fixed, took `BP001` from the `G114-BP001-0223` that had held it for years, and a repaired file
+  taking a fresh number first pushed every later renumbered device up by one. So `assign_ids` —
+  unchanged, byte for byte — numbers **every scanned file's old identity**, excluded files included
+  (they always took part), and every file the repair left alone keeps that id. Only then does
+  `_fit_newcomers` place the files whose identity the repair created: the same device (site, tag,
+  serial) joins its tag; anything else gets a number above every number in use. `deepen` still
+  reads every known-device file, left out or not, so the serials numbering sees are the ones it
+  always saw (`LeftOut` carries the record it read). Ordering tricks were tried first and are not
+  enough; do not go back to them.
+- **An engineer's deletion follows its file**: a tombstone on the legacy id also stops the repaired one.
+- **`sweep_replaced` deletes what the run no longer produces** — the owner chose "replace" for repaired
+  ids and "delete" for excluded files. A record goes only if the export made it (`imported`), its
+  `sourcePath` is a file this run scanned (so `--year`/`--limit` cannot reach anything else), nothing
+  was written under its id, and **nobody changed it in the app** (form data, tests, an uploader or
+  engineer on it — kept and listed for a person). It streams the collection with `select`, like
+  `upload_pending`, so no index is needed.
+- **The dry run lists every candidate** in `dry-run-…-deletions.txt` (old id → new id, or old id and
+  why). Only `--push --yes` deletes. Workbook copies in Storage are not deleted.
+
+**Proof, against the whole archive** (87,409 exported files, old export vs new, serials from the
+audit snapshot): **0 regressions** — all 79,821 files the repair leaves alone keep exactly their id;
+273 repaired files get their own id; 7,315 are left out (6,767 no customer code, 330 copies, 172
+templates, 46 blank forms). The register side, old reader vs new on 3,851 files (every renamed or
+unnamed file plus a control sample): 0 regressions, 1,665 Codes repaired, 76 files read as the
+device their certificate names that used to be skipped (97, less the 21 Carestations above). On the 116 folders where a cleaned name
+collides: 87 copies dropped, 9 kept for a different serial, 55 kept with their text.
 
 ### Threading rules (both of these have already caused bugs)
 
@@ -185,8 +267,8 @@ Two things run on worker threads: the build (`App._start`) and the folder scan
 
 1. **Never read a Tk variable off the main thread.** `self._template.get()` inside the worker raises
    `RuntimeError: main thread is not in main loop`. `App._start` captures `template`, `deduplicate`,
-   `strict_names`, `turbo` and the file list into plain Python values *before* spawning the thread;
-   `_start_scan` does the same with `strict`. Keep it that way.
+   `forms_only`, `turbo` and the file list into plain Python values *before* spawning the thread;
+   `_start_scan` does the same with `forms_only`. Keep it that way.
 2. **Never touch a widget from the worker.** `on_file` pushes onto `App._events` (a `queue.Queue`);
    `App._drain` polls it on the main thread via `after()`. The scan pushes batches of 200 onto the
    same queue. `TkLogHandler.emit` does the same with its own queue. Batching there is also what
@@ -308,7 +390,11 @@ Three steps, in order:
    `GI`) are completely unaffected, and why this can never change a file the map got right.
 2. Otherwise the box is found from the form's **own printed `Status:` label** — `status_from_grid`.
 3. Nothing found → the original text is kept, **unless it is a caption or an answer to a different
-   question** (`_NOT_A_VERDICT`: `Small`, `Large`, `N.A`, `----`), which is dropped to `""`.
+   question** (`_NOT_A_VERDICT`: `Small`, `Large`, `N.A`, `----`), **an engineer's code**
+   (`_ENGINEER_CODE`: `JTE-`, `STE-18`) or **a bare number** (`_A_READING`: `191.2` joules, `5.1`),
+   which is dropped to `""` — and kept, amber, in the register. On older Centrifuge forms the map's
+   `K25` is the "Revised by" box, captioned *above* it where the caption check cannot see, and 45 rows
+   read `JTE-` as a verdict. **`0` is not a reading**: see below.
 
 Four things there are load-bearing:
 
@@ -331,8 +417,214 @@ Four things there are load-bearing:
   `Status` to `""` deliberately; with no anchor there is nothing to search around and no read to pay.
 
 Proven the way this repo proves reader changes — whole-corpus, before and after, 3,004 forms:
-**0 regressions**, 617 forms gained a status, 95 captions went to zero. The harness is
-`validate.py` + `diffrun.py`; rebuild the baseline with `git show HEAD:calist.py`.
+**0 regressions**, 617 forms gained a status, 95 captions went to zero. That harness has since
+become `tools/audit.py` — see *The archive audit* below.
+
+**A status of `0` is an empty verdict, not a wrong one.** On Patient Monitor forms the status boxes
+are formulas copying a test sheet (`='NIBP Test sheet'!I70`), and a copy of an empty cell shows `0`.
+The owner has confirmed it: `0` means the module was not tested. It is never flagged, and the audit
+counts it as missing, not wrong. (A lowercase `pass` beside the ECG box, identical on every form, is
+template text — not a verdict to recover.)
+
+### The caption check: a layout must be verified, not just plausible
+
+`plausible()` asks whether values *look* right, and a shifted layout can pass it. On an older Baby
+Warmer form the current map reads the model into Manufacturer, the ward into Model and `N.A` into
+Serial — ordinary text, a placeholder serial, all "plausible". What a shifted layout cannot fake is
+the **caption printed to the left of each box**. So `_best_layout` accepts a layout only when
+`layout_verdict()` does not come back `contradicted`: the caption beside Model, Serial or
+Manufacturer names a *different* field (`Location:` beside what the map calls Model).
+
+**Only a contradiction counts.** A missing or unrecognised caption proves nothing and blocks
+nothing, which is what keeps every caption-less form reading exactly as before. Measured on every
+Baby Warmer form against its certificate: **191 corrected, 0 regressed**, and it picks the right
+layout even within 2025, where both are in use.
+
+**It costs about 0.4 ms a form** — 18 extra references (six cells left of three values), and a
+reference with no cell element makes `values()` scan to the end of the sheet. Measured on a fixed
+2,000-form archive sample: median 4.3 → 4.8 ms, total +7% with the Word and Conclusion fallbacks
+included. If that ever matters, bound each lookup to its `<row>` element — a reader change, so it
+needs the whole-grid proof described under *Reading a form*.
+
+The same check chooses **per field** where one field moved on some forms only: `field_alternates`
+in a config lists candidate cells, and `_pick_field_cells` takes the one whose caption names the
+field (`EU` Location, `BZ` Date, `AS` Status, `BB` Date). A mapped cell whose caption names another
+box outright loses even to an *empty* captioned box — Centrifuge's `K25` is "Tested by", so its
+`JTE-40` is an engineer, and the honest answer is a blank Status. For a Date, a real date in any
+candidate the form does not caption as something else beats a non-date: Ultrasound 2024 forms print
+`Date of receipt` in F16, with F15 empty.
+
+`plausible()` also refuses a record whose Model equals its Serial: a Phototherapy layout eight rows
+down lands both on the literal text `D38`. And `classify_serial()` treats a **short decimal** —
+one to three digits, then one or two after the point (`7.1`, `25.8`, `0.99`) — as a test reading,
+not a serial. Keep it that narrow: Therapeutic Ultrasound serials look like `37.254`, `1873206.0` is a
+float-exported one, and widening the rule to either made the reader reject correct layouts. A
+**computed float** (`0.38271946501827364`: an old Defibrillator `.xls` opens on its test sheet, and the
+map lands on an uncertainty column) is not a serial either — but only from **twelve** decimals: real
+serials carry up to eight (`1742.60318475`; `437.20981` and `6.20417` on 180 forms).
+
+**Placing a field that has no label.** When a form's block moves columns as well as rows there is
+no uniform offset, so a field without a printed label cannot follow the others. `label_offsets` in
+a config places it from a located one: Therapeutic Ultrasound's Date is two rows above its Model,
+wherever that block sits (`{"Date": ("Model", -2)}`). Mapping that block's rows directly was tried
+first and read test readings on 105 fields — the label search was already right about identity.
+
+**Other tabs: ordinary ones first, certificates last.** The certificate repeats the device's
+identity but never its verdict. Once `Equipment Data` became a recognised heading, the other-tab
+search began stopping at the certificate before reaching the data tab it used to read in full —
+and the verdict went with it. So `_best_layout` walks non-certificate tabs first, and within the
+walk a placeholder serial loses to a real serial on a later tab: a Suction Unit's `cover report`
+copies an empty box as `0.0`, and the certificate after it has the real number.
+
+A rescue keeps the map's Date and Status from the form's own tab — when the rescuing tab has none
+and they are unmistakably a date and a verdict — in two cases only: the rescue came from a
+**certificate**, or the opening tab's **captions confirm the map** (`map_confirmed`), which is the
+common case of a form whose only fault is a serial nobody entered; its identity then comes from the
+cover page and its verdict from its own box — 408 fields across the archive. Not otherwise: when a
+form opens on a test sheet, the map's Status cell there is a test line, and a Balance form once read
+`Fail` from it (`test_a_rescue_from_a_data_tab_takes_its_verdict_from_that_tab`).
+
+**The date is found by its own caption.** `locate_by_labels` places no Date, so every rescue from
+another tab — and a same-tab labels read whose block moved columns — used to leave it blank:
+`date_by_caption` takes the date beside `Date of receipt:` (a data tab), `Test Date` (a cover page)
+or `Calib. Date:` (a certificate), in that order, and **never** `Issue Date`, `Last Cal. Date`,
+`Prev. Calib.` or `Next Calib. On` — other dates, the last two a year away. It only ever fills a Date
+that is blank or not a date, so it cannot change one that read; 612 dates filled, 0 changed.
+
+### When no layout fits: the Word certificate, then the Conclusion
+
+Some devices keep their identity only in a **same-named Word certificate** beside the workbook.
+Hemodialysis "Final" workbooks are an electrical-safety printout, and older templates (Pacemaker,
+Ultrasound, Heart-lung …) have a cover page that was never filled in. `read_best` reads it as a
+**last resort**: the configured map, then alternates, then printed labels, then other tabs (a
+filled cover page), and only then `read_word_certificate`. That is zero cost for normal forms.
+
+Two rules there are load-bearing:
+
+- **Read only after `Equipment Data`.** The certificate prints the calibrator's block first — `Dose
+  meter Model: 07-492 … S.N: 108357` — the same trap as the Hemodialysis cover page above.
+- **Standard library only.** A `.docx` is zipped XML; the body text of a Word 97 `.doc` sits in the
+  file as plain 8-bit or UTF-16 runs, enough for fixed labels. 47 of 48 BD certificates are `.doc`.
+
+No Word certificate carries a verdict. Hemodialysis states its verdict as a **Conclusion sentence**
+on the `Final` tab, whose row moves (A119–A132), so `conclusion_tab` in its config anchors on the word
+*Conclusion*. `verdict_of_sentence` knows the only three wordings in the archive: "…Passed all Test…"
+→ Pass, "…Limited Calibrated, non calibrated item…" → Limited non, and "…the device readings and
+there's no accepted range…" → no verdict (kept in the register, marked).
+
+### Device lists are not forms
+
+Device-List workbooks sit among the forms and are named like them: `Device List H23-AS-1023.xlsx`
+resolves to a Centrifuge, `Al Arbaeen Device List.xlsx` to a Phototherapy (from "Al"). Reading one
+writes whatever the map lands on. `_is_device_list` recognises a register by its heading row — only
+looked for when the sheet or file is called a list, or the file is not named for a device (`Al
+baeerat.xlsx` is a site's list, headed `Device name` and `SN`), so an ordinary form pays nothing — and
+`read_best` raises `NotAForm`, which `extract_records` reports as *unsupported* (or *left out*, with
+the real-device-forms switch on) and the Firebase export leaves out. 24 such files were being read as
+devices.
+
+### Files not named for a device (`has_device_name`)
+
+A name without a site and device number — `G302-AGH001` anywhere in it, so `Copy of D41-AA002-0624`
+still counts — was named some other way: by serial (`CN84017253.xlsx`, a Philips monitor), by brand
+(`GE  Tec 850  SQAB01358  OR.xlsx`), or left a template (`BB.xlsx`, `000-AGH000-0000.xlsx`). Its
+"code" is only its first letters, so a Philips serial read as a **Microwave** and a GE vaporizer as a
+**Temperature Calibration Tester**. By the owner's decision, `_refuse_if_not_this_device` deals with
+such a file in two cases, and only for these names (≈1 form in 100 pays):
+
+- **its form says it is another device**: the value beside its own `Equipment Type:` / `Device
+  Type:` names another mapped device and not this one (`names_device`: one's words contain the
+  other's, with `Pulse Oximeter` ≡ `SPO2`, `Pipette` ≡ `Pipet`). When it names **exactly one** device
+  the map knows, `ReadAsOther` hands it back and `extract_records` reads the file again **as that
+  device** — the GE TEC850 files are Vaporizers — with Code kept as the file's own name, marked, and
+  nothing invented. When it could be several (`Patient Monitor` is AG, AGH and VAGH) nothing is
+  guessed: `NotAForm`, naming them. `BZ009.xlsx` whose certificate says *Syringe Pump* is a Syringe,
+  and is read as one. **One exception, by the owner's decision** (`_stale_certificate`):
+  *Ventilator* on a file filed under an **Anesthesia** folder is the template's text, not the
+  device's — the 21 GE Carestations named by brand are anesthesia machines — so those are skipped
+  as they always were. The 5 Carescape R860s filed under *Ventilator* are read as ventilators.
+
+  **Only for names like these.** On a properly named file the certificate's type is not trusted over
+  the name: across the archive it disagrees on 3,457 forms, and the models show the certificates are
+  stale — the CT forms that say *Nebulizer* are Siemens Somatoms, the Anesthesia forms that say
+  *Ventilator* are GE Avances.
+- **nothing is filled in**: no real serial and no model or maker in words, on the record *or on any
+  tab* — and on another tab it takes **two** of serial, model and maker, because a blank template's
+  `safety` tab prints the safety analyzer's own serial beside `S.N`.
+
+Cost: nothing on a named form (one regex on the name). On the others, `stated_device_type` looks at
+certificate tabs first and for the caption in A–F only, then reads just its row — the first version
+read A1:N60 of every tab and put 10% on a whole run; now it is ≈4%, median unchanged.
+
+**A properly named form is never skipped, even blank** — unless the real-device-forms switch is on,
+which leaves out a blank form whatever its name. Renaming the files was considered and
+rejected: in the brand-named ones the file name is the only record of the device's identity (their
+device tab is empty), and the Firebase document id is derived from the name.
+
+### Typed-date repairs (the register only — the form is never changed)
+
+By the owner's decision `_repair_date_field` repairs an engineer's slip in a Date that is **not a
+date as typed**, and marks the cell with what the form says. `repair_date`:
+
+- **A period** (`30/04/2023 - 18/06/2023`, `06-09-2023…11-09-2023`, `… to …`) — which the
+  certificates print too, so not a slip — becomes its **start**.
+- **Otherwise the file name decides.** Read as typed first, separators cleaned (`21--01-2024`,
+  `11-06-2023.`, `15-092025.`): taken only if its month and year are the name's `-0124`. Only digits
+  that cannot be a date as typed (month `20`, year `205`, `02025`, `1023`) are read against the name,
+  one slipped digit per part at most. **Two readings, no repair**: `12/19/2022` is 19-12 month-first
+  or 12-12 one slip. `21--03-2024` in a `-0124` file is plainly March, and is left alone rather than
+  bent to fit. A name without the date gets no repair.
+
+Files are also opened by **what they are**, not their extension (`_open_workbook` checks the first
+bytes): the archive holds `.xlsx` workbooks saved under a `.xls` name, which failed outright.
+
+### The register marks what it keeps but doubts (`_flags`)
+
+**By the owner's decision, the register never drops a value silently.** A caption in the Status
+box, a serial that is not one, a record no layout fits — each is written as found, the cell filled
+amber, with an Excel note saying why (`_mark_for_checking`). The column layout is untouched.
+
+This lives in an underscore side-channel, `record["_flags"]` — the same pattern as `_group` and
+`_source`, which never reaches `FIELDS`. **The marks never reach the Firebase export**: it reads
+only named fields (`record.get("S.N")` …), and `_settle_status` still blanks a caption in the
+named field while recording the raw text in `_flags["Status"]["show"]` for the register alone.
+The *fixes* do reach it, by the owner's decision — a corrected map, a repaired date, a status that
+was a caption or a reading, a skipped file — which is why the audit proves every one of them.
+`build_second_row` hands a module row its own Status2 mark, never the parent's Status mark.
+
+### The archive audit (`tools/audit.py`)
+
+The only thing that finds a field going quietly blank or wrong is reading the real forms, so the
+check is a tool, not a one-off:
+
+```powershell
+python tools/audit.py "D:\MedCal Pro"                        # ~17 min, all four years
+python tools/audit.py --report <snapshot>.json.gz            # rebuild the workbook
+python tools/audit.py --diff <before>.json.gz <after>.json.gz  # the proof: 0 regressions
+```
+
+It reads every form the way the register does, then asks the form independently: the
+**Certificate tab**, whose `Equipment Data` values are formulas naming the device-tab cell they copy
+(Excel rewrites them when rows are inserted, so each certificate is a per-form cell map), the
+device tab's printed labels, shape rules, and the same serial across years. Findings are MAP
+ERROR, WRONG VALUE (systemic → a map problem, isolated → a form problem), MISSING, UNDETERMINED or
+EXPECTED; the workbook has a clickable row per finding and a stratified sample to confirm by eye.
+
+`--diff` re-judges **both** snapshots with today's rules, so only what the reader lands can differ.
+A regression is a field that was OK and is not now, or whose confirmed value changed. A file now
+refused as a device list is not one — it is listed by name instead, so each refusal is seen.
+
+It is **read-only against the forms** and writes only to `<root>/_Calist audit`. That is enforced,
+not assumed: `_save_outside_customers` refuses any destination inside a `Customers` folder. It
+exists because a shadowed loop variable once saved the report over a customer's workbook.
+
+Two lessons it has already taught, both worth keeping in mind for any map change:
+
+- **Prove a cell change by value, on every form, `.xls` included.** Formula evidence alone once
+  marked a Baby Warmer map change "safe" that would have broken every 2025–26 form — they are `.xls`,
+  whose formulas cannot be read, so "no evidence" looked like "no breakage".
+- **A swap that fixes many and breaks a few is not a fix.** `EU` and `BZ` would each have regressed
+  a handful of forms; `field_alternates` fixes all of them.
 
 ### Never read the calibrator as the device
 
@@ -445,19 +737,23 @@ the tests after renaming anything.
 
 ## Open data questions
 
-Two remain, both needing a look at the paper form. `CA` (was `"X-ray ()"`, now Dental X-Ray) and
-the duplicate `AO`/`CK` "Infrared" naming are resolved.
+None remain open from the list that used to be here. The 2026 archive audit settled both with the
+forms' own certificates: **`EU` Location is `K20`** like every standard form (68 forms), with `K19`
+kept as a caption-chosen candidate for the two B14 forms that print it there; and **`CF` is not
+inverted** — it has two layouts two rows apart, both still in use in 2025, told apart per form by
+the caption check. `CA` (was `"X-ray ()"`, now Dental X-Ray) and the duplicate `AO`/`CK` "Infrared"
+naming were resolved earlier.
 
-- `EU` (Lab Oven) has Location `K19`; every other standard form puts it at `row+2` = `K20`.
-- `CF` (Baby Warmer) has Model *below* Manufacturer, inverted vs. every other form.
+**`BD` (Mammography) is read only from its Word certificate — never from its workbook.** Every BD
+workbook carries the identical header `GE / Alpha st / Gona Hospital`, survey date 2012, across many
+site codes: the vendor QC template's boilerplate. Its "Model" caption belongs to the X-ray *tube*. A
+cell map would put the same fabricated maker and model into every row and look entirely plausible,
+which is why BD has `"source": "word"` and no cells at all. 48 of 53 have a certificate; the other 5
+stay unread. `test_mammography_is_read_only_from_its_word_certificate` pins this.
 
-**`BD` (Mammography) is deliberately unmapped.** All 40 archive files carry the identical header
-`GE / Alpha st / Gona Hospital`, survey date 2012, across many different site codes — the vendor QC
-template's boilerplate, not the device. A map would put the same fabricated manufacturer and model
-into 40 rows and look entirely plausible. Do not add one without a form that is actually filled in.
-
-`BJ` (Auto Refractometer) and `FC` (High Flow Nasal Cannula) are unmapped too: one archive file each,
-and no coherent field block on either.
+`FC` (High Flow Nasal Cannula) is mapped: 128 of its 131 forms are a 2023 batch whose only device
+block is on a tab called `cert`, reached by the other-tab label search. `BJ` (Auto Refractometer)
+remains unmapped: one archive file, and no coherent field block.
 
 Device names are reproduced verbatim in output, spelling slips included (`Protien Analyzer`,
 `Tornique`). Correcting them changes the text written into every register, so treat it as a deliberate
@@ -529,6 +825,24 @@ One window, three states swapped in the same layout by `_enter_setup` / `_enter_
 `_enter_results`. Not a wizard — this is a tool the same person runs repeatedly, and steps tax every
 repeat run. `_enter_scanning` reuses the working card for a folder walk, which has no total to count
 towards until it has finished walking.
+
+### It runs on Windows 10 too
+
+The development machine is Windows 11; the machines Calist is used on include Windows 10. A Win11-only
+font or window attribute looks right here and fails **silently** there, and the GUI-free test suite
+cannot catch it. Every visual choice needs its Windows 10 path:
+
+- **Fonts:** `Segoe UI Variable` is Win11-only — fall back to `Segoe UI`. `Cascadia Mono` is not a
+  Win10 system font (Windows Terminal's copy is private to it) — fall back to `Consolas`. Tk
+  substitutes an unknown family without a word, so check `tkinter.font.families()` rather than
+  assuming.
+- **Icons:** `Segoe Fluent Icons` is Win11-only. `Segoe MDL2 Assets` ships on both, so use it
+  everywhere and only codepoints it has — one icon set on every machine.
+- **Window chrome:** DWM attributes added in Windows 11 (caption colour, corner preference, Mica)
+  are best-effort extras that must never raise.
+- **Screen size:** older Win10 machines often run 1366×768 at 100% scaling; check layouts there.
+- **WebView2** is not guaranteed on an offline Win10 machine — worth remembering before any move
+  to a web-rendered UI.
 
 ### Turbo
 
@@ -612,6 +926,11 @@ finished with the drawer open. Three things follow from the change, and all thre
   own filenames resolve.
 - Inputs are frozen during a run (`_set_inputs_enabled`), so the settings can't describe a build
   other than the one happening.
+- **"Real device forms only"** is the switch beside dedup. A `LEFT_OUT` file is kept in `_files` (so
+  switching off brings it back) but never drawn: `_visible_outcomes` skips it, the counts exclude it,
+  `_start` does not hand it to the run, and `_log_left_out` lists every one with its reason under
+  Details — once per intake or toggle, not per refresh. A dropped copy stays in the table as
+  *Copy — left out*.
 - The `ttk.Treeview` is styled to match CTk (`style_treeview`). It stays a Treeview rather than
   stacked CTk frames because it routinely holds hundreds of rows.
 - Drag-and-drop is optional: `HAS_DND` gates a `TkinterDnD.DnDWrapper` mixin on the root. Absent the

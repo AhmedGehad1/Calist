@@ -775,7 +775,7 @@ def test_statuses_only_refuses_without_yes_before_connecting(
                         lambda root, only_year=None, limit=0: [form])
     monkeypatch.setattr(firebase_export, "deepen",
                         lambda forms, sample=0, progress=None: len(forms))
-    monkeypatch.setattr(firebase_export, "assign_ids", lambda forms: (0, 0))
+    monkeypatch.setattr(firebase_export, "assign_ids_stable", lambda forms: (0, 0, 0))
 
     def no_connection(project):
         raise AssertionError("connected without --yes")
@@ -978,3 +978,310 @@ def test_a_vital_signs_form_whose_map_lands_on_the_labels_reads_below_them():
     form = _form(device_code="VAH", status="Spo2 Status:", status2="NIBP Status:",
                  module_statuses={"spo2": "Pass", "nibp": "pass"})
     assert build_statuses(form) == {"spo2": "pass", "nibp": "pass"}
+
+
+# ── Repaired names: the ids the export gives, and what it leaves out ─────────
+#
+# The files keep their names. The export gives a record the id its repaired name
+# says, leaves out what is not a device form, and deletes the records a repair
+# or an exclusion leaves behind — never one an engineer has changed.
+
+import calist
+
+
+def _archive(tmp_path, names, year=2026):
+    folder = tmp_path / f"Customers {year}" / "Hospitals" / "Site"
+    folder.mkdir(parents=True)
+    for name in names:
+        (folder / name).write_bytes(b"")
+    return {form.filename: form for form in firebase_export.scan(tmp_path)}
+
+
+def test_a_repaired_name_gets_its_real_id(tmp_path):
+    forms = _archive(tmp_path, [".G414-CA002-0426.xlsm", "G302-AGH001-0426.xlsx",
+                                "JO8-AGH001-1026.xlsx"])
+    dotted = forms[".G414-CA002-0426.xlsm"]
+    assert dotted.base_doc_id == "G414-CA002-0426"
+    assert dotted.legacy_id.startswith("x_2026_")
+    assert dotted.identity_repaired
+
+    plain = forms["G302-AGH001-0426.xlsx"]
+    assert plain.base_doc_id == plain.legacy_id == "G302-AGH001-0426"
+    assert not plain.identity_repaired
+
+    slipped = forms["JO8-AGH001-1026.xlsx"]
+    assert slipped.customer_code == "J08"
+    assert slipped.legacy_id == "JO8-AGH001-1026"
+
+
+def test_a_name_that_needs_no_repair_keeps_exactly_what_it_had(tmp_path):
+    """Attention included: the repair must be invisible on a good name."""
+    forms = _archive(tmp_path, ["G302-AGH001-1225.xlsx"])
+    form = forms["G302-AGH001-1225.xlsx"]
+    assert form.base_doc_id == "G302-AGH001-1225"
+    assert form.attention == "dated 12/2025, filed in the 2026 round"
+
+
+def test_what_is_not_a_device_form_is_not_exported(tmp_path):
+    forms = _archive(tmp_path, ["5071938426.xlsx", "D38-BZ000-0126-SINO.xlsx",
+                                "G302-AGH001-0426.xlsx"])
+    assert "customer code" in forms["5071938426.xlsx"].excluded
+    assert "template" in forms["D38-BZ000-0126-SINO.xlsx"].excluded
+    kept = firebase_export.exported(list(forms.values()))
+    assert [f.filename for f in kept] == ["G302-AGH001-0426.xlsx"]
+
+
+def test_an_impossible_date_is_settled_from_the_form_once_read(tmp_path):
+    forms = _archive(tmp_path, ["G302-BB001-0329.xlsx"])
+    form = forms["G302-BB001-0329.xlsx"]
+    # Before the form is read, the old rule's reading stands: the folder year.
+    assert form.base_doc_id == "G302-BB001-0326"
+    firebase_export._fill(form, {"Date": "20-02-2026", "S.N": "X1"}, 0)
+    # The form is trusted, month and all.
+    assert form.base_doc_id == "G302-BB001-0226"
+    assert "'0329'" in form.attention
+
+
+def test_an_impossible_date_with_nothing_on_the_form_keeps_the_old_reading(tmp_path):
+    forms = _archive(tmp_path, ["G302-BB001-0329.xlsx"])
+    form = forms["G302-BB001-0329.xlsx"]
+    firebase_export._fill(form, {"Date": "", "S.N": "X1"}, 0)
+    assert form.base_doc_id == "G302-BB001-0326"
+    assert "treated as a typo for 2026" in form.attention
+
+
+def _opened(forms, serials):
+    for name, serial in serials.items():
+        forms[name].serial, forms[name].opened = serial, True
+
+
+def test_a_copy_with_the_same_serial_is_not_exported(tmp_path):
+    forms = _archive(tmp_path, ["D38-AGH090-0226.xlsx", "D38-AGH090-0226 (2).xlsx",
+                                "F21-BZ010-0626.xlsx", "F21-BZ010-0626 (2).xlsx"])
+    _opened(forms, {"D38-AGH090-0226.xlsx": "S1", "D38-AGH090-0226 (2).xlsx": "S1",
+                    "F21-BZ010-0626.xlsx": "14007302",
+                    "F21-BZ010-0626 (2).xlsx": "14007615"})
+    assert firebase_export.settle_copies(list(forms.values())) == 1
+    assert "D38-AGH090-0226.xlsx" in forms["D38-AGH090-0226 (2).xlsx"].excluded
+    assert not forms["F21-BZ010-0626 (2).xlsx"].excluded     # another device
+
+
+def test_a_copy_nobody_has_read_is_not_judged(tmp_path):
+    """The dry run reads a sample; an unread serial is not an empty one."""
+    forms = _archive(tmp_path, ["D38-AGH090-0226.xlsx", "D38-AGH090-0226 (2).xlsx"])
+    assert firebase_export.settle_copies(list(forms.values())) == 0
+    assert not forms["D38-AGH090-0226 (2).xlsx"].excluded
+
+
+def test_with_no_plain_original_the_old_identity_stands(tmp_path):
+    """"-SEVO" and "-Iso" are two vaporizers: their names are not cut."""
+    forms = _archive(tmp_path, ["G341-AB001-0626-SEVO.xlsx", "G341-AB001-0626-Iso.xlsx"])
+    _opened(forms, {"G341-AB001-0626-SEVO.xlsx": "A1", "G341-AB001-0626-Iso.xlsx": "B2"})
+    firebase_export.settle_copies(list(forms.values()))
+    for form in forms.values():
+        assert form.base_doc_id == form.legacy_id
+        assert form.base_doc_id.startswith("x_")
+
+
+def test_the_plain_file_keeps_its_tag_whatever_the_copys_serial(tmp_path):
+    """Sorting by serial alone would hand the original's record to the copy."""
+    forms = _archive(tmp_path, ["F21-BZ010-0626.xlsx", "F21-BZ010-0626 (2).xlsx"])
+    original, copy = forms["F21-BZ010-0626.xlsx"], forms["F21-BZ010-0626 (2).xlsx"]
+    original.serial, copy.serial = "9999", "0001"
+    firebase_export.assign_ids_stable([original, copy])
+    assert original.doc_id == "F21-BZ010-0626"
+    assert copy.doc_id != "F21-BZ010-0626"
+    assert copy.original_tag == "BZ010"
+
+
+def test_a_repaired_date_never_takes_a_tag_from_the_file_that_held_it(tmp_path):
+    """Measured on the archive: G114-BP001-00324, once its date was fixed, took
+    BP001 from G114-BP001-0223 — which had held it for years."""
+    old = _archive(tmp_path, ["G114-BP001-0223.xlsx"], year=2023)["G114-BP001-0223.xlsx"]
+    new = _archive(tmp_path, ["G114-BP001-00324.xlsx"], year=2024)["G114-BP001-00324.xlsx"]
+    firebase_export._fill(new, {"Date": "06-03-2024", "S.N": "0001"}, 0)
+    old.serial = "9999"
+    firebase_export.assign_ids_stable([old, new])
+    assert old.doc_id == "G114-BP001-0223"
+    assert new.doc_id.startswith("G114-BP") and new.doc_id.endswith("-0324")
+    assert new.tag != "BP001" and new.original_tag == "BP001"
+
+
+def test_a_repaired_file_that_is_the_same_device_joins_its_tag(tmp_path):
+    old = _archive(tmp_path, ["G114-BP001-0223.xlsx"], year=2023)["G114-BP001-0223.xlsx"]
+    new = _archive(tmp_path, ["G114-BP001-00324.xlsx"], year=2024)["G114-BP001-00324.xlsx"]
+    firebase_export._fill(new, {"Date": "06-03-2024", "S.N": "SAME"}, 0)
+    old.serial = "SAME"
+    firebase_export.assign_ids_stable([old, new])
+    assert new.doc_id == "G114-BP001-0324"
+
+
+def test_a_fresh_number_for_a_repaired_file_pushes_no_one_along(tmp_path):
+    """Measured on the archive: a repaired D12-AK004 took AK019 first, and the
+    device that had always been AK019 became AK020."""
+    names = {"A": ["D12-AK004-1223.xlsx", "D12-AK004-1223------.xlsx",
+                   "D12-AK009-1223.xlsx", "D12-AK018-1223.xlsx"],
+             "B": ["D12-AK009-1223.xlsx"]}
+    for site, files in names.items():
+        folder = tmp_path / "Customers 2023" / "Hospitals" / site
+        folder.mkdir(parents=True)
+        for name in files:
+            (folder / name).write_bytes(b"")
+    forms = firebase_export.scan(tmp_path)
+    at = {(Path(f.path).parent.name, f.filename): f for f in forms}
+    serials = {("A", "D12-AK004-1223.xlsx"): "S4",
+               ("A", "D12-AK004-1223------.xlsx"): "OTHER",    # another device
+               ("A", "D12-AK009-1223.xlsx"): "S9",
+               ("B", "D12-AK009-1223.xlsx"): "T9",             # AK009 is two devices
+               ("A", "D12-AK018-1223.xlsx"): "S18"}
+    for key, serial in serials.items():
+        at[key].serial = serial
+    firebase_export.assign_ids_stable(forms)
+    # The second AK009 has always been AK019; the repaired file comes after it.
+    assert at[("B", "D12-AK009-1223.xlsx")].doc_id == "D12-AK019-1223"
+    assert at[("A", "D12-AK004-1223------.xlsx")].doc_id == "D12-AK020-1223"
+
+
+def test_a_file_left_out_still_takes_part_in_the_numbering(tmp_path):
+    """It always did — so it must, or the numbers after it would move."""
+    forms = _archive(tmp_path, ["D26-AGH000-0225.xlsx", "D26-AGH000-0225-b.xlsx",
+                                "D26-AGH001-0225.xlsx"], year=2025)
+    assert forms["D26-AGH000-0225.xlsx"].excluded      # a 000 template
+    for form, serial in zip(forms.values(), ("A", "B", "C")):
+        form.serial = serial
+    firebase_export.assign_ids_stable(list(forms.values()))
+    assert forms["D26-AGH001-0225.xlsx"].doc_id == "D26-AGH001-0225"
+
+
+class _DocRef:
+    def __init__(self, collection, doc_id):
+        self.collection, self.id = collection, doc_id
+
+
+class _WriteBatch:
+    def __init__(self, db):
+        self._db = db
+
+    def set(self, ref, data, merge=False):
+        self._db.sets[(ref.collection, ref.id)] = data
+
+    def delete(self, ref):
+        self._db.deleted.append(ref.id)
+
+    def commit(self):
+        pass
+
+
+class _Docs:
+    def __init__(self, db, name):
+        self._db, self._name = db, name
+
+    def document(self, doc_id):
+        return _DocRef(self._name, doc_id)
+
+    def select(self, fields):
+        return self
+
+    def stream(self):
+        if self._name == firebase_export.DELETIONS:
+            return [_FakeSnap(i) for i in self._db.tombstones]
+        return [_StoredSnap(i, data) for i, data in self._db.docs.items()]
+
+
+class _WriteDb:
+    """Just enough of firebase_admin's client to write, list and delete."""
+
+    def __init__(self, docs=None, tombstones=()):
+        self.docs = dict(docs or {})
+        self.tombstones = list(tombstones)
+        self.sets, self.deleted = {}, []
+
+    def collection(self, name):
+        return _Docs(self, name)
+
+    def batch(self):
+        return _WriteBatch(self)
+
+
+def test_a_deletion_follows_its_file_to_the_repaired_id(tmp_path):
+    """Deleted as x_2026_…, it must not come back as G414-CA002-0426."""
+    form = _archive(tmp_path, [".G414-CA002-0426.xlsm"])[".G414-CA002-0426.xlsm"]
+    form.doc_id = form.base_doc_id
+    db = _WriteDb(tombstones=[form.legacy_id])
+    _records, _customers, skipped = firebase_export.push_firestore([form], {}, db)
+    assert skipped == 1
+    assert not [key for key in db.sets if key[0] == firebase_export.CALIBRATIONS]
+
+
+def test_the_sweep_deletes_only_what_this_run_no_longer_produces(tmp_path):
+    forms = _archive(tmp_path, [".G414-CA002-0426.xlsm", "5071938426.xlsx"])
+    repaired, gone = forms[".G414-CA002-0426.xlsm"].path, forms["5071938426.xlsx"].path
+    db = _WriteDb({
+        "x_2026_old": {"imported": True, "sourcePath": repaired},       # replaced
+        "G414-CA002-0426": {"imported": True, "sourcePath": repaired},  # written now
+        "x_2026_serial": {"imported": True, "sourcePath": gone},        # not a form
+        "x_2026_edited": {"imported": True, "sourcePath": gone,
+                          "formData": {"voltage": "230"}},              # a person's work
+        "x_2026_filed": {"imported": True, "sourcePath": gone,
+                         "uploadedBy": "uid-7"},
+        "APP-1": {"sourcePath": repaired},                              # the app's own
+        "x_2025_else": {"imported": True, "sourcePath": "D:/other/x.xlsx"},
+    })
+    swept = firebase_export.sweep_replaced(db, list(forms.values()),
+                                           written={"G414-CA002-0426"})
+    assert sorted(i for i, _ in swept["deleted"]) == ["x_2026_old", "x_2026_serial"]
+    assert sorted(i for i, _ in swept["kept_edited"]) == ["x_2026_edited", "x_2026_filed"]
+    assert sorted(db.deleted) == ["x_2026_old", "x_2026_serial"]
+
+
+def test_the_sweep_knows_a_path_however_the_root_was_spelled(tmp_path):
+    forms = _archive(tmp_path, ["5071938426.xlsx"])
+    spelled = forms["5071938426.xlsx"].path.replace("\\", "/").upper()
+    db = _WriteDb({"x_old": {"imported": True, "sourcePath": spelled}})
+    swept = firebase_export.sweep_replaced(db, list(forms.values()), written=set())
+    assert [i for i, _ in swept["deleted"]] == ["x_old"]
+
+
+def test_a_dry_sweep_deletes_nothing(tmp_path):
+    forms = _archive(tmp_path, ["5071938426.xlsx"])
+    db = _WriteDb({"x_old": {"imported": True,
+                             "sourcePath": forms["5071938426.xlsx"].path}})
+    swept = firebase_export.sweep_replaced(db, list(forms.values()), written=set(),
+                                           apply=False)
+    assert [i for i, _ in swept["deleted"]] == ["x_old"]
+    assert db.deleted == []
+
+
+def test_the_dry_run_lists_every_record_it_would_replace_or_delete(tmp_path):
+    forms = _archive(tmp_path, [".G414-CA002-0426.xlsm", "5071938426.xlsx",
+                                "G302-AGH001-0426.xlsx"])
+    report = firebase_export.analyse(list(forms.values()), {}, tmp_path)
+    assert [(Path(n).name, new) for n, _old, new in report.replaced] == [
+        (".G414-CA002-0426.xlsm", "G414-CA002-0426")]
+    assert [Path(n).name for n, _old, _why in report.removed] == ["5071938426.xlsx"]
+    listing = firebase_export.render_deletions(report)
+    assert "G414-CA002-0426" in listing and "5071938426.xlsx" in listing
+    assert "REPLACE or DELETE" in firebase_export.render(report)
+
+
+def test_the_reader_lets_not_a_form_through_only_when_asked(monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise calist.NotAForm("a device list (register), not an inspection form")
+
+    monkeypatch.setattr(firebase_export, "calist_read_best", refuse)
+    assert firebase_export.read_best("x.xlsx", DEVICE_CONFIGS["AGH"]) == ({}, -1)
+    with pytest.raises(calist.NotAForm):
+        firebase_export.read_best("x.xlsx", DEVICE_CONFIGS["AGH"], forms_only=True)
+
+
+def test_deepen_leaves_out_a_form_that_turns_out_not_to_be_one(tmp_path, monkeypatch):
+    forms = _archive(tmp_path, ["G302-AGH001-0426.xlsx"])
+
+    def blank(*_args, **_kwargs):
+        raise calist.LeftOut("nothing is filled in — a blank form or template")
+
+    monkeypatch.setattr(firebase_export, "calist_read_best", blank)
+    firebase_export.deepen(list(forms.values()))
+    form = forms["G302-AGH001-0426.xlsx"]
+    assert "blank form" in form.excluded
+    assert firebase_export.exported([form]) == []

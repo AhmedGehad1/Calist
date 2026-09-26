@@ -63,3 +63,20 @@ def test_saved_file_has_no_bom(settings_file):
     """What we write must be readable by anything, BOM-free."""
     ui.save_settings(PREFS)
     assert settings_file.read_bytes()[:3] != b"\xef\xbb\xbf"
+
+
+# ── The "real device forms only" switch replaced the filename check ───────────
+
+@pytest.mark.parametrize("stored, on", [
+    ({}, False),
+    ({"real_forms_only": True}, True),
+    ({"real_forms_only": False, "strict_names": True}, False),  # the new key wins
+    ({"strict_names": True}, True),                             # an old file
+    ({"strict_names": False}, False),
+    ({"name_check": 1}, True),                                  # "codes only"
+    ({"name_check": 2}, True),
+    ({"name_check": 0, "strict_names": True}, False),
+    ({"name_check": "garbage"}, False),
+])
+def test_the_switch_reads_the_setting_it_replaced(stored, on):
+    assert ui.forms_only_setting(stored) is on

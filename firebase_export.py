@@ -47,16 +47,21 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from calist import read_best as calist_read_best
 from calist import (
-    BAD_FORMAT,
+    DATE_CHECK,
+    DATE_FORM,
+    DATE_NAME,
     ERROR,
     LOCK_PREFIX,
     READY,
+    LeftOut,
+    NameRepair,
+    NotAForm,
     STATUS_CALIBRATED,
     STATUS_FAIL,
     STATUS_LIMITED,
@@ -71,10 +76,13 @@ from calist import (
     clean,
     extract_device_code,
     find_source_files,
+    left_out_because,
     locate_by_labels,
     normalise_status,
     plausible,
     read_record,
+    repair_name,
+    settle_name_date,
     status_from_grid,
 )
 # The status vocabulary and the label-anchored box finder live in calist now:
@@ -356,6 +364,39 @@ class ParsedForm:
     #: renamed, so this is the only way back from a record to its paperwork.
     original_tag: str = ""
 
+    #: The filename with its typing slips undone — see calist.repair_name. The
+    #: file keeps its name; the id is built from this whenever it carries a real
+    #: date, which is what gives ".G414-CA002-0426" its own id at last.
+    repair: NameRepair | None = None
+
+    #: The identity this file had before names were repaired, as
+    #: (site, tag, month, yy, attention) and as a base id. Kept because records
+    #: already in Firestore — and an engineer's tombstones — carry it.
+    legacy: tuple = ()
+    legacy_id: str = ""
+
+    #: Why the "real device forms only" rule keeps this file out of the export —
+    #: a name with no customer code, a 000 template, a device list, a blank
+    #: form, a copy of another file. "" when it goes in.
+    excluded: str = ""
+
+    #: Whether [deepen] read the workbook. The dry run reads a sample, and a copy
+    #: can only be judged against its original once both serials are known.
+    opened: bool = False
+
+    @property
+    def is_copy(self) -> bool:
+        return bool(self.repair and self.repair.is_copy)
+
+    @property
+    def identity_repaired(self) -> bool:
+        """Whether the name repair moved this file to a different id — and so
+        whether its old id, [legacy_id], is still this file's to answer for."""
+        if not self.legacy:
+            return False
+        return self.legacy[:4] != (self.site, self.original_tag or self.tag,
+                                   self.month, self.filed_yy)
+
     @property
     def base_doc_id(self) -> str:
         """Deterministic Firestore document id.
@@ -576,6 +617,107 @@ def assign_ids(forms: list[ParsedForm]) -> tuple[int, int]:
     return collapsed, split
 
 
+def assign_ids_stable(forms: list[ParsedForm]) -> tuple[int, int, int]:
+    """[assign_ids], with no existing record moving. Returns (collapsed, split,
+    fitted).
+
+    A repaired name joins the numbering for the first time — "G114-BP001-00324"
+    becomes a real BP001, "D12-AK004-1223------" a real AK004 — and letting it
+    in as an equal moved **333** records the name repair never touched,
+    measured on the archive: it could take a shared tag from the file that has
+    held it for years, or take a fresh number first and push every later one
+    up by one.
+
+    So the archive is numbered exactly as it always was — [assign_ids] over
+    every file's *old* identity — and every file the repair left alone keeps
+    the id that gives it. Only then are the files whose identity the repair
+    created fitted around them by [_fit_newcomers]. Pass every scanned form,
+    excluded ones too: they took part in the old numbering, so they must take
+    part in this one.
+    """
+    repaired = [form.identity_repaired for form in forms]
+    old_view = [replace(form, site=form.legacy[0], tag=form.legacy[1],
+                        month=form.legacy[2], filed_yy=form.legacy[3],
+                        original_tag="", doc_id="")
+                if form.legacy else replace(form, original_tag="", doc_id="")
+                for form in forms]
+    collapsed, split = assign_ids(old_view)
+
+    established, newcomers = [], []
+    for form, old, moved in zip(forms, old_view, repaired):
+        if moved:
+            newcomers.append(form)
+        else:
+            form.tag, form.original_tag, form.doc_id = old.tag, old.original_tag, old.doc_id
+            established.append(form)
+    fitted = _fit_newcomers([f for f in newcomers if not f.excluded], established)
+    return collapsed, split, fitted
+
+
+def _fit_newcomers(newcomers: list[ParsedForm],
+                   established: list[ParsedForm]) -> int:
+    """Number files whose identity the name repair created, around the rest.
+
+    The same rules as [assign_ids] — a tag is one device, told apart by its
+    serial — except that an established record always wins: a newcomer that is
+    the same device (same site, tag and serial) joins it, and one that is not
+    is given a number above every number the archive already uses, so nothing
+    established is renumbered or pushed along. Returns how many were fitted.
+    """
+    used: dict[tuple[str, str], set[int]] = defaultdict(set)
+    for form in [*established, *newcomers]:
+        for tag in (form.tag, form.original_tag):
+            match = _TAG_RE.match(tag or "")
+            if match and form.customer_code:
+                used[(form.customer_code, match.group(1).upper())].add(int(match.group(2)))
+
+    # Who already answers to what: an id and the serial behind it; a device
+    # (site, tag in the filename, serial) and the tag it was given.
+    holder: dict[str, str] = {}
+    device_tag: dict[tuple[str, str, str], str] = {}
+    tag_serials: dict[tuple[str, str], set[str]] = defaultdict(set)
+
+    def remember(form: ParsedForm) -> None:
+        serial = form.serial.strip().upper()
+        holder.setdefault(form.doc_id, serial)
+        named = (form.original_tag or form.tag).upper()
+        if serial:
+            device_tag.setdefault((form.customer_code, named, serial), form.tag)
+        tag_serials[(form.customer_code, named)].add(serial)
+
+    for form in established:
+        if form.doc_id:
+            remember(form)
+
+    fitted = 0
+    # Sorted so the numbers given are the same on every run.
+    for form in sorted(newcomers, key=lambda f: (f.path, f.serial)):
+        serial = form.serial.strip().upper()
+        named = form.tag.upper()
+        if not form.conforms:
+            form.doc_id = form.base_doc_id
+            continue
+        same = device_tag.get((form.customer_code, named, serial)) if serial else None
+        others = tag_serials.get((form.customer_code, named), set()) - {serial}
+        if same:
+            # The same device, filed under this tag before: one tag for it.
+            if same != form.tag:
+                form.original_tag, form.tag = form.tag, same
+        elif others:
+            # The tag already means another device here.
+            form.original_tag, form.tag = form.tag, _next_tag(form, used)
+        # The id itself may still be held — by another device, or by one
+        # whose serial nobody could read, which proves nothing either way.
+        while form.base_doc_id in holder and not (
+                serial and holder[form.base_doc_id] == serial):
+            form.original_tag = form.original_tag or form.tag
+            form.tag = _next_tag(form, used)
+        form.doc_id = form.base_doc_id
+        remember(form)
+        fitted += 1
+    return fitted
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Walking the archive
 # ──────────────────────────────────────────────────────────────────────────────
@@ -667,6 +809,10 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
 
             # Trailing spaces before the extension are common ("…-0824   .xlsx")
             # and would otherwise fail the pattern for no good reason.
+            #
+            # This is the identity the export gave a file before names were
+            # repaired, kept as it was: it is the fallback when a repair cannot
+            # be made, and the id the records already in Firestore carry.
             stem_match = _STEM_RE.match(path.stem.strip())
             if stem_match:
                 form.site = stem_match.group("site").upper()
@@ -683,8 +829,9 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
                 # A file dated *more than a year after* its round is not real.
                 # The archive holds names ending 2032, 2033 and 2055, which are
                 # plainly mistyped: a calibration cannot be filed years before
-                # it happened. The folder year is the trustworthy half, so the
-                # date falls back to it and the original is recorded.
+                # it happened. The form's own date settles it once the workbook
+                # is read (see _adopt_repair); failing that, the folder year is
+                # the trustworthy half, and the original is recorded.
                 if named_year > year + 1:
                     form.attention = (
                         f"filename says {form.month:02d}/{named_year}, which is "
@@ -697,6 +844,7 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
                         f"dated {form.month:02d}/{named_year}, "
                         f"filed in the {year} round"
                     )
+            name_note = form.attention
 
             outcome = classify_file(filepath)
             if outcome.status == READY:
@@ -714,17 +862,116 @@ def scan(root: Path, only_year: int | None = None, limit: int = 0) -> list[Parse
                 form.device_code = (extract_device_code(name) or "").upper()
                 reasons = {
                     UNKNOWN_CODE: f"device code '{form.device_code or '?'}' not in the table",
-                    BAD_FORMAT: "filename does not follow SITE-TAG-MMYY",
                     UNSUPPORTED: "unsupported file type",
                     ERROR: "could not be classified",
                 }
                 form.attention = reasons.get(outcome.status, outcome.detail)
+
+            form.legacy = (form.site, form.tag, form.month, form.filed_yy, name_note)
+            form.legacy_id = form.base_doc_id
+            # The round after the folder's is the latest a name may be dated:
+            # the same line the old rule drew. See calist.repair_name.
+            form.repair = repair_name(path.stem, latest_year=year + 1)
+            form.excluded = left_out_because(form.repair)
+            _adopt_repair(form)
 
             forms.append(form)
             if limit and len(forms) >= limit:
                 return forms
 
     return forms
+
+
+def _adopt_repair(form: ParsedForm) -> None:
+    """Take the repaired name as the form's identity, when it has a real date.
+
+    Nothing changes for a name the repair leaves as it was — the comparison is
+    what keeps every correctly named file on exactly the id it had. A name whose
+    date cannot be one ("0233") waits in DATE_CHECK until [deepen] has read the
+    form's own date; if the form has none, the old reading stands.
+    """
+    repair = form.repair
+    if repair is None or repair.date_source not in (DATE_NAME, DATE_FORM):
+        return
+    month, yy = int(repair.date[:2]), int(repair.date[2:])
+    if (form.site, form.tag, form.month, form.filed_yy) == (
+            repair.site, repair.tag, month, yy):
+        return
+    was_name_note = form.attention == form.legacy[4]
+    form.site, form.tag, form.month, form.filed_yy = repair.site, repair.tag, month, yy
+    if not was_name_note:
+        return                    # the attention is about the device, not the name
+    named_year = 2000 + yy
+    if repair.date_source == DATE_FORM:
+        form.attention = (f"the date in the filename, {repair.typed_date!r}, is not "
+                          f"a real date — {month:02d}/{named_year} is from the "
+                          f"form's own date")
+    elif named_year != form.year:
+        form.attention = f"dated {month:02d}/{named_year}, filed in the {form.year} round"
+    else:
+        form.attention = ""
+
+
+#: How every note about a filename's date begins — the ones [_adopt_repair]
+#: may have written in place of the old rule's, and may have to take back.
+_NAME_NOTES = ("filename says", "dated ", "the date in the filename")
+
+
+def _restore_legacy(form: ParsedForm) -> None:
+    """Put back the identity the file had before names were repaired."""
+    form.site, form.tag, form.month, form.filed_yy, note = form.legacy
+    if not form.attention or form.attention.startswith(_NAME_NOTES):
+        form.attention = note
+
+
+def settle_copies(forms: list[ParsedForm]) -> int:
+    """Leave out copies of a form that is already in the export. Returns how many.
+
+    The archive's version of calist's [_settle_copies], by the same decision:
+    once "(2)" or " - Copy" is cut from a name it can land on a file already
+    there. A copy whose serial matches the original's, or that has none, is
+    the same device and is left out; one with a different serial is a different
+    device and stays, to be given its own number by [assign_ids]. Where no file
+    is the plain original the extra text is what tells them apart, so those
+    keep the identity they always had.
+
+    Only forms [deepen] actually opened can be judged — the dry run reads a
+    sample, and an unread serial is not the same thing as an empty one.
+    """
+    groups: dict[str, list[ParsedForm]] = defaultdict(list)
+    for form in forms:
+        if not form.excluded and form.conforms:
+            groups[form.base_doc_id].append(form)
+
+    left = 0
+    for members in groups.values():
+        if len(members) < 2 or not any(m.is_copy for m in members):
+            continue
+        originals = [m for m in members if not m.is_copy]
+        if not originals:
+            for member in members:
+                _restore_legacy(member)
+            continue
+        known = {_serial_key(o.serial) for o in originals if o.opened} - {""}
+        first = originals[0].filename
+        for copy in (m for m in members if m.is_copy and m.opened):
+            if all(o.opened for o in originals) and (
+                    not _serial_key(copy.serial) or _serial_key(copy.serial) in known):
+                copy.excluded = f"a copy of {first} — the same device"
+                left += 1
+    return left
+
+
+def _serial_key(serial: str) -> str:
+    serial = (serial or "").split("\n")[0].strip()
+    if classify_serial(serial) in ("blank", "placeholder"):
+        return ""
+    return re.sub(r"\.0+$", "", serial).upper()
+
+
+def exported(forms: list[ParsedForm]) -> list[ParsedForm]:
+    """The forms the real-device-forms rule lets into Firestore."""
+    return [form for form in forms if not form.excluded]
 
 
 #: Where a form's header fields can sit.
@@ -871,7 +1118,8 @@ def module_statuses_from_grid(grid: dict) -> dict[str, str]:
     return found
 
 
-def read_best(path: str, config: dict) -> tuple[dict, int]:
+def read_best(path: str, config: dict,
+              forms_only: bool = False) -> tuple[dict, int]:
     """Read a form, trying every layout Calist knows. See calist.read_best.
 
     Kept as a wrapper for the integer contract this module's callers use: 0 for
@@ -883,9 +1131,17 @@ def read_best(path: str, config: dict) -> tuple[dict, int]:
     The client header is read in the *same* pass as the mapped cells: opening
     each workbook twice would double a 35-minute read for the sake of two
     strings, and the reader resolves a whole block of refs in one go.
+
+    ``forms_only`` lets NotAForm through — a device list, a blank form — for
+    the caller to leave the file out rather than import it as unreadable.
     """
     try:
-        record, how = calist_read_best(path, config, extra=_HEADER_BLOCK)
+        record, how = calist_read_best(path, config, extra=_HEADER_BLOCK,
+                                       forms_only=forms_only)
+    except NotAForm:
+        if forms_only:
+            raise
+        return {}, -1
     except Exception:  # noqa: BLE001
         return {}, -1
     if how == "primary":
@@ -906,6 +1162,9 @@ def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:
     call opens a file — so the dry run samples by default and the real import
     reads everything.
     """
+    # Files the real-device-forms rule leaves out are read too, exactly as they
+    # always were: their serials take part in numbering the rest (see
+    # assign_ids_stable), and numbering must see what it always saw.
     targets = [f for f in forms if f.device_code in DEVICE_CONFIGS]
     if sample:
         # Evenly spaced rather than the first N: the archive is ordered by year
@@ -918,34 +1177,19 @@ def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:
     for index, form in enumerate(targets):
         config = DEVICE_CONFIGS[form.device_code]
         try:
-            record, layout = read_best(form.path, config)
-            form.serial = clean(record.get("S.N"))
-            form.model = clean(record.get("Model"))
-            form.manufacturer = clean(record.get("Manufacturer"))
-            form.location = clean(record.get("Location"))
-            form.form_date = clean(record.get("Date"))
-            form.status = clean(record.get("Status"))
-            form.status2 = clean(record.get("Status2"))
-            # The mapped cell is right on most forms but not all — see
-            # status_from_grid. Single-box devices only: on a two-box form the
-            # nearest label could belong to the other module, and a status
-            # filed under the wrong one is worse than none.
-            if (normalise_status(form.status) is None
-                    and form.device_code not in _PER_TEST_STATUS):
-                form.status_by_label = status_from_grid(record)
-            # The monitor template's per-module boxes, for every device: it is
-            # the template, not the device code, that says they are there.
-            form.module_statuses = tuple(module_statuses_from_grid(record).items())
-            header = header_from_grid(record)
-            form.client_name = header["client_name"]
-            form.client_address = header["client_address"]
-            form.contact_name = header["contact_name"]
-            form.contact_phone = header["contact_phone"]
-            form.layout = layout
-            if layout < 0 and not form.attention:
-                form.attention = (
-                    "no known layout reads this form — values may be wrong"
-                )
+            record, layout = read_best(form.path, config, forms_only=True)
+        except LeftOut as blank:
+            # Nothing filled in: by the owner's decision not exported — but
+            # what it does hold is kept, as it always was (see LeftOut).
+            form.excluded = form.excluded or str(blank)
+            record, layout = blank.record, -1
+        except NotAForm as refused:
+            # A device list, or a file not named for a device: not exported,
+            # and read as nothing, which is how the export always saw it.
+            form.excluded = form.excluded or str(refused)
+            record, layout = {}, -1
+        try:
+            _fill(form, record, layout)
             read += 1
         except Exception as error:  # noqa: BLE001 - one bad file must not stop the run
             form.attention = f"could not be read: {type(error).__name__}"
@@ -953,6 +1197,42 @@ def deepen(forms: list[ParsedForm], sample: int = 0, progress=None) -> int:
             progress(index + 1, len(targets))
 
     return read
+
+
+def _fill(form: ParsedForm, record: dict, layout: int) -> None:
+    """Copy one read into the form — and settle a name dated impossibly
+    ("0233", "1525") from the date the form itself gives."""
+    form.opened = True
+    form.serial = clean(record.get("S.N"))
+    form.model = clean(record.get("Model"))
+    form.manufacturer = clean(record.get("Manufacturer"))
+    form.location = clean(record.get("Location"))
+    form.form_date = clean(record.get("Date"))
+    form.status = clean(record.get("Status"))
+    form.status2 = clean(record.get("Status2"))
+    # The mapped cell is right on most forms but not all — see
+    # status_from_grid. Single-box devices only: on a two-box form the
+    # nearest label could belong to the other module, and a status
+    # filed under the wrong one is worse than none.
+    if (normalise_status(form.status) is None
+            and form.device_code not in _PER_TEST_STATUS):
+        form.status_by_label = status_from_grid(record)
+    # The monitor template's per-module boxes, for every device: it is
+    # the template, not the device code, that says they are there.
+    form.module_statuses = tuple(module_statuses_from_grid(record).items())
+    header = header_from_grid(record)
+    form.client_name = header["client_name"]
+    form.client_address = header["client_address"]
+    form.contact_name = header["contact_name"]
+    form.contact_phone = header["contact_phone"]
+    form.layout = layout
+    if form.repair is not None and form.repair.date_source == DATE_CHECK:
+        form.repair = settle_name_date(form.repair, form.form_date)
+        _adopt_repair(form)
+    if layout < 0 and not form.attention:
+        form.attention = (
+            "no known layout reads this form — values may be wrong"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1145,11 +1425,16 @@ def push_firestore(
     *,
     limit: int = 0,
     progress=None,
+    written_ids: set[str] | None = None,
 ) -> tuple[int, int, int]:
     """Write calibration and customer documents.
 
     Returns ``(records, customers, skipped)`` — the last being records an
     engineer deleted from the app, which are passed over rather than rewritten.
+    ``written_ids`` collects the ids written, for [sweep_replaced].
+
+    A deletion follows its file to a repaired id: a record deleted as
+    ``x_2026_…`` stays deleted when its name repair makes it G414-CA002-0426.
 
     Idempotent: every document id is derived from the file it came from, so a
     re-run updates in place. That is not a nicety — an 87,000-file import will
@@ -1214,7 +1499,8 @@ def push_firestore(
     batch = db.batch()
     pending = 0
     for index, form in enumerate(chosen):
-        if form.doc_id in tombstones:
+        if form.doc_id in tombstones or (
+                form.identity_repaired and form.legacy_id in tombstones):
             skipped_deleted += 1
             continue
 
@@ -1236,7 +1522,75 @@ def push_firestore(
     if progress:
         progress(len(chosen), len(chosen))
 
+    if written_ids is not None:
+        written_ids.update(written)
     return len(written), customer_count, skipped_deleted
+
+
+def _same_path(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path or ""))
+
+
+def _edited_in_the_app(record: dict) -> bool:
+    """Whether someone changed this archive record from the app.
+
+    The export never writes form data or tests, and leaves the uploader and the
+    engineer empty on purpose — so any of them on a record means a person put
+    it there.
+    """
+    return bool(record.get("formData") or record.get("tests")
+                or str(record.get("uploadedBy") or "").strip()
+                or str(record.get("engineerUid") or "").strip())
+
+
+def sweep_replaced(db, forms: list[ParsedForm], written: set[str], *,
+                   apply: bool = True) -> dict[str, list[tuple[str, str]]]:
+    """Delete archive records this run no longer produces. By the owner's
+    decision, a record is replaced when its file's repaired name gives it a new
+    id, and removed when the real-device-forms rule leaves its file out.
+
+    A record is deleted only when **every** one of these holds:
+
+    * the export made it (``imported``) — work filed from the app is never
+      touched;
+    * its ``sourcePath`` is a file this run scanned — so a ``--year`` or
+      ``--limit`` run cannot reach anything else, and a record whose file has
+      since left the drive is left alone;
+    * this run wrote nothing under its id;
+    * nobody has changed it from the app — see [_edited_in_the_app]. Those are
+      kept and listed, for a person to decide.
+
+    Returns ``{"deleted": [(id, file)], "kept_edited": [(id, file)]}``. With
+    ``apply=False`` nothing is deleted and ``deleted`` lists what would be.
+    """
+    scanned = {_same_path(form.path) for form in forms}
+    deleted: list[tuple[str, str]] = []
+    kept: list[tuple[str, str]] = []
+    doomed = []
+    for snap in (db.collection(CALIBRATIONS)
+                 .select(["imported", "sourcePath", "fileName", "formData", "tests",
+                          "uploadedBy", "engineerUid"])
+                 .stream()):
+        record = snap.to_dict() or {}
+        if snap.id in written or not record.get("imported"):
+            continue
+        if _same_path(record.get("sourcePath", "")) not in scanned:
+            continue
+        name = record.get("fileName") or Path(record.get("sourcePath", "")).name
+        if _edited_in_the_app(record):
+            kept.append((snap.id, name))
+            continue
+        deleted.append((snap.id, name))
+        doomed.append(snap.id)
+
+    if apply:
+        collection = db.collection(CALIBRATIONS)
+        for start in range(0, len(doomed), BATCH_SIZE):
+            batch = db.batch()
+            for doc_id in doomed[start:start + BATCH_SIZE]:
+                batch.delete(collection.document(doc_id))
+            batch.commit()
+    return {"deleted": deleted, "kept_edited": kept}
 
 
 def filed_blob_name(doc_id: str, site: str, year) -> str:
@@ -1592,6 +1946,16 @@ class Report:
     missing_code_examples: dict = field(default_factory=dict)
     duplicate_doc_ids: list[tuple[str, list[str]]] = field(default_factory=list)
     skipped_not_forms: int = 0
+
+    #: (file, old id, new id) — a repaired name gives the file a new record,
+    #: and the one under its old id is deleted by the push.
+    replaced: list[tuple[str, str, str]] = field(default_factory=list)
+    #: (file, old id, why) — not a device form: not exported, and the record
+    #: under its old id is deleted by the push.
+    removed: list[tuple[str, str, str]] = field(default_factory=list)
+    #: Workbooks the dry run did not open, so it cannot say whether they are a
+    #: device list, a blank form or a copy. The push reads every one.
+    unopened: int = 0
 
 
 _DATEISH_RE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|^\d{4}-\d{2}-\d{2}")
@@ -2052,6 +2416,18 @@ def analyse(forms: list[ParsedForm], codes: dict[str, dict], root: Path) -> Repo
         # files to go and look at.
         by_doc_id[form.base_doc_id].append(_short(form.path, root))
 
+        # What the push will delete: records under an id this file no longer
+        # produces. Candidates only — a record the export never wrote, or one
+        # an engineer changed in the app, is not deleted (see sweep_replaced).
+        if form.excluded:
+            report.removed.append((_short(form.path, root), form.legacy_id,
+                                   form.excluded))
+        elif form.base_doc_id != form.legacy_id:
+            report.replaced.append((_short(form.path, root), form.legacy_id,
+                                    form.base_doc_id))
+        if not form.opened and not form.excluded and form.device_code in DEVICE_CONFIGS:
+            report.unopened += 1
+
         if form.serial or form.model:  # only meaningful for deep-read forms
             report.deep_read += 1
             kind = classify_serial(form.serial)
@@ -2220,14 +2596,64 @@ def render(report: Report) -> str:
         for name, why in report.attention[:25]:
             add(f"    {name:<44} {why}")
 
+    if report.replaced or report.removed:
+        rule("Records the push will REPLACE or DELETE")
+        add("  Files keep their names on disk. What changes is the record:")
+        add("")
+        add(f"    {len(report.replaced):>7,}  replaced — a repaired name gives the")
+        add("             file a new id; the record under the old one goes")
+        reasons = Counter(_reason_kind(why) for _, _, why in report.removed)
+        add(f"    {len(report.removed):>7,}  deleted — not a device form:")
+        for reason, count in reasons.most_common():
+            add(f"               {count:>7,}  {reason}")
+        add("")
+        add("  A record is only deleted if the export made it and nobody has")
+        add("  changed it in the app; those are kept and listed by the push.")
+        add("  Every candidate is in the -deletions.txt file beside this one.")
+        if report.unopened:
+            add("")
+            add(f"  {report.unopened:,} workbooks were not opened in this dry run, so")
+            add("  device lists, blank forms, copies and impossible dates among")
+            add("  them are not counted above. Re-run with --sample 0 for all.")
+
     rule()
     add("Nothing was written. Review the above, then re-run with --limit.")
     return "\n".join(out)
 
 
+def render_deletions(report: Report) -> str:
+    """Every record the push would replace or delete, one per line."""
+    out = [f"Records the push would replace or delete — {report.root}",
+           f"run at: {datetime.now().strftime('%Y-%m-%d %H:%M')}", "",
+           f"REPLACED ({len(report.replaced):,}) — old id  ->  new id  file", ""]
+    out += [f"  {old:<34} -> {new:<26} {name}" for name, old, new in report.replaced]
+    out += ["", f"DELETED ({len(report.removed):,}) — old id  file  (why)", ""]
+    out += [f"  {old:<34} {name}   ({why})" for name, old, why in report.removed]
+    return "\n".join(out) + "\n"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+def _print_left_out(forms: list[ParsedForm]) -> None:
+    """Say how many files the real-device-forms rule leaves out, and why."""
+    reasons = Counter(_reason_kind(form.excluded) for form in forms if form.excluded)
+    if not reasons:
+        return
+    print(f"  {sum(reasons.values()):,} file(s) left out — not device forms:")
+    for reason, count in reasons.most_common():
+        print(f"    {count:>7,}  {reason}")
+
+
+def _reason_kind(reason: str) -> str:
+    """A left-out reason with its particulars dropped, for counting."""
+    if reason.startswith("device number"):
+        return "a 000 template"
+    if reason.startswith("a copy of"):
+        return "a copy of a form already exported"
+    return reason
 
 
 def _run_push(args, root: Path) -> int:
@@ -2251,9 +2677,20 @@ def _run_push(args, root: Path) -> int:
     deepen(forms, sample=0, progress=tick)
     print()
 
+    # By the owner's decision only real device forms are exported: see
+    # calist.left_out_because, the forms_only read, and settle_copies.
+    scanned = forms
+    settle_copies(scanned)
+    _print_left_out(scanned)
+
     # Ids can only be settled once serials are known — that is what tells a
-    # duplicate copy apart from two devices sharing a tag.
-    collapsed, split = assign_ids(forms)
+    # duplicate copy apart from two devices sharing a tag. Every scanned file
+    # takes part, left out or not, so no existing record moves — see
+    # assign_ids_stable — and only then are the ones not exported set aside.
+    collapsed, split, fitted = assign_ids_stable(scanned)
+    forms = exported(scanned)
+    if fitted:
+        print(f"  {fitted:,} file(s) given an id by their repaired name")
     distinct = len({f.doc_id for f in forms})
     print(f"  {distinct:,} distinct records from {len(forms):,} files")
     if collapsed:
@@ -2296,6 +2733,11 @@ def _run_push(args, root: Path) -> int:
     print()
     print("  Document ids are derived from the files, so re-running updates")
     print("  rather than duplicating. Existing fields are merged, not replaced.")
+    print()
+    print("  THEN DELETES archive records this run no longer produces for the")
+    print("  files it read — an id a repaired name replaced, or a file that is")
+    print("  not a device form. Records an engineer changed in the app are kept")
+    print("  and listed. The dry run lists every candidate first.")
 
     if not emulator:
         # Stated before the prompt, not after, so the number is on screen at
@@ -2341,13 +2783,27 @@ def _run_push(args, root: Path) -> int:
     db, storage_module = connect(args.project)
 
     print("writing records…")
+    written: set[str] = set()
     records, customers, skipped = push_firestore(
-        forms, codes, db, limit=args.limit, progress=tick
+        forms, codes, db, limit=args.limit, progress=tick, written_ids=written
     )
     print()
     print(f"  {records:,} calibrations, {customers:,} customers")
     if skipped:
         print(f"  {skipped:,} skipped — deleted by an engineer")
+
+    print("removing records this run no longer produces…")
+    swept = sweep_replaced(db, scanned, written)
+    print(f"  {len(swept['deleted']):,} deleted")
+    for doc_id, name in swept["deleted"][:40]:
+        print(f"    {doc_id:<34} {name}")
+    if len(swept["deleted"]) > 40:
+        print(f"    … and {len(swept['deleted']) - 40:,} more")
+    if swept["kept_edited"]:
+        print(f"  {len(swept['kept_edited']):,} kept — changed by an engineer in the "
+              f"app, so a person should decide:")
+        for doc_id, name in swept["kept_edited"]:
+            print(f"    {doc_id:<34} {name}")
 
     if args.storage:
         print("uploading workbooks…")
@@ -2495,7 +2951,11 @@ def _run_statuses_only(args, root: Path) -> int:
 
     deepen(forms, sample=0, progress=tick)
     print()
-    assign_ids(forms)
+    # The same ids a full push would give — see _run_push.
+    scanned = forms
+    settle_copies(scanned)
+    assign_ids_stable(scanned)
+    forms = exported(scanned)
 
     if args.year or args.limit:
         print()
@@ -2876,6 +3336,7 @@ def main(argv: list[str] | None = None) -> int:
         deepen(forms, sample=wanted, progress=tick)
         print()
 
+    settle_copies(forms)
     report = analyse(forms, codes, root)
     text = render(report)
     print()
@@ -2885,6 +3346,8 @@ def main(argv: list[str] | None = None) -> int:
         f"dry-run-{datetime.now(timezone.utc):%Y%m%d-%H%M}.txt"
     )
     destination.write_text(text, encoding="utf-8")
+    destination.with_name(f"{destination.stem}-deletions.txt").write_text(
+        render_deletions(report), encoding="utf-8")
     destination.with_suffix(".json").write_text(
         json.dumps(
             {
@@ -2903,6 +3366,9 @@ def main(argv: list[str] | None = None) -> int:
                 "device_counts": dict(report.device_counts),
                 "duplicate_doc_ids": report.duplicate_doc_ids,
                 "attention_count": len(report.attention),
+                "records_replaced": len(report.replaced),
+                "records_deleted": len(report.removed),
+                "unopened": report.unopened,
             },
             indent=2,
             ensure_ascii=False,

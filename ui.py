@@ -32,12 +32,9 @@ import customtkinter as ctk
 
 import access
 import calist
-from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, BAD_FORMAT,
-                    CANCELLED, ERROR, FILENAME_EXAMPLE, FILENAME_PREFIX_EXAMPLE,
-                    OK, READY, UNKNOWN_CODE, UNSUPPORTED, FileOutcome, RunResult)
-from calist import NAME_CHECK_CODES as CODES
-from calist import NAME_CHECK_FULL as FULL
-from calist import NAME_CHECK_OFF as OFF
+from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, CANCELLED, COPY,
+                    ERROR, LEFT_OUT, OK, READY, UNKNOWN_CODE, UNSUPPORTED,
+                    FileOutcome, RunResult)
 
 # Drag-and-drop is a bonus, never a requirement: without tkinterdnd2 the drop
 # zone is simply click-only.
@@ -69,16 +66,10 @@ DANGER = "#f2585f"
 TURBO = "#ff4d2d"
 TURBO_HOVER = "#ff6f52"
 
-#: What the filename switch says in each of its three positions. The middle one
-#: has to name what it accepts, because the switch itself looks the same as the
-#: third — a switch has two positions and this setting has three, so the
-#: wording and the colour carry the difference.
-_STRICT_LABEL = {
-    OFF: "Accept any filename",
-    CODES: f"Accept filenames starting  {FILENAME_PREFIX_EXAMPLE}",
-    FULL: f"Accept only filenames like  {FILENAME_EXAMPLE}",
-}
-_STRICT_LOG = {OFF: "off", CODES: "codes only", FULL: "full format"}
+#: The "real device forms only" switch. On, anything that is not a device form
+#: — a device list, a 000 template, a name with no customer code — is left out
+#: of the table and the register, and listed under Details instead.
+FORMS_ONLY_LABEL = "Real device forms only"
 
 FONT = "Segoe UI"
 MONO = "Consolas"
@@ -89,9 +80,10 @@ STATUS_DISPLAY = {
     OK: ("Read", "ok"),
     UNKNOWN_CODE: ("Unknown code", "warn"),
     UNSUPPORTED: ("Unsupported file", "warn"),
-    BAD_FORMAT: ("Name format", "warn"),
     ERROR: ("Failed", "error"),
     CANCELLED: ("Cancelled", "muted"),
+    COPY: ("Copy — left out", "muted"),
+    LEFT_OUT: ("Left out", "muted"),
 }
 
 SETTINGS_FILE = (Path(os.environ.get("APPDATA") or Path.home())
@@ -129,6 +121,22 @@ def load_settings() -> dict:
         return json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
+
+
+def forms_only_setting(settings: dict) -> bool:
+    """The "real device forms only" switch, as remembered.
+
+    It replaced the three-position filename check. A settings file from before
+    holds that under `name_check` (0-2) or `strict_names` (a bool); any
+    position but off meant "be strict", which is what this switch is now.
+    """
+    remembered = settings.get("real_forms_only")
+    if remembered is None:
+        remembered = settings.get("name_check", settings.get("strict_names", False))
+    try:
+        return bool(int(remembered))
+    except (TypeError, ValueError):
+        return False
 
 
 def save_settings(data: dict) -> None:
@@ -553,11 +561,7 @@ class App(_Root):
         self._files: dict[str, FileOutcome] = {}       # path → latest outcome
         self._template = tk.StringVar(value=self._initial_template())
         self._dedup = tk.BooleanVar(value=self._settings.get("deduplicate", False))
-        # Three settings, not two — see calist.NAME_CHECK_*. Older settings
-        # files hold a bool under the old key; name_check_level reads either.
-        self._strict = tk.IntVar(value=calist.name_check_level(
-            self._settings.get("name_check",
-                               self._settings.get("strict_names", False))))
+        self._forms_only = tk.BooleanVar(value=forms_only_setting(self._settings))
         self._turbo = tk.BooleanVar(value=self._settings.get("turbo", False))
         self._cancel: threading.Event | None = None
         self._scan: threading.Event | None = None
@@ -916,7 +920,7 @@ class App(_Root):
             font=ctk.CTkFont(FONT, 12), command=self._pick_output_folder)
         self._btn_dest.grid(row=1, column=2, padx=(10, 18), pady=(0, 6))
 
-        # Both switches share one row: dedup left, filename format hard right.
+        # Both switches share one row: dedup left, device forms only hard right.
         # The weighted spacer column between them is what pins the second one
         # to the edge as the window widens.
         switches = ctk.CTkFrame(panel, fg_color="transparent")
@@ -931,18 +935,13 @@ class App(_Root):
         )
         self._switch_dedup.grid(row=0, column=0, sticky="w")
 
-        # A switch has two positions and this setting has three, so the switch
-        # is driven by its own bool and the third state is told apart by colour
-        # and wording. Clicking cycles off -> codes -> full -> off.
-        self._strict_on = tk.BooleanVar(value=self._strict.get() != OFF)
-        self._switch_strict = ctk.CTkSwitch(
-            switches, text="", variable=self._strict_on,
+        self._switch_forms = ctk.CTkSwitch(
+            switches, text=FORMS_ONLY_LABEL, variable=self._forms_only,
             font=ctk.CTkFont(FONT, 12), text_color=TEXT,
             progress_color=PRIMARY, button_color=TEXT, fg_color=BORDER,
-            command=self._on_strict_toggled,
+            command=self._on_forms_only_toggled,
         )
-        self._switch_strict.grid(row=0, column=1, sticky="e", padx=(24, 0))
-        self._show_strict()
+        self._switch_forms.grid(row=0, column=1, sticky="e", padx=(24, 0))
 
     def _build_action(self) -> None:
         self._action = ctk.CTkFrame(self._page, fg_color="transparent")
@@ -1068,9 +1067,9 @@ class App(_Root):
         self._scan = None
         # Reset any previous run's per-file statuses back to pre-flight, under
         # whatever the current settings are.
-        strict = int(self._strict.get())
+        forms_only = bool(self._forms_only.get())
         for path in list(self._files):
-            self._files[path] = calist.classify_file(path, strict)
+            self._files[path] = calist.classify_file(path, forms_only)
         self._filter.set("All")
         self._show_action(self._idle)
         self._set_inputs_enabled(True)
@@ -1083,7 +1082,7 @@ class App(_Root):
         that isn't the one actually happening.
         """
         state = "normal" if enabled else "disabled"
-        for widget in (self._btn_change, self._switch_dedup, self._switch_strict,
+        for widget in (self._btn_change, self._switch_dedup, self._switch_forms,
                        self._btn_clear, self._btn_slim_folder, self._btn_slim_files,
                        self._btn_turbo):
             widget.configure(state=state)
@@ -1135,6 +1134,10 @@ class App(_Root):
                 bits.append(f"{result.second_rows_added} module rows added")
             if result.problems:
                 bits.append(f"{len(result.problems)} skipped")
+            if result.copies:
+                bits.append(f"{len(result.copies)} copies left out")
+            if result.left_out:
+                bits.append(f"{len(result.left_out)} not device forms")
             if result.duplicates_removed:
                 bits.append(f"{result.duplicates_removed} duplicates removed")
 
@@ -1160,7 +1163,7 @@ class App(_Root):
 
     def _add_paths(self, paths: list[str]) -> None:
         """Absorb a batch of paths. Folders are walked on a worker thread."""
-        strict = int(self._strict.get())       # threading rule 1: read it here
+        forms_only = bool(self._forms_only.get())   # threading rule 1: read it here
         before = len(self._files)
         folders, singles = [], []
         for raw in paths:
@@ -1172,17 +1175,17 @@ class App(_Root):
                 # an answer, even if that answer is "Unsupported format".
                 singles.append(str(path))
 
-        added = self._absorb(singles, strict)
+        added = self._absorb(singles, forms_only)
         if folders:
-            self._start_scan(folders, strict, before)
+            self._start_scan(folders, forms_only, before)
         else:
             self._finish_intake(added)
 
-    def _absorb(self, filepaths: list[str], strict: int) -> int:
+    def _absorb(self, filepaths: list[str], forms_only: bool) -> int:
         added = 0
         for key in filepaths:
             if key not in self._files:
-                self._files[key] = calist.classify_file(key, strict)
+                self._files[key] = calist.classify_file(key, forms_only)
                 added += 1
         return added
 
@@ -1191,8 +1194,24 @@ class App(_Root):
             log_ui.debug("Added %d file(s)", added)
             calist.log.info("Added %d device(s). Total: %d", added, len(self._files))
         self._enter_setup()
+        if added:
+            self._log_left_out()
 
-    def _start_scan(self, folders: list[str], strict: int, before: int) -> None:
+    def _log_left_out(self) -> None:
+        """List every file the switch keeps out, and why, under Details.
+
+        Once per intake or toggle rather than on every refresh — the table
+        hides these files, so this is the only place they can be seen.
+        """
+        left = sorted((o for o in self._files.values() if o.status == LEFT_OUT),
+                      key=lambda o: o.filename.lower())
+        if not left:
+            return
+        calist.log.info("Left out %d file(s) that are not device forms:", len(left))
+        for outcome in left:
+            calist.log.info("   %s — %s", outcome.filename, outcome.detail)
+
+    def _start_scan(self, folders: list[str], forms_only: bool, before: int) -> None:
         """Walk folders on a worker, so a big or networked tree cannot freeze.
 
         The walk used to run inline: a stat per entry, the whole listing built
@@ -1211,7 +1230,7 @@ class App(_Root):
                     for filepath in calist.find_source_files(folder, cancel):
                         # Classifying here keeps the main thread free; it is
                         # filename-only, so it opens nothing.
-                        batch.append(calist.classify_file(filepath, strict))
+                        batch.append(calist.classify_file(filepath, forms_only))
                         if len(batch) >= self.SCAN_BATCH:
                             self._events.put(("scan", batch, 0, 0))
                             batch = []
@@ -1284,12 +1303,13 @@ class App(_Root):
             self._refresh_all()
 
     def _remember(self) -> None:
-        # `strict_names` is written alongside the new key so that an older
-        # build reading this file still gets the setting it understands.
-        level = int(self._strict.get())
+        # The old filename-check keys are dropped, not kept alongside: an older
+        # build reading `strict_names` would enforce the filename format this
+        # switch replaced. Without them it reads the check as off.
+        self._settings.pop("name_check", None)
+        self._settings.pop("strict_names", None)
         self._settings.update(deduplicate=bool(self._dedup.get()),
-                              name_check=level,
-                              strict_names=level == FULL,
+                              real_forms_only=bool(self._forms_only.get()),
                               turbo=bool(self._turbo.get()))
 
         # A folder that has since been deleted or unmounted must not be carried
@@ -1394,9 +1414,11 @@ class App(_Root):
         seen = len(result.outcomes)
         lines = [
             f"read        {read:,}",
-            f"skipped     {skipped:,}   unrecognised code, name format "
-            f"or unsupported type",
+            f"skipped     {skipped:,}   unrecognised code or unsupported type",
             f"failed      {len(failed):,}   opened but could not be read",
+            f"copies      {len(result.copies):,}   same device as a form "
+            f"already in the register",
+            f"left out    {len(result.left_out):,}   not device forms",
             f"rows        {result.rows_written:,}"
             + (f"   (+{result.second_rows_added:,} module rows)"
                if result.second_rows_added else ""),
@@ -1436,6 +1458,14 @@ class App(_Root):
                 lines.append(f"   {outcome.filename}   {outcome.detail}")
             if len(failed) > 40:
                 lines.append(f"   … and {len(failed) - 40:,} more")
+            lines.append("")
+
+        if result.copies:
+            lines.append(f"Copies left out ({len(result.copies):,})")
+            for outcome in result.copies[:40]:
+                lines.append(f"   {outcome.filename}   {outcome.detail}")
+            if len(result.copies) > 40:
+                lines.append(f"   … and {len(result.copies) - 40:,} more")
 
         if not unknown and not result.duplicates and not failed:
             lines.append("Nothing needed attention.")
@@ -1463,27 +1493,20 @@ class App(_Root):
         self._summary_box.insert("1.0", "\n".join(self._summary_lines(result)))
         self._summary_box.configure(state="disabled")
 
-    def _show_strict(self) -> None:
-        """Put the switch in the position the current level describes."""
-        level = self._strict.get()
-        self._strict_on.set(level != OFF)
-        self._switch_strict.configure(
-            text=_STRICT_LABEL[level],
-            progress_color=WARNING if level == CODES else PRIMARY,
-        )
+    def _on_forms_only_toggled(self) -> None:
+        """Re-check every loaded name against the switch.
 
-    def _on_strict_toggled(self) -> None:
-        """Cycle off -> codes -> full -> off, and re-check every loaded name.
-
-        Cheap enough to do inline — the format check is a single precompiled
-        match at every level, so even a few hundred devices re-resolve in well
-        under a millisecond and the table updates on the same click.
+        Cheap enough to do inline — the check reads the name alone, so even a
+        few thousand devices re-resolve at once and the table updates on the
+        same click. Device lists and blank forms named like devices can only
+        be told by opening them, so those drop out during the run.
         """
-        self._strict.set((self._strict.get() + 1) % 3)
-        self._show_strict()
         self._remember()
-        calist.log.info("Filename format check: %s", _STRICT_LOG[self._strict.get()])
+        on = bool(self._forms_only.get())
+        calist.log.info("Real device forms only: %s", "on" if on else "off")
         self._enter_setup()
+        if on:
+            self._log_left_out()
 
     # ── rendering ────────────────────────────────────────────────────────────
 
@@ -1585,11 +1608,14 @@ class App(_Root):
             ready = sum(1 for o in self._files.values() if o.status == READY)
             done = sum(1 for o in self._files.values() if o.status == OK)
             problems = sum(1 for o in self._files.values() if o.is_problem)
+            left = sum(1 for o in self._files.values() if o.status == LEFT_OUT)
 
             counted = f"{done} read" if done else f"{ready} recognised"
-            text = f"{len(self._files)} devices  ·  {counted}"
+            text = f"{len(self._files) - left} devices  ·  {counted}"
             if problems:
                 text += f"  ·  {problems} need attention"
+            if left:
+                text += f"  ·  {left} left out (see Details)"
             self._lbl_summary.configure(
                 text=text, text_color=WARNING if problems else MUTED)
         else:
@@ -1605,7 +1631,11 @@ class App(_Root):
         self._on_resize()
 
     def _visible_outcomes(self) -> list[tuple[str, FileOutcome]]:
-        items = sorted(self._files.items(), key=lambda kv: kv[1].filename.lower())
+        # Files the switch leaves out are not in the table at all: the user
+        # asked not to see them. Details lists them, with the reason.
+        items = sorted(((path, o) for path, o in self._files.items()
+                        if o.status != LEFT_OUT),
+                       key=lambda kv: kv[1].filename.lower())
         if self._filter.get() == "Problems":
             items = [kv for kv in items if kv[1].is_problem]
         return items
@@ -1638,7 +1668,7 @@ class App(_Root):
         if self._filter.get() == "Problems":
             self._lbl_table.configure(text=f"Devices  ({len(rows)} needing attention)")
         else:
-            self._lbl_table.configure(text=f"Devices  ({len(self._files)})")
+            self._lbl_table.configure(text=f"Devices  ({len(rows)})")
 
     def _destination(self) -> tuple[Path | None, str]:
         """Where the register will land, and any warning about it."""
@@ -1732,10 +1762,13 @@ class App(_Root):
         # Read every Tk variable HERE, on the main thread. Tk state must not be
         # touched from the worker — doing so raises "main thread is not in main
         # loop" at best, and corrupts the interpreter at worst.
-        files = sorted(self._files)
+        # A file the switch already left out stays out of the run too: the
+        # worker would only classify it again and log it a second time.
+        files = sorted(path for path, outcome in self._files.items()
+                       if outcome.status != LEFT_OUT)
         template = self._template.get()
         deduplicate = bool(self._dedup.get())
-        strict_names = int(self._strict.get())
+        forms_only = bool(self._forms_only.get())
         output_dir = self._outdir.get() or None
         turbo = bool(self._turbo.get())
 
@@ -1768,7 +1801,7 @@ class App(_Root):
             try:
                 result = calist.process_files(
                     files, template, deduplicate=deduplicate,
-                    strict_names=strict_names, output_dir=output_dir,
+                    real_forms_only=forms_only, output_dir=output_dir,
                     on_file=on_file, cancel=cancel, quiet=turbo,
                 )
             except Exception as exc:                   # never die silently
