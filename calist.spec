@@ -107,8 +107,16 @@ datas += [("template/Device List.xlsx", "template")]
 # The window icon. Keeping the docs/ prefix means ui.app_icon() resolves it the
 # same way whether the app is frozen or running from a checkout.
 datas += [("docs/calist.ico", "docs")]
-# The mark beside the wordmark, one rendition per display scaling (ui.mark_image).
-datas += [(f"docs/calist-mark-{n}.png", "docs") for n in (22, 28, 33, 44)]
+# The mark beside the wordmark and on the lock screen, one rendition per size
+# and display scaling (ui.mark_image, drawn by docs/make_icon.py).
+datas += [(str(path), "docs") for path in sorted(Path("docs").glob("calist-mark-*.png"))]
+
+# Drag and drop: tkinterdnd2 ships no PyInstaller hook, and loads its tkdnd
+# DLL from beside its own module (tkinterdnd2/tkdnd/<platform>), so that is
+# where it goes. 64-bit Windows only — the build's own architecture.
+import tkinterdnd2  # noqa: E402  (build time only)
+datas += [(str(Path(tkinterdnd2.__file__).parent / "tkdnd" / "win-x64"),
+           "tkinterdnd2/tkdnd/win-x64")]
 
 a = Analysis(
     ["calist.py"],

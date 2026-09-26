@@ -1,0 +1,1016 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-26T19:13:22+00:00",
+  "title": "Design System: Calist",
+  "extensions": {
+    "platform": "windows-desktop (CustomTkinter 6 on Tk 8.6); every colour is a (light, dark) pair in theme.CLINICAL, default appearance dark",
+    "colorMeta": {
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "Theatre-Scrub Teal (dark)",
+        "canonical": "#3cc2b0",
+        "oklch": "oklch(73.8% 0.116 182.2)",
+        "themeToken": "theme.CLINICAL['accent'][1]",
+        "tonalRamp": [
+          "#00130e",
+          "#003128",
+          "#005146",
+          "#007466",
+          "#009888",
+          "#49baaa",
+          "#7ddece",
+          "#aefff3"
+        ]
+      },
+      "accent-light": {
+        "role": "primary",
+        "displayName": "Theatre-Scrub Teal (light)",
+        "canonical": "#0b7a6e",
+        "oklch": "oklch(52.1% 0.091 182.8)",
+        "themeToken": "theme.CLINICAL['accent'][0]",
+        "tonalRamp": [
+          "#00120d",
+          "#002f28",
+          "#004e46",
+          "#137065",
+          "#359487",
+          "#66b6aa",
+          "#92d9cd",
+          "#befef2"
+        ]
+      },
+      "accent-hover-dark": {
+        "role": "primary",
+        "displayName": "Deep Scrub Teal (dark)",
+        "canonical": "#5ad3c2",
+        "oklch": "oklch(79.4% 0.111 182.8)",
+        "themeToken": "theme.CLINICAL['accent_hover'][1]",
+        "tonalRamp": [
+          "#00130e",
+          "#003129",
+          "#005146",
+          "#007366",
+          "#009788",
+          "#4fbaab",
+          "#82ddce",
+          "#b1fff3"
+        ]
+      },
+      "accent-hover-light": {
+        "role": "primary",
+        "displayName": "Deep Scrub Teal (light)",
+        "canonical": "#086358",
+        "oklch": "oklch(44.9% 0.078 181.6)",
+        "themeToken": "theme.CLINICAL['accent_hover'][0]",
+        "tonalRamp": [
+          "#00110d",
+          "#002e27",
+          "#094d44",
+          "#286e64",
+          "#469285",
+          "#71b4a8",
+          "#9bd7cc",
+          "#c6fcf1"
+        ]
+      },
+      "on-accent-dark": {
+        "role": "primary",
+        "displayName": "On Teal (dark)",
+        "canonical": "#04201c",
+        "oklch": "oklch(22.1% 0.035 182.1)",
+        "themeToken": "theme.CLINICAL['on_accent'][1]",
+        "tonalRamp": [
+          "#020e0c",
+          "#162926",
+          "#314743",
+          "#4d6763",
+          "#6c8984",
+          "#90aca6",
+          "#b6d0ca",
+          "#ddf4f0"
+        ]
+      },
+      "on-accent-light": {
+        "role": "primary",
+        "displayName": "On Teal (light)",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 89.9)",
+        "themeToken": "theme.CLINICAL['on_accent'][0]",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "selection-dark": {
+        "role": "primary",
+        "displayName": "Selection Wash (dark)",
+        "canonical": "#1d3b39",
+        "oklch": "oklch(32.8% 0.036 190.0)",
+        "themeToken": "theme.CLINICAL['selection'][1]",
+        "tonalRamp": [
+          "#010e0d",
+          "#152928",
+          "#2f4745",
+          "#4c6865",
+          "#6a8a87",
+          "#8eaca9",
+          "#b4d0cd",
+          "#dcf5f2"
+        ]
+      },
+      "selection-light": {
+        "role": "primary",
+        "displayName": "Selection Wash (light)",
+        "canonical": "#cdebe6",
+        "oklch": "oklch(91.7% 0.032 184.5)",
+        "themeToken": "theme.CLINICAL['selection'][0]",
+        "tonalRamp": [
+          "#020e0c",
+          "#182926",
+          "#324744",
+          "#4f6763",
+          "#6d8985",
+          "#92aba7",
+          "#b7cfcb",
+          "#def4f0"
+        ]
+      },
+      "highlight-dark": {
+        "role": "primary",
+        "displayName": "Picked Mint (dark)",
+        "canonical": "#1b3a37",
+        "oklch": "oklch(32.4% 0.037 187.3)",
+        "themeToken": "theme.CLINICAL['highlight'][1]",
+        "tonalRamp": [
+          "#010e0d",
+          "#142927",
+          "#2f4745",
+          "#4b6864",
+          "#698a86",
+          "#8eaca9",
+          "#b4d0cc",
+          "#dbf5f1"
+        ]
+      },
+      "highlight-light": {
+        "role": "primary",
+        "displayName": "Picked Mint (light)",
+        "canonical": "#d9f1ed",
+        "oklch": "oklch(93.9% 0.026 184.7)",
+        "themeToken": "theme.CLINICAL['highlight'][0]",
+        "tonalRamp": [
+          "#040d0c",
+          "#1b2826",
+          "#364643",
+          "#536663",
+          "#728884",
+          "#96aaa7",
+          "#bbcecb",
+          "#e2f3f0"
+        ]
+      },
+      "on-highlight-dark": {
+        "role": "primary",
+        "displayName": "On Mint (dark)",
+        "canonical": "#bff0e8",
+        "oklch": "oklch(91.9% 0.051 184.2)",
+        "themeToken": "theme.CLINICAL['on_highlight'][1]",
+        "tonalRamp": [
+          "#000f0d",
+          "#0b2b27",
+          "#264944",
+          "#416a64",
+          "#5f8d86",
+          "#85afa8",
+          "#acd2cc",
+          "#d4f7f1"
+        ]
+      },
+      "on-highlight-light": {
+        "role": "primary",
+        "displayName": "On Mint (light)",
+        "canonical": "#0b4d45",
+        "oklch": "oklch(37.9% 0.063 182.5)",
+        "themeToken": "theme.CLINICAL['on_highlight'][0]",
+        "tonalRamp": [
+          "#00100d",
+          "#012c27",
+          "#1c4b44",
+          "#386c64",
+          "#558f85",
+          "#7db1a8",
+          "#a5d5cc",
+          "#cef9f1"
+        ]
+      },
+      "success-dark": {
+        "role": "tertiary",
+        "displayName": "Pass Green (dark)",
+        "canonical": "#4cc781",
+        "oklch": "oklch(74.3% 0.150 155.0)",
+        "themeToken": "theme.CLINICAL['success'][1]",
+        "tonalRamp": [
+          "#001400",
+          "#003308",
+          "#005422",
+          "#00773c",
+          "#059b59",
+          "#53be7f",
+          "#84e1a6",
+          "#b3ffcf"
+        ]
+      },
+      "success-light": {
+        "role": "tertiary",
+        "displayName": "Pass Green (light)",
+        "canonical": "#1b7f43",
+        "oklch": "oklch(52.7% 0.128 151.7)",
+        "themeToken": "theme.CLINICAL['success'][0]",
+        "tonalRamp": [
+          "#001300",
+          "#003109",
+          "#005123",
+          "#1c733e",
+          "#3b985a",
+          "#69ba80",
+          "#95dda7",
+          "#c1ffd0"
+        ]
+      },
+      "warning-dark": {
+        "role": "tertiary",
+        "displayName": "Amber Text (dark)",
+        "canonical": "#e6b04a",
+        "oklch": "oklch(78.9% 0.133 80.4)",
+        "themeToken": "theme.CLINICAL['warning'][1]",
+        "tonalRamp": [
+          "#1c0300",
+          "#3c1c00",
+          "#5f3900",
+          "#845700",
+          "#ab7800",
+          "#cc9c43",
+          "#eec275",
+          "#ffe8a4"
+        ]
+      },
+      "warning-light": {
+        "role": "tertiary",
+        "displayName": "Amber Text (light)",
+        "canonical": "#8f5f00",
+        "oklch": "oklch(52.4% 0.111 74.7)",
+        "themeToken": "theme.CLINICAL['warning'][0]",
+        "tonalRamp": [
+          "#1b0400",
+          "#3b1d00",
+          "#5e3900",
+          "#825708",
+          "#a9782a",
+          "#ca9c5a",
+          "#ecc186",
+          "#ffe8b3"
+        ]
+      },
+      "caution-dark": {
+        "role": "tertiary",
+        "displayName": "Amber Glyph (dark)",
+        "canonical": "#e6b04a",
+        "oklch": "oklch(78.9% 0.133 80.4)",
+        "themeToken": "theme.CLINICAL['caution'][1]",
+        "tonalRamp": [
+          "#1c0300",
+          "#3c1c00",
+          "#5f3900",
+          "#845700",
+          "#ab7800",
+          "#cc9c43",
+          "#eec275",
+          "#ffe8a4"
+        ]
+      },
+      "caution-light": {
+        "role": "tertiary",
+        "displayName": "Amber Glyph (light)",
+        "canonical": "#b87400",
+        "oklch": "oklch(61.7% 0.134 69.4)",
+        "themeToken": "theme.CLINICAL['caution'][0]",
+        "tonalRamp": [
+          "#200000",
+          "#411700",
+          "#663300",
+          "#8d5100",
+          "#b47100",
+          "#d69648",
+          "#f7bc78",
+          "#ffe4a7"
+        ]
+      },
+      "warn-tint-dark": {
+        "role": "tertiary",
+        "displayName": "Amber Wash (dark)",
+        "canonical": "#2b2717",
+        "oklch": "oklch(27.2% 0.028 95.8)",
+        "themeToken": "theme.CLINICAL['warn_tint'][1]",
+        "tonalRamp": [
+          "#0d0b04",
+          "#28251a",
+          "#464234",
+          "#656151",
+          "#878370",
+          "#aaa594",
+          "#cdc9b9",
+          "#f2efe0"
+        ]
+      },
+      "warn-tint-light": {
+        "role": "tertiary",
+        "displayName": "Amber Wash (light)",
+        "canonical": "#fcf3df",
+        "oklch": "oklch(96.6% 0.028 86.6)",
+        "themeToken": "theme.CLINICAL['warn_tint'][0]",
+        "tonalRamp": [
+          "#0e0b04",
+          "#29251a",
+          "#474134",
+          "#686151",
+          "#8a8270",
+          "#aca494",
+          "#d0c8b9",
+          "#f4eee0"
+        ]
+      },
+      "danger-dark": {
+        "role": "tertiary",
+        "displayName": "Alarm Red (dark)",
+        "canonical": "#f06d6d",
+        "oklch": "oklch(69.3% 0.162 22.2)",
+        "themeToken": "theme.CLINICAL['danger'][1]",
+        "tonalRamp": [
+          "#290000",
+          "#500006",
+          "#79161f",
+          "#a53438",
+          "#d15254",
+          "#f37c7a",
+          "#ffa5a2",
+          "#ffcfcb"
+        ]
+      },
+      "danger-light": {
+        "role": "tertiary",
+        "displayName": "Alarm Red (light)",
+        "canonical": "#c0302b",
+        "oklch": "oklch(53.5% 0.182 27.4)",
+        "themeToken": "theme.CLINICAL['danger'][0]",
+        "tonalRamp": [
+          "#2c0000",
+          "#550000",
+          "#7f070b",
+          "#ac2b26",
+          "#d94a41",
+          "#fb776a",
+          "#ffa194",
+          "#ffccbe"
+        ]
+      },
+      "danger-tint-dark": {
+        "role": "tertiary",
+        "displayName": "Red Wash (dark)",
+        "canonical": "#2f1f21",
+        "oklch": "oklch(26.0% 0.025 10.7)",
+        "themeToken": "theme.CLINICAL['danger_tint'][1]",
+        "tonalRamp": [
+          "#110809",
+          "#2d2123",
+          "#4c3e3f",
+          "#6e5c5e",
+          "#917c7f",
+          "#b3a0a1",
+          "#d6c4c6",
+          "#faeaeb"
+        ]
+      },
+      "danger-tint-light": {
+        "role": "tertiary",
+        "displayName": "Red Wash (light)",
+        "canonical": "#fbe7e6",
+        "oklch": "oklch(94.4% 0.022 21.0)",
+        "themeToken": "theme.CLINICAL['danger_tint'][0]",
+        "tonalRamp": [
+          "#110909",
+          "#2c2222",
+          "#4b3e3e",
+          "#6c5d5c",
+          "#8f7d7d",
+          "#b1a0a0",
+          "#d5c5c4",
+          "#f9ebea"
+        ]
+      },
+      "turbo-dark": {
+        "role": "tertiary",
+        "displayName": "Turbo Orange (dark)",
+        "canonical": "#ff7a4d",
+        "oklch": "oklch(72.7% 0.173 39.0)",
+        "themeToken": "theme.CLINICAL['turbo'][1]",
+        "tonalRamp": [
+          "#2b0000",
+          "#520000",
+          "#7b1600",
+          "#a73500",
+          "#d45425",
+          "#f57e56",
+          "#ffa883",
+          "#ffd1b0"
+        ],
+        "hover": "#ff9670"
+      },
+      "turbo-light": {
+        "role": "tertiary",
+        "displayName": "Turbo Orange (light)",
+        "canonical": "#c2451c",
+        "oklch": "oklch(55.9% 0.168 37.3)",
+        "themeToken": "theme.CLINICAL['turbo'][0]",
+        "tonalRamp": [
+          "#2a0000",
+          "#510000",
+          "#7a1800",
+          "#a63610",
+          "#d2552e",
+          "#f47f5c",
+          "#ffa888",
+          "#ffd2b4"
+        ],
+        "hover": "#a53a17"
+      },
+      "bg-dark": {
+        "role": "neutral",
+        "displayName": "Equipment-Room Graphite (dark)",
+        "canonical": "#121719",
+        "oklch": "oklch(20.0% 0.009 223.9)",
+        "themeToken": "theme.CLINICAL['bg'][1]",
+        "tonalRamp": [
+          "#090c0d",
+          "#222627",
+          "#3e4345",
+          "#5d6265",
+          "#7d8386",
+          "#a0a6a9",
+          "#c5cacc",
+          "#eaeff2"
+        ]
+      },
+      "bg-light": {
+        "role": "neutral",
+        "displayName": "Equipment-Room Graphite (light)",
+        "canonical": "#eef3f3",
+        "oklch": "oklch(96.0% 0.005 197.1)",
+        "themeToken": "theme.CLINICAL['bg'][0]",
+        "tonalRamp": [
+          "#0a0c0c",
+          "#232626",
+          "#3f4343",
+          "#5e6262",
+          "#7f8383",
+          "#a2a6a6",
+          "#c6caca",
+          "#ecefef"
+        ]
+      },
+      "surface-dark": {
+        "role": "neutral",
+        "displayName": "Card (dark)",
+        "canonical": "#192024",
+        "oklch": "oklch(23.8% 0.013 233.1)",
+        "themeToken": "theme.CLINICAL['surface'][1]",
+        "tonalRamp": [
+          "#080c0e",
+          "#212629",
+          "#3d4347",
+          "#5b6267",
+          "#7b8489",
+          "#9ea6ab",
+          "#c3cacf",
+          "#e9f0f4"
+        ]
+      },
+      "surface-light": {
+        "role": "neutral",
+        "displayName": "Card (light)",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 89.9)",
+        "themeToken": "theme.CLINICAL['surface'][0]",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "surface-2-dark": {
+        "role": "neutral",
+        "displayName": "Recessed (dark)",
+        "canonical": "#1f272c",
+        "oklch": "oklch(26.7% 0.015 235.5)",
+        "themeToken": "theme.CLINICAL['surface_2'][1]",
+        "tonalRamp": [
+          "#080c0f",
+          "#20262a",
+          "#3c4348",
+          "#5a6368",
+          "#7a848a",
+          "#9da7ac",
+          "#c2cbd0",
+          "#e8f0f5"
+        ]
+      },
+      "surface-2-light": {
+        "role": "neutral",
+        "displayName": "Recessed (light)",
+        "canonical": "#f4f8f8",
+        "oklch": "oklch(97.6% 0.004 197.1)",
+        "themeToken": "theme.CLINICAL['surface_2'][0]",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#232525",
+          "#404343",
+          "#5f6262",
+          "#808383",
+          "#a2a6a6",
+          "#c7caca",
+          "#ecefef"
+        ]
+      },
+      "chrome-dark": {
+        "role": "neutral",
+        "displayName": "Chrome (dark)",
+        "canonical": "#161c1f",
+        "oklch": "oklch(22.2% 0.011 229.5)",
+        "themeToken": "theme.CLINICAL['chrome'][1]",
+        "tonalRamp": [
+          "#080c0d",
+          "#212628",
+          "#3d4346",
+          "#5c6266",
+          "#7c8487",
+          "#9fa6aa",
+          "#c4cace",
+          "#e9f0f3"
+        ]
+      },
+      "chrome-light": {
+        "role": "neutral",
+        "displayName": "Chrome (light)",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 89.9)",
+        "themeToken": "theme.CLINICAL['chrome'][0]",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "row-alt-dark": {
+        "role": "neutral",
+        "displayName": "Stripe (dark)",
+        "canonical": "#232c31",
+        "oklch": "oklch(28.7% 0.016 232.4)",
+        "themeToken": "theme.CLINICAL['row_alt'][1]",
+        "tonalRamp": [
+          "#070c0f",
+          "#20262a",
+          "#3c4348",
+          "#5a6368",
+          "#7a848a",
+          "#9da7ac",
+          "#c1cbd0",
+          "#e7f0f5"
+        ]
+      },
+      "row-alt-light": {
+        "role": "neutral",
+        "displayName": "Stripe (light)",
+        "canonical": "#eef4f4",
+        "oklch": "oklch(96.3% 0.006 197.1)",
+        "themeToken": "theme.CLINICAL['row_alt'][0]",
+        "tonalRamp": [
+          "#090c0c",
+          "#232626",
+          "#3f4343",
+          "#5e6262",
+          "#7e8383",
+          "#a1a6a6",
+          "#c5caca",
+          "#ebefef"
+        ]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "Hairline (dark)",
+        "canonical": "#2c373d",
+        "oklch": "oklch(32.9% 0.018 231.9)",
+        "themeToken": "theme.CLINICAL['border'][1]",
+        "tonalRamp": [
+          "#070c0f",
+          "#1f262a",
+          "#3a4449",
+          "#586369",
+          "#78858b",
+          "#9ba7ae",
+          "#c0cbd1",
+          "#e6f0f6"
+        ]
+      },
+      "border-light": {
+        "role": "neutral",
+        "displayName": "Hairline (light)",
+        "canonical": "#d2dddd",
+        "oklch": "oklch(88.9% 0.012 196.9)",
+        "themeToken": "theme.CLINICAL['border'][0]",
+        "tonalRamp": [
+          "#080c0c",
+          "#202626",
+          "#3c4444",
+          "#5a6363",
+          "#7b8585",
+          "#9ea7a7",
+          "#c2cbcb",
+          "#e8f0f0"
+        ]
+      },
+      "text-dark": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "canonical": "#e4ecee",
+        "oklch": "oklch(93.8% 0.009 214.3)",
+        "themeToken": "theme.CLINICAL['text'][1]",
+        "tonalRamp": [
+          "#090c0d",
+          "#222627",
+          "#3e4344",
+          "#5c6264",
+          "#7d8486",
+          "#a0a6a8",
+          "#c4cacc",
+          "#eaf0f1"
+        ]
+      },
+      "text-light": {
+        "role": "neutral",
+        "displayName": "Ink (light)",
+        "canonical": "#132123",
+        "oklch": "oklch(23.6% 0.020 207.2)",
+        "themeToken": "theme.CLINICAL['text'][0]",
+        "tonalRamp": [
+          "#050d0e",
+          "#1d2729",
+          "#384546",
+          "#566466",
+          "#758688",
+          "#99a8ab",
+          "#beccce",
+          "#e4f1f3"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Muted (dark)",
+        "canonical": "#9cabb1",
+        "oklch": "oklch(73.1% 0.019 223.7)",
+        "themeToken": "theme.CLINICAL['muted'][1]",
+        "tonalRamp": [
+          "#060c0f",
+          "#1e272a",
+          "#394448",
+          "#576469",
+          "#77858b",
+          "#9aa8ad",
+          "#bfccd1",
+          "#e5f1f5"
+        ]
+      },
+      "muted-light": {
+        "role": "neutral",
+        "displayName": "Muted (light)",
+        "canonical": "#4a5d61",
+        "oklch": "oklch(46.4% 0.024 211.9)",
+        "themeToken": "theme.CLINICAL['muted'][0]",
+        "tonalRamp": [
+          "#040d0f",
+          "#1b272a",
+          "#364548",
+          "#536568",
+          "#73868b",
+          "#96a9ad",
+          "#bbcdd0",
+          "#e2f2f5"
+        ]
+      },
+      "faint-dark": {
+        "role": "neutral",
+        "displayName": "Faint (dark)",
+        "canonical": "#7b8b92",
+        "oklch": "oklch(62.6% 0.021 225.9)",
+        "themeToken": "theme.CLINICAL['faint'][1]",
+        "tonalRamp": [
+          "#060c10",
+          "#1d272b",
+          "#384449",
+          "#56646a",
+          "#75858c",
+          "#99a8ae",
+          "#beccd2",
+          "#e4f1f6"
+        ]
+      },
+      "faint-light": {
+        "role": "neutral",
+        "displayName": "Faint (light)",
+        "canonical": "#6f8286",
+        "oklch": "oklch(59.3% 0.023 211.8)",
+        "themeToken": "theme.CLINICAL['faint'][0]",
+        "tonalRamp": [
+          "#050d0f",
+          "#1c272a",
+          "#374548",
+          "#546568",
+          "#73868a",
+          "#97a9ad",
+          "#bccdd0",
+          "#e3f2f5"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display-lock": {
+        "displayName": "Display (lock)",
+        "purpose": "The lock card's 'Calist'. Once, on the lock screen."
+      },
+      "display-empty": {
+        "displayName": "Display (empty)",
+        "purpose": "The empty card's 'Add a round of inspection forms'."
+      },
+      "wordmark": {
+        "displayName": "Wordmark",
+        "purpose": "'Calist' at the header's left, alone."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "The drawer's 'Settings'; keypad digits."
+      },
+      "verdict": {
+        "displayName": "Verdict",
+        "purpose": "Register built / Not built / Cancelled, beside a 22px glyph."
+      },
+      "action-large": {
+        "displayName": "Large action",
+        "purpose": "Build register and Open register in the footer (14px; 15px for the empty card's Add folder)."
+      },
+      "round-name": {
+        "displayName": "Round name",
+        "purpose": "The round beside the wordmark."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Button labels, drawer values, checkbox labels, counts."
+      },
+      "body-strong": {
+        "displayName": "Body strong",
+        "purpose": "Primary button labels, '30 forms', 'N need a look', Details heading."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Footer text, drawer explanations, search, Toggle segments, filter note."
+      },
+      "credit": {
+        "displayName": "Credit",
+        "purpose": "'Built by Ahmed Gehad' in the footer."
+      },
+      "table": {
+        "displayName": "Table",
+        "purpose": "Device table rows; ttk size in points."
+      },
+      "table-heading": {
+        "displayName": "Table heading",
+        "purpose": "Device table headings in muted; ttk size in points."
+      },
+      "log": {
+        "displayName": "Log",
+        "purpose": "The Details drawer only."
+      },
+      "icon": {
+        "displayName": "Icon",
+        "purpose": "Segoe MDL2 Assets glyphs from theme.ICONS; 10-40px by context."
+      }
+    },
+    "shadows": [],
+    "focus": [
+      {
+        "name": "keyboard-ring",
+        "value": "2px border in text colour",
+        "purpose": "Shown only when focus arrives by keyboard (ui.keyboard_ready); Enter and Space press."
+      },
+      {
+        "name": "field-focus",
+        "value": "1px border in accent",
+        "purpose": "The search box's edge on focus."
+      }
+    ],
+    "motion": [
+      {
+        "name": "drawer-slide",
+        "value": "160ms, 8 frames x 20ms, cubic ease-out 1-(1-t)^3",
+        "purpose": "The settings drawer sliding in and out from the right. Nothing else animates."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "laptop",
+        "value": "1366x768 at 100%",
+        "purpose": "Design target."
+      },
+      {
+        "name": "window-min",
+        "value": "1000x600"
+      },
+      {
+        "name": "desktop-125",
+        "value": "1920x1080 at 125%",
+        "purpose": "Checked; ttk widths and row height are scaled explicitly."
+      }
+    ],
+    "density": {
+      "tableRowHeight": "26px at 100% (scaled)",
+      "tableRows": "5-40, fitted to the window",
+      "turboAt": "1,000 forms"
+    },
+    "iconography": {
+      "font": "Segoe MDL2 Assets",
+      "source": "theme.ICONS",
+      "note": "Windows 10 and 11; Segoe Fluent Icons never used."
+    },
+    "brandMarks": {
+      "header": "wordmark alone (owner's decision)",
+      "emptyCard": "MDL2 folder_open glyph, not the mark (owner's decision)",
+      "mark": "lock screen (48px, per-scaling PNGs 48/60/72/96) and window/taskbar icon only"
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Teal fill: Add folder, Build register, Open register. Keyboard focus shows a 2px ring in the text colour.",
+      "html": "<button class=\"ds-btn-primary\">Build register</button>",
+      "css": ".ds-btn-primary { background:#3cc2b0; color:#04201c; font:700 14px 'Segoe UI Variable Display','Segoe UI',sans-serif; width:180px; height:40px; border:0; border-radius:7px; cursor:pointer; } .ds-btn-primary:hover { background:#5ad3c2; } .ds-btn-primary:focus-visible { outline:none; box-shadow:inset 0 0 0 2px #e4ecee; } .ds-btn-primary:disabled { background:#1f272c; color:#7b8b92; cursor:default; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Recessed fill with a hairline edge: Add files, Re-check, Show in folder, Cancel (hovers red).",
+      "html": "<button class=\"ds-btn-secondary\">Add files</button>",
+      "css": ".ds-btn-secondary { background:#1f272c; color:#e4ecee; font:400 13px 'Segoe UI Variable Text','Segoe UI',sans-serif; height:34px; padding:0 18px; border:1px solid #2c373d; border-radius:7px; cursor:pointer; } .ds-btn-secondary:hover { background:#2c373d; } .ds-btn-secondary:focus-visible { outline:none; border:2px solid #e4ecee; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "No fill, muted text: Details, Clear all, Start over, Show all.",
+      "html": "<button class=\"ds-btn-ghost\">Clear all</button>",
+      "css": ".ds-btn-ghost { background:transparent; color:#9cabb1; font:400 13px 'Segoe UI Variable Text','Segoe UI',sans-serif; height:34px; padding:0 14px; border:0; border-radius:7px; cursor:pointer; } .ds-btn-ghost:hover { background:#1f272c; } .ds-btn-ghost:focus-visible { outline:none; box-shadow:inset 0 0 0 2px #e4ecee; }"
+    },
+    {
+      "name": "Problem Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "One chip per problem group; picked filters the table to exactly those files.",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip ds-chip-picked\">Unknown code QQQ&nbsp;&nbsp;&nbsp;2</button><button class=\"ds-chip\">Unknown code ZZZ&nbsp;&nbsp;&nbsp;1</button></div>",
+      "css": ".ds-chips { display:flex; gap:6px; background:#121719; padding:8px; } .ds-chip { background:#192024; color:#e4ecee; font:400 13px 'Segoe UI Variable Text','Segoe UI',sans-serif; height:28px; padding:0 8px; border:1px solid #2c373d; border-radius:7px; cursor:pointer; } .ds-chip:hover { background:#1f272c; } .ds-chip-picked, .ds-chip-picked:hover { background:#1b3a37; color:#bff0e8; border-color:#1b3a37; } .ds-chip:focus-visible { outline:none; border:2px solid #e4ecee; }"
+    },
+    {
+      "name": "Toggle",
+      "kind": "custom",
+      "refersTo": "toggle",
+      "description": "Mutually exclusive choices (All/Problems, Dark/Light); used instead of a segmented button.",
+      "html": "<div class=\"ds-toggle\"><button class=\"ds-seg ds-seg-on\">All</button><button class=\"ds-seg\">Problems</button></div>",
+      "css": ".ds-toggle { display:inline-flex; gap:4px; padding:4px; background:#1f272c; border:1px solid #2c373d; border-radius:7px; } .ds-seg { width:76px; height:24px; background:transparent; color:#9cabb1; font:400 12px 'Segoe UI Variable Text','Segoe UI',sans-serif; border:0; border-radius:5px; cursor:pointer; } .ds-seg:hover { background:#2c373d; } .ds-seg-on, .ds-seg-on:hover { background:#3cc2b0; color:#04201c; }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input-search",
+      "description": "Recessed field with an MDL2 search glyph; its edge turns teal on focus.",
+      "html": "<label class=\"ds-search\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><circle cx=\"9.5\" cy=\"6.5\" r=\"5\"/><path d=\"M6 10 1.5 14.5\"/></svg><input placeholder=\"Search file, device, serial or code (Ctrl+F)\"></label>",
+      "css": ".ds-search { display:inline-flex; align-items:center; gap:6px; width:320px; height:32px; padding:0 10px; background:#1f272c; border:1px solid #2c373d; border-radius:7px; color:#7b8b92; } .ds-search:focus-within { border-color:#3cc2b0; } .ds-search input { flex:1; background:transparent; border:0; outline:none; color:#e4ecee; font:400 12px 'Segoe UI Variable Text','Segoe UI',sans-serif; } .ds-search input::placeholder { color:#7b8b92; }"
+    },
+    {
+      "name": "Checkbox Setting",
+      "kind": "input",
+      "refersTo": "checkbox",
+      "description": "On/off settings as checkboxes, never switches, with a muted explanation beneath.",
+      "html": "<label class=\"ds-check\"><input type=\"checkbox\" checked><span>Remove duplicate serial numbers</span></label><p class=\"ds-check-note\">Keeps the first form for each serial and lists the rest under Details.</p>",
+      "css": ".ds-check { display:flex; align-items:center; gap:8px; color:#e4ecee; font:400 13px 'Segoe UI Variable Text','Segoe UI',sans-serif; } .ds-check input { appearance:none; width:20px; height:20px; margin:0; border:2px solid #9cabb1; border-radius:3px; background:transparent; display:grid; place-content:center; } .ds-check input:checked { background:#3cc2b0; border-color:#3cc2b0; } .ds-check input:checked::after { content:''; width:9px; height:5px; border:2px solid #04201c; border-top:0; border-right:0; transform:rotate(-45deg) translate(1px,-1px); } .ds-check input:hover { border-color:#5ad3c2; } .ds-check-note { margin:2px 0 0 28px; color:#9cabb1; font:400 12px 'Segoe UI Variable Text','Segoe UI',sans-serif; }"
+    },
+    {
+      "name": "Device Table",
+      "kind": "custom",
+      "refersTo": "table-row",
+      "description": "Flat ttk Treeview in a 10px card: status dot, File, Device, Serial number, Status; stripes on plain rows, amber and red washes on problems.",
+      "html": "<div class=\"ds-table\"><div class=\"ds-tr ds-th\"><span></span><span>File</span><span>Device</span><span>Status</span></div><div class=\"ds-tr\"><i style=\"background:#7b8b92\"></i><span>I05-AF007-0925.xlsx</span><span>ECG</span><span>Ready</span></div><div class=\"ds-tr ds-stripe\"><i style=\"background:#7b8b92\"></i><span>I05-AF008-0925.xlsx</span><span>ECG</span><span>Ready</span></div><div class=\"ds-tr ds-warn\"><i style=\"background:#e6b04a\"></i><span>L02-ZZZ099-0925.xlsx</span><span>&mdash;</span><span>Unknown code ZZZ</span></div><div class=\"ds-tr ds-err\"><i style=\"background:#f06d6d\"></i><span>T03-AE012-0925.xlsx</span><span>ESU</span><span>Could not be read</span></div></div>",
+      "css": ".ds-table { background:#192024; border:1px solid #2c373d; border-radius:10px; padding:6px 8px 8px; font:400 13px 'Segoe UI Variable Text','Segoe UI',sans-serif; color:#e4ecee; } .ds-tr { display:grid; grid-template-columns:26px 200px 120px 1fr; align-items:center; height:26px; } .ds-tr i { width:8px; height:8px; border-radius:50%; justify-self:center; } .ds-th { color:#9cabb1; font-size:12px; height:32px; } .ds-stripe { background:#232c31; } .ds-warn { background:#2b2717; } .ds-err { background:#2f1f21; } .ds-tr:not(.ds-th):hover { background:#1d3b39; }"
+    },
+    {
+      "name": "Footer Action Bar",
+      "kind": "nav",
+      "refersTo": "footer",
+      "description": "Pinned one-line footer on chrome above a hairline: where the register saves, the credit, Build register.",
+      "html": "<div class=\"ds-footer\"><span class=\"ds-muted\">Saves to</span><span>C:\\Rounds\\January round\\device list.xlsx</span><span class=\"ds-grow\"></span><span class=\"ds-faint\">Built by Ahmed Gehad</span><button>Build register</button></div>",
+      "css": ".ds-footer { display:flex; align-items:center; gap:8px; padding:12px 24px; background:#161c1f; border-top:1px solid #2c373d; color:#e4ecee; font:400 12px 'Segoe UI Variable Text','Segoe UI',sans-serif; } .ds-footer .ds-muted { color:#9cabb1; } .ds-footer .ds-faint { color:#7b8b92; font-size:11px; margin-right:8px; } .ds-grow { flex:1; } .ds-footer button { background:#3cc2b0; color:#04201c; font:700 14px 'Segoe UI Variable Display','Segoe UI',sans-serif; width:180px; height:40px; border:0; border-radius:7px; cursor:pointer; } .ds-footer button:hover { background:#5ad3c2; } .ds-footer button:focus-visible { outline:none; box-shadow:inset 0 0 0 2px #e4ecee; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Equipment-Room Checklist",
+    "overview": "Calist is a pre-flight checklist for a round of inspection forms: problems first, the build one click away. The world is the graphite of an equipment room and the teal of theatre scrubs. Graphite does all the structural work, in a few close tonal steps from window to card to input; teal marks the action to take and the thing currently chosen; green, amber and red carry verdicts and nothing else. The screen is dense and quiet on purpose, because the same engineer runs it every round and reads filenames, device codes and serials, not decoration.\n\nIt is a native Windows 10 and 11 desktop app (CustomTkinter 6 on Tk 8.6), not a web page. Every value here is a CustomTkinter or ttk setting in `theme.py` and `ui.py`, and every colour exists as a light and a dark pair; dark is what a fresh install opens in. Depth is carried by 1px hairlines and tonal steps, never by shadows or gradients. One family (Segoe UI Variable, falling back to Segoe UI on Windows 10) and one icon font (Segoe MDL2 Assets, on both) keep every machine drawing the same window.\n\nThe window refuses the category default of a settings form over a log, and the card-grid dashboard. It is one page: header, toolbar, a status line of counts and problem chips, the device table, and a fixed footer that always says where the register will be saved.",
+    "keyCharacteristics": [
+      "Graphite surfaces in tonal steps; 1px hairlines instead of shadows.",
+      "Teal reserved for the primary action and the current choice.",
+      "Every status told three ways: colour, a dot or MDL2 glyph, and words.",
+      "WCAG 2 AA in both themes, enforced by `test_theme.py` against `CONTRAST_RULES`.",
+      "One sans family and one icon font, each with a Windows 10 path.",
+      "Dense: 26px table rows, 28–36px controls, a 1366×768 laptop shows 15+ forms.",
+      "One animation: the settings drawer's 160ms ease-out slide."
+    ],
+    "rules": [
+      {
+        "name": "The Scrub Rule",
+        "body": "Teal marks what to press and what is chosen: the primary action, the selected segment, the checked box, the picked chip, the selected row, the focused field, progress. It is never a heading colour, a decoration, or a status.",
+        "section": "colors"
+      },
+      {
+        "name": "The Three Witnesses Rule",
+        "body": "A state is never colour alone. Every table row has a status dot and status words; every verdict has an MDL2 glyph and words; every count dot has a count and a noun.",
+        "section": "colors"
+      },
+      {
+        "name": "The Faint Floor Rule",
+        "body": "`faint` is the one text colour held only to 3:1. It is for hints, placeholders, disabled labels and the credit; nothing a user must read to act is drawn in it.",
+        "section": "colors"
+      },
+      {
+        "name": "The Pair Rule",
+        "body": "A colour is added to `TOKENS` and to the palette as a (light, dark) pair with its contrast pair in `CONTRAST_RULES`, or it is not added. Tk-native widgets (the table, its tags, hairlines) take the resolved side via `live()` and are re-applied on every theme switch.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Family Rule",
+        "body": "One sans family, two optical sizes, bold only for names, counts that lead, verdicts and the primary action. The mono face is for the log and nowhere else.",
+        "section": "typography"
+      },
+      {
+        "name": "The Windows 10 Path Rule",
+        "body": "Every family is a candidate list whose last entry ships with Windows 10 (`BODY_FONTS`, `DISPLAY_FONTS`, `MONO_FONTS`); icons come only from Segoe MDL2 Assets, and only codepoints in `theme.ICONS`, which the tests check exist in the font. Segoe Fluent Icons is never used.",
+        "section": "typography"
+      },
+      {
+        "name": "The Hairline Rule",
+        "body": "Separation is a 1px `border` line or a tonal step, never a shadow, glow or gradient.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do show the wordmark alone in the header; the app's mark appears only on the lock screen and as the window and taskbar icon (owner's decision).",
+      "Do use the MDL2 open-folder glyph (40px, `muted`) on the empty card, not the app's mark (owner's decision).",
+      "Do pair every status colour with a dot or MDL2 glyph and words.",
+      "Do add every new colour as a (light, dark) pair with a `CONTRAST_RULES` entry, and resolve it with `live()` for Tk-native widgets.",
+      "Do build every button with `make_button` in one of the five roles, and toggle it with `set_enabled`.",
+      "Do keep the footer one line in every state, pinned to the window, with the save path always visible.",
+      "Do keep cards at 10px and controls at 7px, edged with a 1px hairline."
+    ],
+    "donts": [
+      "Don't use a CTkSwitch for an on/off setting: its knob is larger than its track and vanishes into the drawer in one mode or the other. Use a checkbox.",
+      "Don't use a CTkSegmentedButton: it takes one text colour for every segment. Use `Toggle`.",
+      "Don't draw shadows, glows or gradients.",
+      "Don't use teal for headings, decoration or a status.",
+      "Don't draw anything a user must read in `faint`.",
+      "Don't use a Windows 11-only font or Segoe Fluent Icons; every family ends on a Windows 10 fallback.",
+      "Don't stand a text character in for an icon; glyphs come from `theme.ICONS`.",
+      "Don't animate anything but the settings drawer."
+    ]
+  }
+}

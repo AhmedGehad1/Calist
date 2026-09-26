@@ -6,9 +6,10 @@ xlrd>=2.0
 # need the same check again.
 customtkinter>=6.0,<7
 
-# Optional — enables dragging a folder onto the window. Without it the drop
-# zone is click-only and everything else works unchanged.
-# tkinterdnd2>=0.3
+# Dragging a folder or files onto the window. MIT licensed; it loads a native
+# tkdnd DLL, bundled by calist.spec. Should it be missing or fail to load, the
+# window opens click-only and everything else works unchanged.
+tkinterdnd2>=0.6.3,<0.7
 
 # Development only:
 #   pip install pytest

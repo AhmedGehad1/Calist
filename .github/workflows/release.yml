@@ -87,6 +87,12 @@ jobs:
           if (-not (Test-Path "dist/Calist/Calist.exe")) { throw "the folder build was not produced" }
           if (-not (Test-Path "dist/Calist/_internal")) { throw "the folder build has no _internal payload" }
 
+          # tkinterdnd2 ships no PyInstaller hook; calist.spec bundles its DLL.
+          # Without it the app still opens, but drag and drop silently goes.
+          $dnd = Get-ChildItem -Recurse "dist/Calist" -Filter "libtkdnd*.dll" | Select-Object -First 1
+          if (-not $dnd) { throw "the folder build has no tkdnd DLL - drag and drop would be lost" }
+          Write-Output "tkdnd: $($dnd.FullName)"
+
           # An empty version resource is the heuristic red flag this release
           # exists to remove; fail loudly rather than shipping one again.
           $v = (Get-Item $exe).VersionInfo

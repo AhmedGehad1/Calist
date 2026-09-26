@@ -20,8 +20,8 @@ Constraints: no Pillow at runtime (icons are Segoe MDL2 Assets glyphs; images ar
 PhotoImage-drawn); the device table is a ttk Treeview; status never by colour alone;
 WCAG AA in both themes (test_theme.py); Turbo (no per-file table) from 1,000 forms.
 
-Unresolved: the app icon still uses 1.x blue and must be redrawn in the chosen
-palette; the lock screen is not yet restyled; drag-and-drop is not yet enabled.
+Unresolved: none in the window itself. Register-file wording ("Compiled from N
+row(s)") is the owner's call and outside this surface.
 
 ## Direction contract
 
@@ -30,8 +30,8 @@ away. It refuses the category default of a settings form over a log, and the
 card-grid dashboard.
 
 OWN-WORLD: Equipment-room graphite (#121719 dark / #eef3f3 light) with
-theatre-scrub teal (#3cc2b0 / #0b7a6e) reserved for the primary action and the
-current selection. Verdict colours green/amber/red, always paired with a dot or
+theatre-scrub teal (#3cc2b0 / #0b7a6e) reserved for the primary action, the
+current selection, and live state (progress, the entered PIN, a focused field). Verdict colours green/amber/red, always paired with a dot or
 glyph and words. One family, Segoe UI Variable (Segoe UI on Windows 10); MDL2
 icons; 10 px cards, 7 px controls; 1 px hairlines; no shadows, no gradients.
 

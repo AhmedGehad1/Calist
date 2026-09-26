@@ -129,6 +129,7 @@ CONTRAST_RULES = (
     ("text", ("selection", "warn_tint", "danger_tint"), 4.5),
     ("muted", ("warn_tint", "danger_tint"), 4.5),
     ("caution", ("surface", "row_alt", "warn_tint"), 3.0),
+    ("turbo", ("bg", "surface", "chrome"), 3.0),
     ("danger", ("danger_tint",), 3.0),
 )
 

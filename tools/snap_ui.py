@@ -252,6 +252,29 @@ def st_clear(app, calist):
     app._arm_clear()
 
 
+def st_focus(app, calist):
+    """Keyboard focus on Build register, as Tab puts it there."""
+    load(app, calist)
+    app.update()
+    app.tk.call("focus", "-force", str(app._btn_build))
+
+
+def st_drop(app, calist):
+    """Something being dragged over the loaded window."""
+    import types
+    load(app, calist)
+    if getattr(app, "dnd_ready", False):
+        app._on_drag_enter(types.SimpleNamespace(action="copy"))
+
+
+def st_drop_empty(app, calist):
+    """Something being dragged over the empty window."""
+    import types
+    st_empty(app, calist)
+    if getattr(app, "dnd_ready", False):
+        app._on_drag_enter(types.SimpleNamespace(action="copy"))
+
+
 def st_settings(app, calist):
     load(app, calist)
     app._dedup.set(True)                  # one setting on, one off
@@ -300,6 +323,9 @@ STATES = {
     "search": st_search,
     "settings": st_settings,
     "clear": st_clear,
+    "focus": st_focus,
+    "drop": st_drop,
+    "drop-empty": st_drop_empty,
     "working": st_working,
     "results": st_results,
     "results-all": st_results_all,
@@ -383,6 +409,8 @@ def main() -> int:
         app._clear_search()
         if app._log_open:
             app._toggle_log()
+        if getattr(app, "dnd_ready", False):  # a drag in progress ends
+            app._on_drag_leave()
         if app._clear_job is not None:       # an armed Clear all stands down
             app.after_cancel(app._clear_job)
             app._disarm_clear()

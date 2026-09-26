@@ -40,8 +40,9 @@ MUTED = (123, 139, 146, 255)  # faint     #7b8b92 — the one row still outstand
 #: where all the legibility is won or lost.
 SIZES = [256, 128, 64, 48, 32, 24, 16]
 
-#: The in-window mark: 22 logical pixels at 100%, 125%, 150% and 200%.
-MARK_SIZES = [22, 28, 33, 44]
+#: The in-window mark, on the lock screen: 48 logical pixels at 100%, 125%,
+#: 150% and 200%.
+MARK_SIZES = [round(48 * scale) for scale in (1, 1.25, 1.5, 2)]
 
 #: Row geometry as fractions of the tile, per level of detail.
 #: `rows` is (bullet + bar) count; the last row is muted and short, which stops

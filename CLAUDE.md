@@ -12,30 +12,36 @@ inspection Excel forms and compiles them into one flat equipment register.
 ```powershell
 python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
-pip install -r requirements.txt # openpyxl + xlrd + customtkinter
+pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (419 tests)
+python -m pytest                            # the whole suite (450 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
-python -c "import calist, sys; assert 'tkinter' not in sys.modules"   # GUI-free rule
+python -c "import calist, theme, ui_state, sys; assert 'tkinter' not in sys.modules"  # GUI-free rule
 
 pyinstaller calist.spec --noconfirm              # -> dist/Calist.exe (one file)
 $env:CALIST_ONEDIR=1; pyinstaller calist.spec    # -> dist/Calist/    (folder)
-python docs/make_icon.py                         # redraw the app icon
+python docs/make_icon.py                         # redraw the app icon and its in-window marks
+python tools/snap_ui.py --theme dark             # every screen to docs/review/, for design review
+python tools/snap_ui.py --theme light --win10    #   … as a Windows 10 machine draws it
 ```
 
-Five test files, all runnable without a display: `test_calist.py` (the pipeline),
+Seven test files, all runnable without a display: `test_calist.py` (the pipeline),
 `test_firebase_export.py` (the archive export), `test_access.py` (the PIN gate),
-`test_settings.py` and `test_device_config.py` (the cell maps the Calystra app also writes).
-There is no linter configured.
+`test_settings.py`, `test_device_config.py` (the cell maps the Calystra app also writes),
+`test_theme.py` (every colour pairing against WCAG AA in both themes, font fallbacks, every icon
+checked against the font via GDI) and `test_ui_state.py` (what the window shows).
+There is no linter configured; `python -m pyflakes ui.py` is the useful quick check.
 
 **Releases are built by CI, not locally.** Bump `__version__` in `calist.py`, then
 `git tag vX.Y.Z && git push origin vX.Y.Z` — [release.yml](.github/workflows/release.yml) runs the
 tests, builds both shapes, and publishes them. It **refuses a tag that disagrees with
 `__version__`**, so bump first. Building locally is only for checking the spec; note that
 PyInstaller refuses to run at all if the obsolete `pathlib` backport is installed
-(`pip uninstall pathlib`).
+(`pip uninstall pathlib`), and after upgrading PyInstaller build with `--clean`: a stale `build/`
+from an older version produces an exe that dies with "Bootloader did not set
+sys._pyinstaller_pyz".
 
 `.xlsx`/`.xlsm` are read by Calist's own targeted reader (see *Reading a form* below); `xlrd` 2.x
 reads **only** `.xls`. openpyxl is now a **write-side dependency only** — `write_output` is the one
@@ -44,14 +50,20 @@ helpers so that values render exactly as they always did.
 
 ## Architecture
 
-Four modules, strictly one direction:
+Six modules, strictly one direction:
 
 ```
 ui.py  ──imports──>  calist.py  ──imports──>  device_config.py
 (customtkinter)      (pipeline)               (pure data)
    │
+   ├──imports──>  ui_state.py   (what the window shows — pure, imports calist)
+   ├──imports──>  theme.py      (colours, type, icons — pure data)
    └──imports──>  access.py     (daily PIN gate — pure, standalone)
 ```
+
+`theme.py` and `ui_state.py` hold everything about the window that can be decided without one —
+the palette and its contrast, font fallbacks, icon codepoints; problem groups, search matching,
+the save-folder rule, the Turbo threshold — so they are tested like the pipeline, with no display.
 
 `access.py` imports nothing from the rest of the app, so the gate is testable without a display and
 cannot be broken by a pipeline change.
@@ -823,8 +835,88 @@ byte-identical twice, so a diff here is expected, not a regression.
 
 One window, three states swapped in the same layout by `_enter_setup` / `_enter_working` /
 `_enter_results`. Not a wizard — this is a tool the same person runs repeatedly, and steps tax every
-repeat run. `_enter_scanning` reuses the working card for a folder walk, which has no total to count
-towards until it has finished walking.
+repeat run. `_enter_scanning` reuses the working footer for a folder walk, which has no total to
+count towards until it has finished walking.
+
+### The look: direction A, "Clinical precision"
+
+Version 2.0 is a redesign, done as a design project with the owner. The record lives in three
+places:
+- [PRODUCT.md](PRODUCT.md): who uses it, and the product's principles;
+- [.impeccable/surfaces/ui-py.md](.impeccable/surfaces/ui-py.md): the direction contract;
+- `theme.py`: the one palette, `CLINICAL`.
+
+The owner chose graphite and theatre-scrub teal over two other directions from real screenshots of
+all three, and the others were deleted. Keep to it:
+- **Teal is for the primary action, the current selection and live state** (progress, the entered
+  PIN, a focused field) — never decoration. In dark mode the primary button is teal with *dark*
+  text. 1.x's white on blue was 3.2:1 and failed AA.
+- **Status is never colour alone.** Every row gets a dot, words, and — for a problem — a tinted row.
+  `warn_tint`/`danger_tint` are AA-tested for text; `caution` is the brighter amber for dots and
+  glyphs only.
+- **Every colour pairing is held to WCAG AA in both themes by `test_theme.py`.** A new token needs a
+  pair in the palette and, if it carries text, a line in `CONTRAST_RULES`.
+- **One family** (Segoe UI Variable, falling back to Segoe UI), resolved from the installed fonts by
+  `resolve_fonts`. **MDL2 glyphs** for icons, drawn from `theme.ICONS`. No shadows, no gradients.
+
+### Layout
+
+```
+header     Calist | round name                             Details  (gear)
+toolbar    Add folder  Add files  Re-check  Clear all     [search]  All|Problems
+status     30 forms  (dot) 26 ready  (!) 4 need a look [chip][chip]...   Showing 2 of 30 ... Show all
+table      the device table fills the rest (26 px rows: 17 rows on a 1366x768 laptop)
+footer     Saves to ...\January round\device list.xlsx  26 ready   Built by ...  [Build register]
+```
+
+- **The footer is outside the scrolling page** (root row 1) and is one line in every state. Nothing
+  — a long table, the Details log, a result — can push Build or Open register off a laptop screen.
+  1.x put the result's buttons below the fold at 1366x768.
+- **Settings are a drawer** (`_toggle_settings`), `place()`d over the right side: template, this
+  round's save folder, the two options (checkboxes), Dark/Light, About. It slides in over 160 ms,
+  eased (`_slide_panel`).
+- **The status line** (`_refresh_banner`) shows the counts, then one chip per problem group from
+  `ui_state.problem_groups`, at most `MAX_CHIPS` plus a "more" chip. A chip filters the table to
+  those files (`_pick_group`). While a group is picked the All/Problems `Toggle` shows *no* selection
+  — the group is the filter — and the line's right end names it, with **Show all**.
+- **Esc backs out one step**: the drawer, then any filter or search, then a run.
+- **Keys:** Ctrl+O add a folder, Ctrl+F search, F5 Re-check, Ctrl+Enter the footer's main action
+  (Build, or Open register after a run), Ctrl+, Settings.
+
+### Traps met on the way (each cost a round of screenshots)
+
+- **An empty `CTkFrame` is 200x200.** With no grid children it falls back to its default size and
+  opens a band in the layout. Build such a frame only when it will hold something
+  (`_render_filter_note`).
+- **CustomTkinter will not draw a 1 px frame.** Hairlines are `tk.Frame`s from `_hairline()`,
+  collected in `_hairlines` and re-coloured by `_apply_theme`.
+- **A disabled `CTkButton` keeps its fill.** 1.x's disabled Build button stayed bright blue. Every
+  button is made by `make_button` with a role, and enabled or disabled through `set_enabled`, which
+  also swaps the look and takes it out of the Tab order. A ghost button's hover colour may not be
+  `"transparent"`: that raised on the first disable of a run.
+- **No `CTkSwitch`.** Its knob is larger than its track, so in some look and mode it vanishes into
+  the drawer. On/off settings are `make_check` checkboxes.
+- **No `CTkSegmentedButton`.** It takes one text colour for all segments, which cannot serve the
+  accent-filled selection and the plain segments at once. `Toggle` is used instead.
+- **Keyboard focus is wired by hand** (`keyboard_ready`). A CTkButton takes no focus, routes its
+  events to an inner canvas, and its `focus_set()` hands focus to its inner label. So focus,
+  Enter/Space and the 2 px text-coloured ring are bound on the frame *and* the label. A mouse click
+  does not move focus, so the ring is for keyboard users only.
+- **Treeview tags take one colour, not a (light, dark) pair.** `_colour_tags` resolves them with
+  `live()` on every theme switch. The stripe tag is configured first, because a later tag wins.
+
+### Where the register goes
+
+- **The owner's rule** (`ui_state.origin_folder`): the first folder added, or the folder of the
+  first file added — in the order they were added, never alphabetical. 1.x used the alphabetically
+  first form, so a round with Lab and Ward subfolders saved its register inside Lab.
+- **`_sources` keeps every pick in order.** It also drives Re-check (`_recheck`, F5), which walks
+  them all again after forms were fixed in Explorer.
+- **A folder chosen in Settings lasts this round only.** `_outdir` is never persisted, and
+  `_remember` drops an `output_dir` an older build wrote, so January's choice cannot catch
+  February's register.
+- **The header names the round from the same folder.** The CLI's default (beside the first source
+  file) is unchanged.
 
 ### It runs on Windows 10 too
 
@@ -846,98 +938,76 @@ cannot catch it. Every visual choice needs its Windows 10 path:
 
 ### Turbo
 
-A round switch beside the wordmark, which turns red and grows a flame (`TurboFlame`, canvas
-polygons — **Pillow is a dev-only dependency and must not become a runtime one**). It exists for
-runs of tens of thousands, where the per-file UI work is the cost rather than the reading:
+**Automatic from `ui_state.TURBO_AT` (1,000) forms** — the owner's threshold, the top of a normal
+round. There is no switch any more; `_turbo_mode` is decided from the count in `_refresh_intake`
+and captured by `_start` (threading rule 1). It exists because at that size the per-file UI work
+costs more than the reading:
 
-- **No table.** `_refresh_table` and `_update_row` return early, and the table's rows are *deleted*
-  rather than merely hidden, so they stop costing memory for the session. `_build_summary`'s panel
-  takes the same grid slot.
+- **Problems only.** The table lists problem rows alone (`_visible_outcomes`), and `_update_row`
+  inserts a problem that surfaces mid-run. The status line and its chips stay, so the window is
+  problems-first at any size. The old monospace summary panel, the red wordmark and the gradient
+  flame are gone; a flat MDL2 bolt in the `turbo` colour marks it.
 - **No per-file event.** `on_file` enqueues only problems, the last file, and a tick at most every
   100 ms. Forty thousand queue items and forty thousand row updates are what used to stop the window
   breathing.
 - **Log problems only** (`process_files(quiet=True)`): failures, unknown codes and duplicate serials
-  in full, successes collapsed to a heartbeat every `HEARTBEAT_EVERY` files. 20,000 forms produce
-  about a thousand log lines instead of twenty thousand.
-- The summary renders from `RunResult` alone — counts, unknown codes grouped by code, duplicate
-  serials, and the files that failed. Nothing is scraped back out of the log, which is why
-  `deduplicate_records` also collects `Duplicate` records instead of only warning.
+  in full, successes collapsed to a heartbeat every `HEARTBEAT_EVERY` files.
 
-Turbo persists in `settings.json` and is captured into a plain bool by `_start` before the worker
-begins (threading rule 1). `_on_run_done` writes the outcomes back into `self._files` in Turbo too —
-they are stored by reference, so it costs a dict slot each, and without it switching Turbo off after
-a run would show a half-stale table.
+`_on_run_done` writes the outcomes back into `self._files` in Turbo too — stored by reference, a dict
+slot each. The saved `turbo` key is dropped by `_remember`.
 
-### Everything lives on one scrollable page
+### The page scrolls; the footer does not
 
-`App._build` puts every block inside a `CTkScrollableFrame` (`self._page`). This replaced a fixed
-window grid where the table row carried the only weight — so every pixel the results card or the
-details drawer needed came straight out of the device list, which collapsed to a sliver once a run
-finished with the drawer open. Three things follow from the change, and all three are load-bearing:
+Every block but the footer lives in one `CTkScrollableFrame` (`self._page`), so the page keeps each
+block at a usable size and scrolls when the total exceeds the window:
 
 - **Nothing stretches on its own.** A scrollable page is exactly as tall as its contents, so
-  `grid_rowconfigure(..., weight=1)` inside it does nothing. `_fit_to_window` is what hands spare
-  window height to whichever block can use it — the hero while the app is empty, the table once it
-  is not — by converting the slack into whole Treeview rows (`ROW_PX`) or hero pixels. It is
-  incremental and self-correcting rather than computing exact chrome heights, clamped by
-  `MIN_ROWS`/`MAX_ROWS` and `MIN_HERO_H`/`MAX_HERO_H`, and capped by `MAX_FIT_PASSES` so a layout
-  that cannot land on an exact fit stops rescheduling itself. Call `_on_resize()` (debounced) after
-  anything that changes the page's shape — `_show_action`, `_toggle_log` and `_refresh_intake` all
-  do.
+  `grid_rowconfigure(..., weight=1)` inside it does nothing. `_fit_to_window` hands spare window
+  height to whichever block can use it — the hero while the app is empty (down to the footer), the
+  table once it is not — by converting the slack into whole Treeview rows (`ROW_PX`) or hero pixels.
+  A small *overflow* costs a row rather than bringing out the page's scrollbar, and
+  `_show_page_scrollbar` hides that bar whenever nothing scrolls. It is capped by `MAX_FIT_PASSES`.
+  Call `_on_resize()` (debounced) after anything that changes the page's shape.
 - **Two unit systems meet in the hero branch.** `CTkFrame.configure(height=)` and `cget("height")`
   speak CustomTkinter's *logical* units; `slack` and every `winfo_*` measurement are *device*
-  pixels, 1.25× apart on this display. Comparing one against the other made a 380 cap render as
-  475 and stopped the loop settling. Convert with
-  `ctk.ScalingTracker.get_widget_scaling(widget)` and keep each side in its own units. The table
-  branch is exempt: a Treeview's `height` is a row count and `ROW_PX` is the raw ttk `rowheight`,
-  so both are already device pixels.
-- **The hero needs `grid_propagate(False)` and an explicit height.** Left to size itself it collapses
-  to its contents, and the empty state is meant to fill the window.
-- **`CTkScrollableFrame` steals the mouse wheel.** It binds `<MouseWheel>` with `bind_all` and
-  scrolls itself for any event whose widget chain reaches its canvas — which is every widget on the
-  page, including the device table and the log box. `_wheel_over()` puts a widget-level binding on
-  each of those that scrolls the widget and returns `"break"`; widget bindings run before `all`
-  bindings, so the scroll stays where the pointer is. Add any future scrollable widget to that list.
+  pixels, 1.25x apart on this display. Convert with `ctk.ScalingTracker.get_widget_scaling(widget)`.
+  The table branch is exempt: a Treeview's `height` is a row count and `ROW_PX`
+  (`table_row_height`, scaled) is the raw ttk `rowheight`, so both are device pixels.
+- **The hero needs `grid_propagate(False)` and an explicit height.**
+- **`CTkScrollableFrame` steals the mouse wheel.** It binds `<MouseWheel>` with `bind_all`.
+  CustomTkinter 6 exempts its own text boxes but not a ttk Treeview, so `_wheel_over()` still gives
+  the device table (and the log boxes) their own scroll. Add any future scrollable widget to it.
 
-`show_lock()` now grid-removes the whole page rather than a list of individual widgets, and root row
-0 keeps `weight=1` permanently so the lock panel fills the window in its place.
+`show_lock()` grid-removes the page *and* the footer (and closes the drawer); the lock panel spans
+both rows.
 
-- **Adding devices is the hero.** With nothing loaded, `_refresh_intake` shows the hero panel and
-  hides the table; once devices are in, the slim bar takes over and the table appears (or, in Turbo,
-  the summary panel).
-- **Folders are scanned on a worker.** `calist.find_source_files()` walks with `os.scandir`, whose
-  entries already know file-from-directory — `Path.rglob("*")` plus `is_file()` cost a stat per
-  entry, and all of it ran on the main thread, which on a network share is a window that stops
-  repainting with no way to stop it. Results arrive in batches of 200 through `App._events`, the
-  count updates live, and Cancel works. 20,000 forms resolve in under a second with the window
-  still live.
-- **The destination is always on screen, and now selectable.** The *Saves to* row shows where the
-  register will land *before* the run, and warns when it would replace an existing file.
-  `shorten_path()` elides the middle of long paths, never the tail — the deepest folders and
-  filename are what the user reads. **Select folder** sets `output_dir`, which `_start` captures on
-  the main thread (threading rule 1) and passes to `process_files`; with none set the register lands
-  beside the first source file exactly as it always did. `_remember` drops a stored folder that no
-  longer exists, so a deleted or unmounted destination cannot fail the next run.
-- **The table carries the serial number**, between Device type and Status. It is blank (`—`) until
-  the run actually opens the file — `classify_file` is I/O-free and resolves a device from the
-  filename alone, so it cannot know a serial. `FileOutcome.serial` is filled in `extract_records`,
-  where a dual-serial device's two numbers are joined onto one line for the table.
-- **Live per-row status is the anti-frozen signal**, more than the progress bar — users watch their
-  own filenames resolve.
-- Inputs are frozen during a run (`_set_inputs_enabled`), so the settings can't describe a build
-  other than the one happening.
-- **"Real device forms only"** is the switch beside dedup. A `LEFT_OUT` file is kept in `_files` (so
-  switching off brings it back) but never drawn: `_visible_outcomes` skips it, the counts exclude it,
-  `_start` does not hand it to the run, and `_log_left_out` lists every one with its reason under
-  Details — once per intake or toggle, not per refresh. A dropped copy stays in the table as
-  *Copy — left out*.
-- The `ttk.Treeview` is styled to match CTk (`style_treeview`). It stays a Treeview rather than
-  stacked CTk frames because it routinely holds hundreds of rows.
-- Drag-and-drop is optional: `HAS_DND` gates a `TkinterDnD.DnDWrapper` mixin on the root. Absent the
-  package, the drop zone is click-only and nothing else changes. **Untested** — `tkinterdnd2` is not
-  installed here.
-- Template, last folder and the dedup switch persist to `%APPDATA%\Calist\settings.json`; both read
-  and write are best-effort and must never raise.
+### And the rest
+
+- **Folders are scanned on a worker.** `calist.find_source_files()` walks with `os.scandir`;
+  results arrive in batches of 200 through `App._events`, the count updates live, and Cancel works.
+- **Drag and drop** is a real dependency now (tkinterdnd2, MIT). The root is the one drop target;
+  OLE walks up to it from any widget. While something is dragged over, the empty card or the table
+  gets a 2 px teal border; drops are refused during a run, a scan or the lock. `_Root` loads tkdnd
+  inside a `try`, because a missing or quarantined DLL must leave a click-only window, not a crash.
+  The hero only invites a drop ("Drop a round's folder here") when tkdnd did load.
+- **The table carries the serial number**, blank until the run opens the file.
+- **Live per-row status is the anti-frozen signal**, more than the progress bar.
+- Inputs are frozen during a run (`_set_inputs_enabled`).
+- **"Real device forms only"**: a `LEFT_OUT` file stays in `_files` but is never drawn; Details
+  lists each with its reason. A dropped copy stays in the table as *Copy, left out*.
+- **Clear all confirms in place** (`_arm_clear`): it sits beside Re-check, so the first click turns
+  it red — "Clear the list?" — and only a second click within 3 s clears. No dialog.
+- **The app's mark** appears on the lock screen only (and as the window/taskbar icon): the owner
+  preferred the header as the wordmark alone, and the empty card with the folder glyph rather than
+  the mark. It is a `tk.Label` with a `PhotoImage` from `docs/calist-mark-<n>.png`; `mark_image`
+  picks the rendition for the display's scaling, because Tk can only shrink by dropping pixels and
+  a `CTkLabel` wants Pillow.
+- Settings persist to `%APPDATA%\Calist\settings.json` (template, last folder, `deduplicate`,
+  `real_forms_only`, `appearance`); read and write are best-effort and must never raise.
+- **`tools/snap_ui.py` is how the window is reviewed.** It renders every state from invented data,
+  emulating a 1366x768 laptop at 100% (or `--size`/`--scale`, or `--win10` fonts), into the
+  git-ignored `docs/review/`. Every design change in 2.0 was checked on its screenshots by
+  Impeccable's finish reviewer before it landed.
 
 ## Packaging (`calist.spec`) and the antivirus problem
 

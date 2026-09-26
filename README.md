@@ -17,7 +17,7 @@ de-duplicated equipment register — automatically, without opening a single fil
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![Tests passing](https://img.shields.io/badge/tests-273%20passing-brightgreen)
+![Tests passing](https://img.shields.io/badge/tests-450%20passing-brightgreen)
 ![Device types](https://img.shields.io/badge/device%20types-95-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
@@ -223,14 +223,17 @@ code entered during a cooldown is still refused.
 <tr><td><b>Problems surface <i>before</i> the run</b></td>
 <td>Every file is resolved to a real device the instant it is added, in about 14 microseconds each. An unrecognised device code appears in the table <b>immediately</b> — not two hundred files into a long run.</td></tr>
 
+<tr><td><b>Problems first</b></td>
+<td>The status line groups what needs a look: fourteen forms named for a device code nobody added are <i>one</i> chip, not fourteen rows. Click it and the table shows exactly those files; right-click one to open the form and fix it, then press <b>Re-check</b>.</td></tr>
+
 <tr><td><b>You can watch it work</b></td>
-<td>Rows turn green one by one as each device is read, with a progress bar, the file currently open, and a live estimate of the time remaining. It never looks frozen, because it never is.</td></tr>
+<td>Each row fills in with its serial number and status as the form is read, with a progress bar, the file currently open, and a live estimate of the time remaining. It never looks frozen, because it never is.</td></tr>
 
 <tr><td><b>Cancel at any moment</b></td>
 <td>Stops cleanly between files and writes absolutely nothing. A cancelled run leaves no half-finished register behind.</td></tr>
 
-<tr><td><b>You choose where it saves</b></td>
-<td>The <i>Saves to</i> row shows exactly where the register will land <b>before</b> you commit, and warns you in amber if a register is already sitting there. <b>Select folder</b> puts it anywhere you like; leave it alone and it lands beside your forms.</td></tr>
+<tr><td><b>It saves where you expect</b></td>
+<td>The register goes in the round's folder — the first folder you added — and the footer shows the exact path <b>before</b> you build, in amber if a register is already there. Settings can send this round's register anywhere else; the next round starts from its own folder again.</td></tr>
 
 <tr><td><b>Understands two-row devices</b></td>
 <td>A patient monitor and its NIBP module share one chassis and one serial, but need two lines in the register. Calist generates the second row itself and sorts it directly beneath its parent.</td></tr>
@@ -238,8 +241,14 @@ code entered during a cooldown is still refused.
 <tr><td><b>Duplicate removal that knows better</b></td>
 <td>Optional, and smart: it drops repeated serials, but understands that a device and its own sub-module legitimately share one. A <i>third</i> record on that serial is still removed.</td></tr>
 
-<tr><td><b>Optional filename discipline</b></td>
-<td>One switch enforces the <code>G302-AGH001-0425</code> house format, and tells you <i>exactly</i> what is wrong with each offender — wrong month, missing site code, wrong number of parts.</td></tr>
+<tr><td><b>Real device forms only</b></td>
+<td>One option leaves out what is not a device form — device lists, blank templates, names without a site code — and lists each one under Details with the reason. Typing slips in a name are repaired in the register; your files are never renamed.</td></tr>
+
+<tr><td><b>Drag, drop, done</b></td>
+<td>Drop a round's folder anywhere on the window. Or use the keyboard: every button is reachable with Tab, and the common actions have shortcuts.</td></tr>
+
+<tr><td><b>Easy on the eyes, on any machine</b></td>
+<td>Dark or light, every colour pair tested for WCAG AA contrast. Built for the laptops engineers actually carry: a 1366×768 screen shows 17 forms at once, on Windows 10 and 11 alike.</td></tr>
 
 <tr><td><b>Daily access code</b></td>
 <td>Offline, server-free, changes every day. No licence files, no activation, no internet connection.</td></tr>
@@ -251,7 +260,7 @@ code entered during a cooldown is still refused.
 <td>The register template ships inside the executable. A freshly downloaded copy is usable on the first launch, and you can swap in your own template whenever you like.</td></tr>
 
 <tr><td><b>Remembers your setup</b></td>
-<td>Template, last folder and every preference persist between sessions, so a repeat run is two clicks.</td></tr>
+<td>Template, last folder, dark or light and every option persist between sessions, so a repeat run is two clicks.</td></tr>
 
 <tr><td><b>Old and new Excel alike</b></td>
 <td><code>.xlsx</code> and <code>.xlsm</code> through a reader written for exactly this job, legacy <code>.xls</code> through xlrd. One code path, both formats.</td></tr>
@@ -266,26 +275,28 @@ code entered during a cooldown is still refused.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/ui-1-hero.png" alt="Adding devices"></td>
+<td width="50%"><img src="docs/ui-1-hero.png" alt="Adding a round"></td>
 <td width="50%"><img src="docs/ui-3-working.png" alt="Building the register"></td>
 </tr>
 <tr valign="top">
 <td>
 
-### 1 · Add your devices
+### 1 · Add a round
 
-Pick a folder and every Excel file inside it comes in, subfolders and all.
+Drop the round's folder on the window, or choose it — every Excel file inside comes in, subfolders
+and all.
 
-Each one is checked the moment it arrives, so an unrecognised device shows up in the table straight
-away — before you commit to anything.
+Each one is checked from its name the moment it arrives, so an unrecognised device code shows up in
+the status line straight away — before you commit to anything.
 
 </td>
 <td>
 
 ### 2 · Watch it work
 
-Rows turn green as each device is read, with the file currently open and a live estimate of the time
-left.
+Each row fills in with its serial number as the form is read, with the file currently open and a
+live estimate of the time left. From 1,000 forms Calist switches to **Turbo** by itself and lists
+only the problems, so even an archive run stays responsive.
 
 Cancel stops it cleanly, and writes nothing at all.
 
@@ -299,13 +310,13 @@ Cancel stops it cleanly, and writes nothing at all.
 
 ### 3 · Collect the register
 
-The results card says precisely what was built and exactly where it went, with **Open register** and
-**Reveal in folder** one click away. The table filters itself down to anything that needs your
+The footer says precisely what was built and exactly where it went, with **Open register** and
+**Show in folder** one click away. The table filters itself down to anything that needs your
 attention, so five problem files out of three hundred are never buried.
 
-The register is saved as `device list.xlsx`. By default it lands beside the first source file; use
-**Select folder** on the *Saves to* row to send it anywhere else. Either way the exact destination is
-on screen the entire time, so it is never a mystery afterwards.
+The register is saved as `device list.xlsx` in the round's folder — the first folder you added. The
+gear opens Settings, where you can send this round's register somewhere else. Either way the exact
+destination is on screen the entire time, so it is never a mystery afterwards.
 
 <details>
 <summary><b>What actually happens to a single form</b></summary>
@@ -337,10 +348,15 @@ G302-AGH001-0425.xlsx
 | Shortcut | Action |
 |---|---|
 | <kbd>Ctrl</kbd> + <kbd>O</kbd> | Add a folder |
-| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Build the register |
-| <kbd>Esc</kbd> | Cancel a running build |
-| <kbd>Delete</kbd> | Remove the selected rows |
-| Double-click | Reveal that file in Explorer |
+| <kbd>Ctrl</kbd> + <kbd>F</kbd> | Search the forms |
+| <kbd>F5</kbd> | Re-check — read every folder and file again after fixing some |
+| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Build the register — or, once built, open it |
+| <kbd>Ctrl</kbd> + <kbd>,</kbd> | Settings |
+| <kbd>Esc</kbd> | Back out one step: Settings, then a filter, then a running build |
+| <kbd>Tab</kbd>, <kbd>Enter</kbd> / <kbd>Space</kbd> | Move between buttons, and press one |
+| <kbd>Delete</kbd> | Remove the selected rows from the list |
+| Double-click | Show that file in Explorer |
+| Right-click | Open the form, show it in its folder, copy its name |
 
 ---
 
@@ -387,40 +403,30 @@ If there is no `-`, the whole name is used (`VNT023.xlsx` → `VNT`). A file who
 device table is **skipped with a clear error** rather than silently producing a junk row — a missing
 row is recoverable, a wrong one might never be noticed.
 
-### Enforcing the house format
+### Real device forms only
 
-The filename switch has **three positions**. Click it to cycle through them:
+Rounds collect things that are not device forms: a site's device list, the blank template a round
+was copied from, a file named by its serial. With **Real device forms only** switched on in
+Settings, those are left out of the register and listed under **Details**, each with its reason:
 
-| Position | What it accepts | Example |
-|---|---|---|
-| **Accept any filename** | anything a device code can be read from | `Clinic-AGH001.xlsx` |
-| **Accept filenames starting G302-AGH001-** | both codes and the dash — whatever follows is yours | `G302-AGH001-june` |
-| **Accept only filenames like G302-AGH001-0425** | the full house format | `G302-AGH001-0425` |
-
-The middle one is for the common case: a round named correctly in its *codes* while the trailing
-date is written half a dozen different ways. It still catches a mistyped site or device code, which
-is the mistake that actually costs you a row in the register.
+- **no site code** — the name must start with a site code, one letter then digits (`G302-…`);
+- **a device number of all zeros** — `BZ000`, `AGH00`: the blank a round's forms are copied from;
+- **a device list, or a form with nothing filled in** — told from the workbook, during the run.
 
 ```
 G302  -  AGH001  -  0425
- │         │          └── MMYY — month 01-12, then a two-digit year (0425 = April 2025)
+ │         │          └── MMYY — the month of the round (0425 = April 2025)
  │         └───────────── device code and unit number (AGH001 = patient monitor 1)
  └───────────────────────  site code — letters, then digits
 ```
 
-Anything that breaks it is flagged **before you build**, with the specific reason rather than a
-useless blanket "invalid" (on the strictest setting):
-
-| Filename | Reported as |
-|---|---|
-| `Clinic-AGH005` | expected 3 parts like G302-AGH001-0425, found 2 |
-| `302-AC006-0425` | site code '302' should be letters then digits, like G302 |
-| `G302-AGH-0425` | device code 'AGH' should be letters then digits, like AGH001 |
-| `G302-AGH007-425` | date '425' should be 4 digits (MMYY), like 0425 |
-| `G302-AGH004-1325` | month '13' in '1325' is not between 01 and 12 |
+**Names are repaired, never renamed.** A leading dot, stray spaces, `Copy of …`, a letter O for a
+zero, text after the date, a date that cannot be one — the register's Code column gets the name the
+form was meant to have, and marks the ones that change what the name says. The files themselves are
+never touched.
 
 <div align="center">
-  <img src="docs/ui-5-format.png" alt="The filename format check catching four badly named files" width="860">
+  <img src="docs/ui-5-problems.png" alt="Problems grouped by kind, one group picked" width="860">
 </div>
 
 ---

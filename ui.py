@@ -40,7 +40,7 @@ from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, CANCELLED, COPY,
 # Drag-and-drop is a bonus, never a requirement: without tkinterdnd2 the drop
 # zone is simply click-only.
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    from tkinterdnd2 import DND_FILES, REFUSE_DROP, TkinterDnD
     HAS_DND = True
 except Exception:                                    # pragma: no cover
     HAS_DND = False
@@ -78,7 +78,7 @@ WARN_TINT = _P["warn_tint"]     # a row that needs a look
 DANGER = _P["danger"]
 DANGER_TINT = _P["danger_tint"]  # a row that could not be read
 
-#: Turbo. The wordmark takes TURBO, so "on" is unmistakable at a glance.
+#: Turbo: the flat bolt that marks a run of 1,000 forms or more.
 TURBO = _P["turbo"]
 TURBO_HOVER = _P["turbo_hover"]
 
@@ -145,6 +145,9 @@ def icon_font(size: int = 14) -> ctk.CTkFont:
     return ctk.CTkFont(ICON_FONT, size)
 
 
+#: Tags of rows that carry no background of their own, so can be striped.
+PLAIN_TAGS = ("ready", "ok")
+
 #: Row status → (label, treeview tag)
 STATUS_DISPLAY = {
     READY: ("Ready", "ready"),
@@ -196,19 +199,19 @@ SETTINGS_FILE = (Path(os.environ.get("APPDATA") or Path.home())
 NEW_DAY_CHECK_MS = 30_000
 
 
-#: The mark's renditions, drawn by docs/make_icon.py: 22 logical pixels at
-#: 100%, 125%, 150% and 200% scaling.
-MARK_SIZES = (22, 28, 33, 44)
+#: The mark's renditions, drawn by docs/make_icon.py: the lock screen's 48
+#: logical pixels at 100%, 125%, 150% and 200%.
+MARK_SIZES = (48, 60, 72, 96)
 
 
-def mark_image(widget) -> tk.PhotoImage | None:
-    """The app's mark at the size this display wants, or None.
+def mark_image(widget, size: int = 48) -> tk.PhotoImage | None:
+    """The app's mark at `size` logical pixels on this display, or None.
 
     Tk can only shrink an image by dropping whole pixels, which shreds a small
     rounded tile, so each scaling has its own drawn file and the nearest one
     at or above the wanted size is used. Best-effort, like the window icon.
     """
-    wanted = 22 * ctk.ScalingTracker.get_widget_scaling(widget)
+    wanted = size * ctk.ScalingTracker.get_widget_scaling(widget)
     size = next((n for n in MARK_SIZES if n >= wanted - 0.5), MARK_SIZES[-1])
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     try:
@@ -530,12 +533,45 @@ def make_button(master, text: str, command, *, role: str = "secondary",
                                                   else "normal"),
                            text_color_disabled=FAINT, **look)
     button._calist_role = role
+    keyboard_ready(button)
     return button
+
+
+def keyboard_ready(button: ctk.CTkButton) -> None:
+    """Let Tab reach the button, show where focus is, and press on Enter/Space.
+
+    CustomTkinter buttons take no keyboard focus, and route their own events
+    to an inner canvas — so this works on the frame itself. A mouse click does
+    not move focus, so the ring appears only for someone using the keyboard.
+    The ring is the text colour: it reads on the teal primary as well as on
+    the plain buttons.
+    """
+    tk.Frame.configure(button, takefocus=1)
+
+    def focused(_event) -> None:
+        if str(button.cget("state")) != "disabled":
+            button.configure(border_width=2, border_color=TEXT)
+
+    def unfocused(_event) -> None:
+        look = BUTTON_ROLES.get(getattr(button, "_calist_role", "secondary"), {})
+        button.configure(border_width=look.get("border_width", 0),
+                         border_color=look.get("border_color", BORDER))
+
+    # Tab focuses the frame; CustomTkinter's own focus_set() hands focus to
+    # the inner text label. Either way the ring and the keys must work.
+    targets = [button] + [w for w in (getattr(button, "_text_label", None),) if w]
+    for target in targets:
+        tk.Misc.bind(target, "<FocusIn>", focused, add="+")
+        tk.Misc.bind(target, "<FocusOut>", unfocused, add="+")
+        for key in ("<Return>", "<KP_Enter>", "<space>"):
+            tk.Misc.bind(target, key, lambda _e: button.invoke(), add="+")
 
 
 def set_enabled(button: ctk.CTkButton, enabled: bool) -> None:
     """Enable or disable a button, and make it look it."""
     role = getattr(button, "_calist_role", "secondary")
+    # A disabled button leaves the Tab order: there is nothing to press.
+    tk.Frame.configure(button, takefocus=1 if enabled else 0)
     if enabled:
         button.configure(state="normal", **BUTTON_ROLES[role])
     else:
@@ -555,6 +591,7 @@ def make_icon_button(master, icon: str, command, *, size: int = 34,
                            font=icon_font(glyph_size), fg_color="transparent",
                            hover_color=SURFACE_2, text_color=MUTED)
     button._calist_role = "ghost"
+    keyboard_ready(button)
     return button
 
 
@@ -596,6 +633,7 @@ class Toggle(ctk.CTkFrame):
                                    command=lambda v=value: self._pick(v))
             button.grid(row=0, column=column, padx=(4 if column == 0 else 0, 4),
                         pady=4)
+            keyboard_ready(button)
             self._buttons[value] = button
         self._paint()
 
@@ -627,7 +665,15 @@ if HAS_DND:                                            # pragma: no cover
     class _Root(ctk.CTk, TkinterDnD.DnDWrapper):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.TkdndVersion = TkinterDnD._require(self)
+            # tkdnd is a native library loaded into Tcl. If it is missing or
+            # blocked (an antivirus quarantining one DLL), the window must
+            # still open — click-only, as without the package — not crash.
+            try:
+                self.TkdndVersion = TkinterDnD._require(self)
+                self.dnd_ready = True
+            except Exception:
+                self.dnd_ready = False
+                log_ui.debug("Drag and drop unavailable", exc_info=True)
 else:
     _Root = ctk.CTk
 
@@ -675,58 +721,78 @@ class LockPanel(ctk.CTkFrame):
     # ── layout ───────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        """One card, centred: the mark, the name, four dots and a keypad.
+
+        The keys are the same buttons as the rest of the app. Clear is a word
+        and backspace its glyph, so no key is a character standing in for an
+        icon.
+        """
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(9, weight=1)          # centre the stack
+        self.grid_rowconfigure(2, weight=1)          # centre the card
 
-        ctk.CTkLabel(self, text="Calist", text_color=TEXT,
-                     font=ctk.CTkFont(FONT, 26, "bold")
-                     ).grid(row=1, column=0, pady=(0, 2))
-        ctk.CTkLabel(self, text="Enter today's access code", text_color=MUTED,
-                     font=ctk.CTkFont(FONT, 13)).grid(row=2, column=0)
+        card = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=DIR.radius,
+                            border_width=1, border_color=BORDER)
+        card.grid(row=1, column=0)
+        card.grid_columnconfigure(0, weight=1)
+        self._card = card
+
+        self._mark = mark_image(self, 48)
+        self._logo = tk.Label(card, image=self._mark, bd=0, highlightthickness=0,
+                              bg=live(SURFACE))
+        if self._mark is not None:
+            self._logo.grid(row=0, column=0, pady=(34, 12))
+        ctk.CTkLabel(card, text="Calist", text_color=TEXT, font=display_font(24)
+                     ).grid(row=1, column=0)
+        ctk.CTkLabel(card, text="Enter today's access code", text_color=MUTED,
+                     font=body_font(13)).grid(row=2, column=0, pady=(2, 0))
 
         # PIN dots
-        self._dots = ctk.CTkFrame(self, fg_color="transparent")
-        self._dots.grid(row=3, column=0, pady=(26, 6))
+        self._dots = ctk.CTkFrame(card, fg_color="transparent")
+        self._dots.grid(row=3, column=0, pady=(22, 4))
         self._dot_widgets = []
         for i in range(self.DOTS):
-            dot = ctk.CTkFrame(self._dots, width=18, height=18, corner_radius=9,
+            dot = ctk.CTkFrame(self._dots, width=14, height=14, corner_radius=7,
                                fg_color=SURFACE_2, border_width=1,
                                border_color=BORDER)
-            dot.grid(row=0, column=i, padx=9)
+            dot.grid(row=0, column=i, padx=8)
             dot.grid_propagate(False)
             self._dot_widgets.append(dot)
 
-        self._message = ctk.CTkLabel(self, text="", text_color=DANGER,
-                                     font=ctk.CTkFont(FONT, 12))
-        self._message.grid(row=4, column=0, pady=(6, 10))
+        self._message = ctk.CTkLabel(card, text="", text_color=DANGER,
+                                     font=body_font(12))
+        self._message.grid(row=4, column=0, pady=(4, 8))
 
         # Keypad
-        pad = ctk.CTkFrame(self, fg_color="transparent")
-        pad.grid(row=5, column=0)
+        pad = ctk.CTkFrame(card, fg_color="transparent")
+        pad.grid(row=5, column=0, padx=40)
         keys = [("1", 0, 0), ("2", 0, 1), ("3", 0, 2),
                 ("4", 1, 0), ("5", 1, 1), ("6", 1, 2),
                 ("7", 2, 0), ("8", 2, 1), ("9", 2, 2),
                 ("C", 3, 0), ("0", 3, 1), ("<", 3, 2)]
         self._keys = []
         for label, r, c in keys:
-            muted = label in ("C", "<")
-            btn = ctk.CTkButton(
-                pad, text=label, width=82, height=62, corner_radius=12,
-                fg_color=SURFACE if muted else SURFACE_2,
-                hover_color=BORDER, text_color=MUTED if muted else TEXT,
-                font=ctk.CTkFont(FONT, 20 if not muted else 16,
-                                 "bold" if not muted else "normal"),
-                command=lambda k=label: self._press(k))
-            btn.grid(row=r, column=c, padx=6, pady=6)
+            if label == "C":
+                btn = make_button(pad, "Clear", lambda: self._press("C"),
+                                  role="ghost", width=76, height=52,
+                                  font=body_font(13))
+            elif label == "<":
+                btn = make_button(pad, theme.ICONS["backspace"],
+                                  lambda: self._press("<"), role="ghost",
+                                  width=76, height=52, font=icon_font(18))
+            else:
+                btn = make_button(pad, label, lambda k=label: self._press(k),
+                                  role="secondary", width=76, height=52,
+                                  font=display_font(19))
+            btn.grid(row=r, column=c, padx=5, pady=5)
             self._keys.append(btn)
 
         self._hint = ctk.CTkLabel(
-            self, text=f"The code changes daily. Ask {AUTHOR_NAME} for today's.",
-            text_color=FAINT, font=ctk.CTkFont(FONT, 11))
-        self._hint.grid(row=6, column=0, pady=(20, 2))
-        ctk.CTkLabel(self, text=AUTHOR_EMAIL, text_color=FAINT,
-                     font=ctk.CTkFont(FONT, 11)).grid(row=7, column=0)
+            card, text=f"The code changes daily. Ask {AUTHOR_NAME} for today's.",
+            text_color=MUTED, font=body_font(12))
+        self._hint.grid(row=6, column=0, padx=32, pady=(20, 0))
+        ctk.CTkLabel(card, text=AUTHOR_EMAIL, text_color=FAINT,
+                     font=body_font(12)).grid(row=7, column=0, pady=(2, 30))
 
     # ── entry ────────────────────────────────────────────────────────────────
 
@@ -790,7 +856,7 @@ class LockPanel(ctk.CTkFrame):
         """Count the penalty down in place, disabling the pad while it runs."""
         wait = access.cooldown_remaining(self.state_dict)
         for btn in self._keys:
-            btn.configure(state="disabled" if wait else "normal")
+            set_enabled(btn, not wait)
 
         if wait:
             self._message.configure(
@@ -871,7 +937,9 @@ class App(_Root):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Control-o>", lambda _e: self._add_folder())
-        self.bind("<Control-Return>", lambda _e: self._start())
+        # Ctrl+Enter is always the footer's main action: Build before a run,
+        # Open register after one.
+        self.bind("<Control-Return>", lambda _e: self._primary_action())
         self.bind("<Control-f>", lambda _e: self._focus_search())
         self.bind("<Control-comma>", lambda _e: self._toggle_settings())
         self.bind("<F5>", lambda _e: self._recheck())
@@ -971,6 +1039,7 @@ class App(_Root):
         self._build_log_drawer()
         self._build_footer()
         self._build_settings_panel()
+        self._enable_drop()
 
         # Reflow when the window is resized, and once at startup after the
         # first real geometry is known.
@@ -983,18 +1052,11 @@ class App(_Root):
         bar.grid_columnconfigure(2, weight=1)
         self._header = bar
 
-        brand = ctk.CTkFrame(bar, fg_color="transparent")
-        brand.grid(row=0, column=0, sticky="w")
-        # A Tk label, not a CTkLabel: CTkLabel wants a CTkImage, which needs
-        # Pillow. Its background follows the theme in _apply_theme.
-        self._mark = mark_image(self)
-        self._lbl_logo = tk.Label(brand, image=self._mark, bd=0,
-                                  highlightthickness=0, bg=live(BG))
-        if self._mark is not None:
-            self._lbl_logo.grid(row=0, column=0, padx=(0, 10))
-        self._lbl_mark = ctk.CTkLabel(brand, text="Calist", text_color=TEXT,
+        # The wordmark alone: the owner preferred it without the app's mark
+        # beside it (the mark stays on the lock screen and the taskbar).
+        self._lbl_mark = ctk.CTkLabel(bar, text="Calist", text_color=TEXT,
                                       font=display_font(20))
-        self._lbl_mark.grid(row=0, column=1, sticky="w")
+        self._lbl_mark.grid(row=0, column=0, sticky="w")
 
         # Which round this is — the folder the forms came from. Orientation
         # for the person who has three rounds open in Explorer.
@@ -1036,12 +1098,16 @@ class App(_Root):
         self._hero.grid_rowconfigure(0, weight=1)
         self._hero.grid_rowconfigure(6, weight=1)      # centres the stack
 
+        # The folder glyph, by the owner's choice over the app's mark here.
         ctk.CTkLabel(self._hero, text=theme.ICONS["folder_open"], text_color=MUTED,
                      font=icon_font(40)).grid(row=1, column=0, pady=(0, 14))
-        ctk.CTkLabel(self._hero, text="Add a round of inspection forms",
+        droppable = getattr(self, "dnd_ready", False)
+        ctk.CTkLabel(self._hero, text="Drop a round's folder here" if droppable
+                     else "Add a round of inspection forms",
                      text_color=TEXT, font=display_font(22)).grid(row=2, column=0)
-        ctk.CTkLabel(self._hero, text="Choose the round's folder. Calist reads "
-                     "every form in it, subfolders included.",
+        ctk.CTkLabel(self._hero, text=("Or choose it below. " if droppable else
+                                       "Choose the round's folder. ")
+                     + "Calist reads every form in it, subfolders included.",
                      text_color=MUTED, font=body_font(13)).grid(row=3, column=0,
                                                                 pady=(6, 0))
 
@@ -1083,8 +1149,8 @@ class App(_Root):
         ctk.CTkLabel(box, text=theme.ICONS["search"], text_color=FAINT,
                      font=icon_font(13), width=18).grid(row=0, column=0, padx=(10, 2))
         self._search = ctk.CTkEntry(
-            box, width=250, height=30, border_width=0, fg_color=SURFACE_2,
-            text_color=TEXT, placeholder_text="Search file, device, serial or code",
+            box, width=290, height=30, border_width=0, fg_color=SURFACE_2,
+            text_color=TEXT, placeholder_text="Search file, device, serial or code (Ctrl+F)",
             placeholder_text_color=FAINT, font=body_font(12))
         self._search.grid(row=0, column=1, padx=(0, 4), pady=1)
         self._search.bind("<KeyRelease>", self._on_search_typed)
@@ -1092,14 +1158,15 @@ class App(_Root):
         self._search.bind("<FocusOut>", lambda _e: box.configure(border_color=BORDER))
         self._btn_search_clear = make_icon_button(box, "cancel", self._clear_search,
                                                   size=24, glyph_size=10)
+        # Always placed, only shown when there is text: a button that appears
+        # would widen the box and shift it left as the user starts typing.
+        self._btn_search_clear.grid(row=0, column=2, padx=(0, 4))
+        self._show_search_clear(False)
 
         self._filter = Toggle(bar, ("All", "Problems"),
                               command=self._on_filter_picked)
         self._filter.grid(row=0, column=6, sticky="e")
 
-        if HAS_DND:                                    # pragma: no cover
-            self._intake.drop_target_register(DND_FILES)
-            self._intake.dnd_bind("<<Drop>>", self._on_drop)
 
     def _build_banner(self) -> None:
         """The round in one line: its counts, then its problems, grouped.
@@ -1139,10 +1206,16 @@ class App(_Root):
         self._tree.heading("status", text="Status", anchor="w")
         dot = self.ROW_PX
         self._tree.column("#0", width=dot, minwidth=dot, stretch=False, anchor="center")
-        self._tree.column("file", width=270, minwidth=160, anchor="w", stretch=False)
-        self._tree.column("device", width=190, minwidth=120, anchor="w", stretch=False)
-        self._tree.column("serial", width=160, minwidth=100, anchor="w", stretch=False)
-        self._tree.column("status", width=260, minwidth=150, anchor="w", stretch=True)
+        # ttk widths are raw pixels while the row font scales, so at 125% the
+        # unscaled columns cut "High Flow Nasal Cannula" short.
+        scale = ctk.ScalingTracker.get_widget_scaling(self)
+        for name, width, least, stretch in (("file", 270, 160, False),
+                                            ("device", 200, 120, False),
+                                            ("serial", 160, 100, False),
+                                            ("status", 260, 150, True)):
+            self._tree.column(name, width=round(width * scale),
+                              minwidth=round(least * scale), anchor="w",
+                              stretch=stretch)
         self._tree.grid(row=0, column=0, sticky="nsew")
 
         bar = ctk.CTkScrollbar(body, command=self._tree.yview, width=12,
@@ -1158,6 +1231,14 @@ class App(_Root):
 
         self._tree.bind("<Double-1>", self._reveal_selected)
         self._tree.bind("<Delete>", self._remove_selected)
+        self._tree.bind("<Button-3>", self._row_menu)
+        self._menu = tk.Menu(self, tearoff=0)
+        self._menu.add_command(label="Open the form", command=self._open_selected)
+        self._menu.add_command(label="Show in folder", command=self._reveal_selected)
+        self._menu.add_separator()
+        self._menu.add_command(label="Copy file name", command=self._copy_names)
+        self._menu.add_separator()
+        self._menu.add_command(label="Remove from the list", command=self._remove_selected)
 
         self._empty = ctk.CTkLabel(body, text="", text_color=FAINT,
                                    font=body_font(13), justify="center")
@@ -1223,8 +1304,8 @@ class App(_Root):
         self._lbl_stage = ctk.CTkLabel(self._busy, text="", text_color=TEXT,
                                        anchor="w", font=body_font(13, "bold"))
         self._lbl_stage.grid(row=0, column=1, sticky="w")
-        self._lbl_current = ctk.CTkLabel(self._busy, text="", text_color=FAINT,
-                                         anchor="w", font=mono_font(11))
+        self._lbl_current = ctk.CTkLabel(self._busy, text="", text_color=MUTED,
+                                         anchor="w", font=body_font(12))
         self._lbl_current.grid(row=0, column=2, sticky="w", padx=(14, 0))
         self._lbl_eta = ctk.CTkLabel(self._busy, text="", text_color=MUTED,
                                      anchor="e", font=body_font(12))
@@ -1395,7 +1476,8 @@ class App(_Root):
         red — findable while scrolling a thousand rows — and the dot and the
         words say the same thing without colour. Rows that contribute nothing
         (a copy, a file left out, a cancelled read) are dimmed. Every other
-        row is striped. Configured stripe first: a later tag wins.
+        plain row is striped; a row never carries two background tags, because
+        which one ttk shows is not the one you would expect.
         """
         self._tree.tag_configure("stripe", background=live(ROW_ALT))
         for tag in ("ready", "ok"):
@@ -1418,7 +1500,6 @@ class App(_Root):
         style_treeview(self)
         self._colour_tags()
         self._table_body.configure(bg=live(SURFACE))
-        self._lbl_logo.configure(bg=live(BG))
         for line in self._hairlines:
             if line.winfo_exists():
                 line.configure(bg=live(BORDER))
@@ -1677,8 +1758,46 @@ class App(_Root):
             self._remember()
             self._add_paths(list(chosen))
 
+    def _enable_drop(self) -> None:                   # pragma: no cover
+        """Take drops anywhere on the window.
+
+        Only the root is registered: OLE walks up from the window under the
+        pointer to the nearest registered one, so every widget inside counts.
+        """
+        if not getattr(self, "dnd_ready", False):
+            return
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind("<<DropEnter>>", self._on_drag_enter)
+        self.dnd_bind("<<DropPosition>>", self._on_drag_over)
+        self.dnd_bind("<<DropLeave>>", self._on_drag_leave)
+        self.dnd_bind("<<Drop>>", self._on_drop)
+
+    def _drop_refused(self) -> bool:
+        return (self._lock is not None or self._cancel is not None
+                or self._scan is not None)
+
+    def _on_drag_enter(self, event):                  # pragma: no cover
+        if self._drop_refused():
+            return REFUSE_DROP
+        # Say where it will go: the empty card, or the table once forms are in.
+        target = self._table_wrap if self._files else self._hero
+        target.configure(border_color=PRIMARY, border_width=2)
+        return event.action
+
+    def _on_drag_over(self, event):                   # pragma: no cover
+        return REFUSE_DROP if self._drop_refused() else event.action
+
+    def _on_drag_leave(self, event=None):             # pragma: no cover
+        for target in (self._table_wrap, self._hero):
+            target.configure(border_color=BORDER, border_width=1)
+        return getattr(event, "action", None)
+
     def _on_drop(self, event) -> None:                 # pragma: no cover
+        self._on_drag_leave()
+        if self._drop_refused():
+            return REFUSE_DROP
         self._add_paths(list(self.tk.splitlist(event.data)))
+        return event.action
 
     #: How long "Clear the list?" waits for its second click.
     CLEAR_CONFIRM_MS = 3000
@@ -1812,10 +1931,7 @@ class App(_Root):
         if event is not None and event.keysym == "Escape":
             self._clear_search()
             return
-        if self._search.get():
-            self._btn_search_clear.grid(row=0, column=2, padx=(0, 4))
-        else:
-            self._btn_search_clear.grid_remove()
+        self._show_search_clear(bool(self._search.get()))
         if self._search_job is not None:
             self.after_cancel(self._search_job)
         self._search_job = self.after(120, self._run_search)
@@ -1832,9 +1948,13 @@ class App(_Root):
         restore = getattr(self._search, "_activate_placeholder", None)
         if restore is not None and self.focus_get() is not self._search._entry:
             restore()
-        self._btn_search_clear.grid_remove()
+        self._show_search_clear(False)
         self._refresh_table()
         self.focus_set()
+
+    def _show_search_clear(self, shown: bool) -> None:
+        set_enabled(self._btn_search_clear, shown)
+        self._btn_search_clear.configure(text=theme.ICONS["cancel"] if shown else "")
 
     def _focus_search(self) -> None:
         if self._files and not self._turbo_mode:
@@ -2010,7 +2130,11 @@ class App(_Root):
         if self._cancel is None:                 # a run keeps what it started as
             self._turbo_mode = ui_state.is_turbo(counts.total)
 
-        name = ui_state.round_name(self._files) if self._files else ""
+        # The round is what was added — the same folder the register goes to
+        # — and only falls back to the folder the forms share.
+        origin = ui_state.origin_folder(self._sources) if self._files else ""
+        name = (os.path.basename(origin.rstrip("\/")) if origin else "") or (
+            ui_state.round_name(self._files) if self._files else "")
         self.title(f"{name} — Calist" if name else "Calist")
         if name:
             self._round_rule.grid(row=0, column=1, sticky="ns", padx=14, pady=4)
@@ -2045,10 +2169,10 @@ class App(_Root):
         next free column."""
         done = counts.read > 0
         items = [(None, f"{counts.total:,} forms"),
-                 (SUCCESS, f"{counts.read if done else counts.ready:,} "
+                 (SUCCESS if done else FAINT, f"{counts.read if done else counts.ready:,} "
                            f"{'read' if done else 'ready'}")]
         if counts.left_out:
-            items.append((BORDER, f"{counts.left_out:,} left out"))
+            items.append((FAINT, f"{counts.left_out:,} left out"))
         for column, (colour, words) in enumerate(items):
             chip = ctk.CTkFrame(parent, fg_color="transparent")
             chip.grid(row=0, column=column, padx=(0, 16))
@@ -2116,6 +2240,7 @@ class App(_Root):
                          font=body_font(13)).grid(row=0, column=column + 1)
 
         self._render_filter_note()
+        self._on_resize()
 
     def _render_filter_note(self) -> None:
         """The right end of the status line: what the table is showing.
@@ -2137,9 +2262,15 @@ class App(_Root):
                          font=body_font(12)).grid(row=0, column=1)
             return
         if shown != total:
-            what = self._group.label if self._group is not None else (
-                "problems" if self._filter.get() == "Problems" else "search")
-            ctk.CTkLabel(side, text=f"Showing {shown:,} of {total:,}: {what}",
+            what = f"Showing {shown:,} of {total:,}"
+            if self._group is not None:
+                what += f": {self._group.label}"
+            elif self._filter.get() == "Problems":
+                what += ": problems only"
+            query = " ".join(self._search.get().split())
+            if query:
+                what += f' matching "{query}"'
+            ctk.CTkLabel(side, text=what,
                          text_color=MUTED, font=body_font(12)
                          ).grid(row=0, column=0, padx=(0, 6))
             make_button(side, "Show all", self._show_all, role="ghost", height=28,
@@ -2167,7 +2298,9 @@ class App(_Root):
 
         for index, (path, outcome) in enumerate(rows):
             tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))[1]
-            tags = (tag, "stripe") if index % 2 else (tag,)
+            # Only plain rows are striped: a problem row's tint is its
+            # background, and a second background tag would override it.
+            tags = (tag, "stripe") if index % 2 and tag in PLAIN_TAGS else (tag,)
             self._tree.insert(
                 "", "end", iid=path, tags=tags, image=self._dots.get(tag, ""),
                 values=(outcome.filename, outcome.device_name or "—",
@@ -2277,7 +2410,7 @@ class App(_Root):
                     hint, ready = "No recognised forms to build from", False
                 else:
                     hint = (f"{usable:,} form{'s' if usable != 1 else ''} "
-                            f"ready to build")
+                            f"ready. Ctrl+Enter builds")
                     ready = True
 
         self._lbl_hint.configure(text=hint, text_color=MUTED if ready else FAINT)
@@ -2406,8 +2539,8 @@ class App(_Root):
             return
         if not self._tree.exists(outcome.path):
             return
-        # Keep the row's stripe: it belongs to its position, not its status.
-        striped = "stripe" in self._tree.item(outcome.path, "tags")
+        # The stripe belongs to the row's position, and only a plain row has one.
+        striped = self._tree.index(outcome.path) % 2 and tag in PLAIN_TAGS
         self._tree.item(outcome.path, tags=(tag, "stripe") if striped else (tag,),
                         image=self._dots.get(tag, ""),
                         values=(outcome.filename, outcome.device_name or "—",
@@ -2484,6 +2617,32 @@ class App(_Root):
             messagebox.showerror("Could not open", f"{target}\n\n{exc}")
 
     # ── misc ─────────────────────────────────────────────────────────────────
+
+    def _row_menu(self, event) -> None:
+        """Right-click a form: the next step with a problem file is opening it."""
+        row = self._tree.identify_row(event.y)
+        if not row or self._cancel is not None:
+            return
+        if row not in self._tree.selection():
+            self._tree.selection_set(row)
+        self._menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_selected(self) -> None:
+        for path in self._tree.selection()[:1]:
+            if Path(path).exists():
+                self._safely(open_file, Path(path))
+
+    def _copy_names(self) -> None:
+        names = [Path(path).name for path in self._tree.selection()]
+        if names:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(names))
+
+    def _primary_action(self) -> None:
+        if self._done.winfo_ismapped():
+            self._open_result()
+        elif self._idle.winfo_ismapped():
+            self._start()
 
     def _toggle_log(self) -> None:
         self._log_open = not self._log_open
