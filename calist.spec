@@ -107,6 +107,8 @@ datas += [("template/Device List.xlsx", "template")]
 # The window icon. Keeping the docs/ prefix means ui.app_icon() resolves it the
 # same way whether the app is frozen or running from a checkout.
 datas += [("docs/calist.ico", "docs")]
+# The mark beside the wordmark, one rendition per display scaling (ui.mark_image).
+datas += [(f"docs/calist-mark-{n}.png", "docs") for n in (22, 28, 33, 44)]
 
 a = Analysis(
     ["calist.py"],

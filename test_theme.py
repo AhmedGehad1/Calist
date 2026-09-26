@@ -23,32 +23,29 @@ def test_the_palette_defines_every_token_in_both_modes():
             assert side.startswith("#") and len(side) == 7, (token, side)
 
 
-#: 1.x's dark palette, kept pixel-for-pixel as the baseline the redesign is
-#: measured against, misses AA three times: white on the #4c8dff button is
-#: 3.2:1 (4.48:1 hovered), and the faint hint colour on the table is 2.8:1.
-#: Listed so the suite stays green on that baseline — and compared exactly, so
-#: the palette that replaces it must fix all three (and add none) to pass.
-CLASSIC_GAPS = {("on_accent", "accent", "dark"),
-                ("on_accent", "accent_hover", "dark"),
-                ("faint", "surface_2", "dark")}
-
-
-def _contrast_failures() -> set[tuple[str, str, str]]:
+def _contrast_failures(palette) -> set[tuple[str, str, str]]:
     failures = set()
     for mode, label in ((theme.LIGHT, "light"), (theme.DARK, "dark")):
         for fg, backs, minimum in theme.CONTRAST_RULES:
             for back in backs:
-                ratio = theme.contrast_ratio(theme.PALETTE[fg][mode],
-                                             theme.PALETTE[back][mode])
+                ratio = theme.contrast_ratio(palette[fg][mode], palette[back][mode])
                 if ratio < minimum:
                     failures.add((fg, back, label))
     return failures
 
 
 def test_every_pairing_meets_its_contrast_minimum():
-    """WCAG AA, in light and in dark: text 4.5, non-text and large text 3.0."""
-    expected = CLASSIC_GAPS if theme.PALETTE is theme.CLASSIC else set()
-    assert _contrast_failures() == expected
+    """WCAG AA, in light and in dark: text 4.5, non-text and large text 3.0.
+
+    1.x's own palette missed this three times (white on its blue button was
+    3.2:1); the replacement has to pass every pairing, in both modes.
+    """
+    assert _contrast_failures(theme.PALETTE) == set()
+
+
+def test_the_look_falls_back_to_windows_10_fonts():
+    for candidates in (theme.ACTIVE.body, theme.ACTIVE.display, theme.ACTIVE.mono):
+        assert candidates[-1] in {"Segoe UI", "Consolas"}, candidates
 
 
 def test_contrast_ratio_matches_the_wcag_reference_points():

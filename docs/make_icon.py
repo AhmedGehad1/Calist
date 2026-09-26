@@ -3,7 +3,9 @@
     python docs/make_icon.py
 
 Writes docs/calist.ico (embedded in the executable and used as the window
-icon) and docs/calist-icon.png (the README header). Needs Pillow, which is a
+icon), docs/calist-icon.png (the README header) and docs/calist-mark-<n>.png
+(the mark beside the wordmark in the window, one per display scaling — Tk can
+only shrink an image by dropping pixels, so each size is drawn). Needs Pillow, which is a
 development dependency only and is deliberately not in requirements.txt — the
 app itself never draws the icon, it just ships the file.
 
@@ -26,16 +28,20 @@ DOCS = Path(__file__).resolve().parent
 ICO = DOCS / "calist.ico"
 PNG = DOCS / "calist-icon.png"
 
-# The app's own palette, so the icon and the window agree.
-BG = (31, 31, 37, 255)        # SURFACE
-EDGE = (72, 78, 96, 255)      # lifted off BORDER so a dark taskbar can't eat it
-BLUE = (76, 141, 255, 255)    # PRIMARY
-MUTED = (128, 132, 148, 255)  # the one row still outstanding
+# The app's own palette (theme.CLINICAL, dark side), so the icon and the
+# window agree: graphite tile, theatre-scrub teal rows.
+BG = (25, 32, 36, 255)        # surface   #192024
+EDGE = (64, 80, 88, 255)      # lifted off border so a dark taskbar can't eat it
+ACCENT = (60, 194, 176, 255)  # accent    #3cc2b0
+MUTED = (123, 139, 146, 255)  # faint     #7b8b92 — the one row still outstanding
 
 #: Sizes an .ico should carry, and how much detail each one can hold.
 #: Windows picks 16 and 32 for the taskbar and Explorer's small views, which is
 #: where all the legibility is won or lost.
 SIZES = [256, 128, 64, 48, 32, 24, 16]
+
+#: The in-window mark: 22 logical pixels at 100%, 125%, 150% and 200%.
+MARK_SIZES = [22, 28, 33, 44]
 
 #: Row geometry as fractions of the tile, per level of detail.
 #: `rows` is (bullet + bar) count; the last row is muted and short, which stops
@@ -67,7 +73,7 @@ def draw(size: int, *, supersample: int = 8) -> Image.Image:
     for i in range(g["rows"]):
         y = top + i * gap
         last = i == g["rows"] - 1
-        colour = MUTED if last else BLUE
+        colour = MUTED if last else ACCENT
         d.ellipse([left, y, left + row_h, y + row_h], fill=colour)
         end = int(s * (g["short_end"] if last else g["bar_end"]))
         d.rounded_rectangle(
@@ -86,7 +92,10 @@ def main() -> None:
     renditions[0].save(ICO, format="ICO", sizes=[(n, n) for n in SIZES],
                        append_images=renditions[1:])
     draw(512).save(PNG)
-    print(f"wrote {ICO} ({', '.join(str(n) for n in SIZES)}) and {PNG}")
+    for n in MARK_SIZES:
+        draw(n).save(DOCS / f"calist-mark-{n}.png")
+    print(f"wrote {ICO} ({', '.join(str(n) for n in SIZES)}), {PNG} and "
+          f"marks at {', '.join(str(n) for n in MARK_SIZES)}")
 
 
 if __name__ == "__main__":

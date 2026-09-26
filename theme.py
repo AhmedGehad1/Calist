@@ -16,6 +16,8 @@ drawn only from Segoe MDL2 Assets, which both carry.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 Colour = tuple[str, str]            # (light, dark)
 
 LIGHT, DARK = 0, 1
@@ -31,6 +33,8 @@ TOKENS = (
     "bg",               # the window
     "surface",          # cards
     "surface_2",        # the table, inputs, secondary buttons
+    "chrome",           # the footer bar and the settings drawer
+    "row_alt",          # every other table row
     "border",
     "text",
     "muted",            # secondary text: labels, counts
@@ -39,37 +43,47 @@ TOKENS = (
     "accent_hover",
     "on_accent",        # text on the primary action
     "selection",        # a selected table row
+    "highlight",        # the one field a direction gives its signature colour
+    "on_highlight",
     "success",
-    "warning",
+    "warning",          # warning text
+    "caution",          # a warning dot or glyph: brighter than text may be
+    "warn_tint",        # the background of a row that needs a look
     "danger",
+    "danger_tint",      # the background of a row that could not be read
     "turbo",
     "turbo_hover",
 )
 
-#: Today's colours, token for token. Dark is exactly what 1.x shipped, so a
-#: screenshot before and after moving to tokens must not differ by a pixel.
-CLASSIC: dict[str, Colour] = {
-    "bg":           ("#f4f5f8", "#17171b"),
-    "surface":      ("#ffffff", "#1f1f25"),
-    "surface_2":    ("#eef0f4", "#26262e"),
-    "border":       ("#d8dbe3", "#33333d"),
-    "text":         ("#1a1b22", "#e8e8ee"),
-    "muted":        ("#565a6b", "#9494a4"),
-    "faint":        ("#83879a", "#6a6a78"),
-    "accent":       ("#2f6fe4", "#4c8dff"),
-    "accent_hover": ("#245bc2", "#3b74d9"),
-    "on_accent":    ("#ffffff", "#ffffff"),
-    "selection":    ("#d6e4ff", "#2f4f86"),
-    "success":      ("#1a7f37", "#3fb950"),
-    "warning":      ("#9a6700", "#d9a020"),
-    "danger":       ("#cf222e", "#f2585f"),
-    "turbo":        ("#d93a1c", "#ff4d2d"),
-    "turbo_hover":  ("#b8301a", "#ff6f52"),
+#: Clinical precision. The graphite of an equipment room and the teal of
+#: theatre scrubs; the verdict colours carry the meaning and nothing else is
+#: loud. The primary action is teal with dark text on it in dark mode — white
+#: on blue is exactly the button 1.x shipped, and it failed contrast (3.2:1).
+CLINICAL: dict[str, Colour] = {
+    "bg":           ("#eef3f3", "#121719"),
+    "surface":      ("#ffffff", "#192024"),
+    "surface_2":    ("#f4f8f8", "#1f272c"),
+    "chrome":       ("#ffffff", "#161c1f"),
+    "row_alt":      ("#eef4f4", "#232c31"),
+    "border":       ("#d2dddd", "#2c373d"),
+    "text":         ("#132123", "#e4ecee"),
+    "muted":        ("#4a5d61", "#9cabb1"),
+    "faint":        ("#6f8286", "#7b8b92"),
+    "accent":       ("#0b7a6e", "#3cc2b0"),
+    "accent_hover": ("#086358", "#5ad3c2"),
+    "on_accent":    ("#ffffff", "#04201c"),
+    "selection":    ("#cdebe6", "#1d3b39"),
+    "highlight":    ("#d9f1ed", "#1b3a37"),
+    "on_highlight": ("#0b4d45", "#bff0e8"),
+    "success":      ("#1b7f43", "#4cc781"),
+    "warning":      ("#8f5f00", "#e6b04a"),
+    "caution":      ("#b87400", "#e6b04a"),
+    "warn_tint":    ("#fcf3df", "#2b2717"),
+    "danger":       ("#c0302b", "#f06d6d"),
+    "danger_tint":  ("#fbe7e6", "#2f1f21"),
+    "turbo":        ("#c2451c", "#ff7a4d"),
+    "turbo_hover":  ("#a53a17", "#ff9670"),
 }
-
-#: The palette the app draws with.
-PALETTE: dict[str, Colour] = CLASSIC
-
 
 def pick(colour: Colour | str, dark: bool) -> str:
     """One side of a pair, for a widget that cannot take both."""
@@ -103,15 +117,19 @@ def contrast_ratio(a: str, b: str) -> float:
 #: to 3.0 because it is reserved for hints and disabled labels, which WCAG
 #: exempts; nothing a user must read to act is ever drawn in it.
 CONTRAST_RULES = (
-    ("text", ("bg", "surface", "surface_2"), 4.5),
-    ("muted", ("bg", "surface", "surface_2"), 4.5),
-    ("faint", ("bg", "surface", "surface_2"), 3.0),
+    ("text", ("bg", "surface", "surface_2", "chrome", "row_alt"), 4.5),
+    ("muted", ("bg", "surface", "surface_2", "chrome", "row_alt"), 4.5),
+    ("faint", ("bg", "surface", "surface_2", "chrome", "row_alt"), 3.0),
     ("on_accent", ("accent", "accent_hover"), 4.5),
-    ("accent", ("bg", "surface"), 3.0),
-    ("success", ("surface_2",), 3.0),
-    ("warning", ("bg", "surface", "surface_2"), 3.0),
-    ("danger", ("bg", "surface", "surface_2"), 3.0),
-    ("text", ("selection",), 4.5),
+    ("accent", ("bg", "surface", "chrome"), 3.0),
+    ("on_highlight", ("highlight",), 4.5),
+    ("success", ("surface_2", "row_alt", "chrome"), 3.0),
+    ("warning", ("bg", "surface", "surface_2", "row_alt", "chrome"), 3.0),
+    ("danger", ("bg", "surface", "surface_2", "row_alt", "chrome"), 3.0),
+    ("text", ("selection", "warn_tint", "danger_tint"), 4.5),
+    ("muted", ("warn_tint", "danger_tint"), 4.5),
+    ("caution", ("surface", "row_alt", "warn_tint"), 3.0),
+    ("danger", ("danger_tint",), 3.0),
 )
 
 
@@ -179,3 +197,31 @@ ICONS = {
     "filter": "",
     "copy": "",
 }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The look
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Direction:
+    """The look in one place: palette, type and shape."""
+
+    name: str
+    palette: dict
+    #: Font candidates, best first, each ending on a Windows 10 font.
+    body: tuple
+    display: tuple
+    mono: tuple
+    #: Corner radius of cards, and of buttons and inputs.
+    radius: int
+    control_radius: int
+
+
+#: Clinical precision — chosen by the owner over "Certificate" and "Bold" from
+#: real screenshots of all three, in both themes (Gate 2, September 2026).
+ACTIVE = Direction("Clinical precision", CLINICAL, BODY_FONTS, DISPLAY_FONTS,
+                   MONO_FONTS, radius=10, control_radius=7)
+
+#: The palette the app draws with.
+PALETTE: dict[str, Colour] = ACTIVE.palette

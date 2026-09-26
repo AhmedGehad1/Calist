@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import queue
 import subprocess
@@ -33,6 +32,7 @@ import customtkinter as ctk
 import access
 import calist
 import theme
+import ui_state
 from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, CANCELLED, COPY,
                     ERROR, LEFT_OUT, OK, READY, UNKNOWN_CODE, UNSUPPORTED,
                     FileOutcome, RunResult)
@@ -52,10 +52,14 @@ except Exception:                                    # pragma: no cover
 # Every colour is a (light, dark) pair from theme.py. CustomTkinter widgets
 # take the pair and switch by themselves; Tk-native ones (the device table, its
 # scrollbar, the flame) take live(pair) and are re-coloured by _apply_theme.
+#: The look this build draws: palette, type, shape and signature pieces.
+DIR = theme.ACTIVE
 _P = theme.PALETTE
 BG = _P["bg"]                   # window
-SURFACE = _P["surface"]         # cards
-SURFACE_2 = _P["surface_2"]     # table, inputs
+SURFACE = _P["surface"]         # cards, the table
+SURFACE_2 = _P["surface_2"]     # inputs, secondary buttons
+CHROME = _P["chrome"]           # the footer and the settings drawer
+ROW_ALT = _P["row_alt"]         # every other table row
 BORDER = _P["border"]
 TEXT = _P["text"]
 MUTED = _P["muted"]
@@ -63,10 +67,16 @@ FAINT = _P["faint"]
 
 PRIMARY = _P["accent"]
 PRIMARY_HOVER = _P["accent_hover"]
+ON_ACCENT = _P["on_accent"]
 SELECTION = _P["selection"]
+HIGHLIGHT = _P["highlight"]
+ON_HIGHLIGHT = _P["on_highlight"]
 SUCCESS = _P["success"]
 WARNING = _P["warning"]
+CAUTION = _P["caution"]         # a warning dot or glyph
+WARN_TINT = _P["warn_tint"]     # a row that needs a look
 DANGER = _P["danger"]
+DANGER_TINT = _P["danger_tint"]  # a row that could not be read
 
 #: Turbo. The wordmark takes TURBO, so "on" is unmistakable at a glance.
 TURBO = _P["turbo"]
@@ -85,26 +95,128 @@ def live(colour) -> str:
 #: of the table and the register, and listed under Details instead.
 FORMS_ONLY_LABEL = "Real device forms only"
 
+# Families are chosen from what is installed (resolve_fonts), because Tk
+# substitutes a missing family without a word. These are the Windows 10
+# fallbacks until then.
 FONT = "Segoe UI"
+DISPLAY = "Segoe UI"
 MONO = "Consolas"
+ICON_FONT = "Segoe MDL2 Assets"
+
+#: Families that exist only on Windows 11. `--win10` screenshots and
+#: force_windows10_fonts() pretend they are absent.
+WINDOWS_11_ONLY = frozenset({"Segoe UI Variable Text", "Segoe UI Variable Display",
+                             "Segoe UI Variable Small", "Cascadia Mono",
+                             "Cascadia Code", "Segoe Fluent Icons"})
+_windows10_fonts = False
+
+
+def force_windows10_fonts() -> None:
+    """Draw with the fonts a Windows 10 machine has, to preview it here."""
+    global _windows10_fonts
+    _windows10_fonts = True
+
+
+def resolve_fonts(root) -> None:
+    """Pick each role's family from the installed ones, once, at startup."""
+    global FONT, DISPLAY, MONO
+    import tkinter.font as tkfont
+    installed = set(tkfont.families(root))
+    if _windows10_fonts:
+        installed -= WINDOWS_11_ONLY
+    FONT = theme.pick_family(installed, DIR.body, theme.FALLBACK_BODY)
+    DISPLAY = theme.pick_family(installed, DIR.display, theme.FALLBACK_BODY)
+    MONO = theme.pick_family(installed, DIR.mono, theme.FALLBACK_MONO)
+
+
+def body_font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
+    return ctk.CTkFont(FONT, size, weight)
+
+
+def display_font(size: int, weight: str = "bold") -> ctk.CTkFont:
+    return ctk.CTkFont(DISPLAY, size, weight)
+
+
+def mono_font(size: int = 11) -> ctk.CTkFont:
+    return ctk.CTkFont(MONO, size)
+
+
+def icon_font(size: int = 14) -> ctk.CTkFont:
+    return ctk.CTkFont(ICON_FONT, size)
+
 
 #: Row status → (label, treeview tag)
 STATUS_DISPLAY = {
     READY: ("Ready", "ready"),
     OK: ("Read", "ok"),
     UNKNOWN_CODE: ("Unknown code", "warn"),
-    UNSUPPORTED: ("Unsupported file", "warn"),
-    ERROR: ("Failed", "error"),
+    UNSUPPORTED: ("Not a form Calist reads", "warn"),
+    ERROR: ("Could not be read", "error"),
     CANCELLED: ("Cancelled", "muted"),
-    COPY: ("Copy — left out", "muted"),
+    COPY: ("Copy, left out", "muted"),
     LEFT_OUT: ("Left out", "muted"),
 }
+
+
+def status_text(outcome: FileOutcome) -> str:
+    """What the Status column says: the state first, then the one fact that
+    says what to do about it."""
+    label = STATUS_DISPLAY.get(outcome.status, (outcome.status, ""))[0]
+    if outcome.status == UNKNOWN_CODE and outcome.device_code:
+        return f"Unknown code {outcome.device_code}"
+    if outcome.status == UNSUPPORTED:
+        suffix = Path(outcome.filename).suffix.lower()
+        return f"{label} ({suffix})" if suffix else label
+    if outcome.detail and outcome.status not in (READY, OK):
+        return f"{label}: {outcome.detail}"
+    return label
+
+
+def result_breakdown(result: RunResult) -> str:
+    """One line on what went into the register, and what did not."""
+    parts = [f"{result.rows_written:,} rows from {result.files_read:,} forms"]
+    if result.second_rows_added:
+        parts.append(f"{result.second_rows_added:,} module rows")
+    if result.problems:
+        parts.append(f"{len(result.problems):,} need a look")
+    if result.copies:
+        parts.append(f"{len(result.copies):,} "
+                     f"cop{'ies' if len(result.copies) != 1 else 'y'} left out")
+    if result.left_out:
+        parts.append(f"{len(result.left_out):,} not device forms")
+    if result.duplicates_removed:
+        parts.append(f"{result.duplicates_removed:,} duplicate serial"
+                     f"{'s' if result.duplicates_removed != 1 else ''} removed")
+    return ", ".join(parts)
 
 SETTINGS_FILE = (Path(os.environ.get("APPDATA") or Path.home())
                  / "Calist" / "settings.json")
 
 #: How often an open window re-checks whether the calendar date has moved on.
 NEW_DAY_CHECK_MS = 30_000
+
+
+#: The mark's renditions, drawn by docs/make_icon.py: 22 logical pixels at
+#: 100%, 125%, 150% and 200% scaling.
+MARK_SIZES = (22, 28, 33, 44)
+
+
+def mark_image(widget) -> tk.PhotoImage | None:
+    """The app's mark at the size this display wants, or None.
+
+    Tk can only shrink an image by dropping whole pixels, which shreds a small
+    rounded tile, so each scaling has its own drawn file and the nearest one
+    at or above the wanted size is used. Best-effort, like the window icon.
+    """
+    wanted = 22 * ctk.ScalingTracker.get_widget_scaling(widget)
+    size = next((n for n in MARK_SIZES if n >= wanted - 0.5), MARK_SIZES[-1])
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    try:
+        return tk.PhotoImage(master=widget, file=str(base / "docs" /
+                                                     f"calist-mark-{size}.png"))
+    except Exception:
+        log_ui.debug("Could not load the mark", exc_info=True)
+        return None
 
 
 def app_icon() -> Path | None:
@@ -222,66 +334,6 @@ class TkLogHandler(logging.Handler):
             self._stopped = True            # window went away mid-poll
 
 
-class TurboFlame(tk.Canvas):
-    """A small flame that burns while Turbo is on.
-
-    Drawn as canvas polygons rather than as images: Pillow is a development-only
-    dependency (it draws the app icon in docs/make_icon.py and is deliberately
-    absent from requirements.txt), so it must not become a runtime one.
-
-    The animation is cheap on purpose — three smoothed polygons redrawn about
-    eleven times a second — because it burns hardest exactly when the worker
-    thread is busiest and the drain loop needs the main thread back.
-    """
-
-    W, H = 24, 28
-    FRAME_MS = 90
-    LAYERS = ((0.00, "#e8451f"), (0.30, "#ff8c1a"), (0.62, "#ffd977"))
-
-    def __init__(self, master):
-        super().__init__(master, width=self.W, height=self.H, bd=0,
-                         highlightthickness=0, bg=live(BG))
-        self._phase = 0.0
-        self._job: str | None = None
-
-    def start(self) -> None:
-        if self._job is None:
-            self._tick()
-
-    def stop(self) -> None:
-        if self._job is not None:
-            self.after_cancel(self._job)
-            self._job = None
-        self.delete("all")
-
-    def _tick(self) -> None:
-        self._phase += 0.55
-        self.delete("all")
-        for inset, colour in self.LAYERS:
-            self.create_polygon(self._tongue(inset), fill=colour,
-                                outline="", smooth=True)
-        self._job = self.after(self.FRAME_MS, self._tick)
-
-    def _tongue(self, inset: float) -> list[float]:
-        """One teardrop: a tip at the top, a bulge near the base, a wobble."""
-        centre, top = self.W / 2, self.H * 0.06
-        height = self.H * 0.9 * (1 - inset * 0.55)
-        width = self.W * 0.44 * (1 - inset)
-        phase = self._phase + inset * 2.2
-
-        points: list[float] = []
-        steps = 12
-        for side in (1, -1):
-            span = range(steps + 1) if side == 1 else range(steps, -1, -1)
-            for step in span:
-                along = step / steps                     # 0 at the tip
-                spread = math.sin(along * math.pi) ** 0.7
-                wobble = math.sin(phase + along * 3.4) * 1.7 * along * side
-                points.append(centre + side * spread * width + wobble)
-                points.append(top + along * height)
-        return points
-
-
 class StatusFormatter(logging.Formatter):
     """Tags warnings and errors, leaving ordinary progress lines unadorned."""
 
@@ -334,10 +386,10 @@ def human_duration(seconds: float) -> str:
 
 
 def tint_title_bar(window) -> None:
-    """Colour the title bar to match the window, on Windows 11.
+    """Colour the title bar and the window's edge to match it, on Windows 11.
 
-    DWMWA_CAPTION_COLOR (35) and DWMWA_TEXT_COLOR (36) exist from Windows 11
-    only. Windows 10 answers with an error code and keeps the dark or light
+    DWMWA_BORDER_COLOR (34), DWMWA_CAPTION_COLOR (35) and DWMWA_TEXT_COLOR (36)
+    exist from Windows 11 only. Windows 10 answers with an error code and keeps the dark or light
     title bar CustomTkinter already set, which is the right fallback — so the
     result is ignored, and nothing here may raise.
     """
@@ -346,7 +398,7 @@ def tint_title_bar(window) -> None:
     try:
         import ctypes
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        for attribute, colour in ((35, BG), (36, TEXT)):
+        for attribute, colour in ((34, BORDER), (35, BG), (36, TEXT)):
             rgb = live(colour).lstrip("#")
             # COLORREF is 0x00BBGGRR.
             value = ctypes.c_int(int(rgb[4:6] + rgb[2:4] + rgb[0:2], 16))
@@ -375,7 +427,19 @@ def open_file(path: Path) -> None:
         subprocess.run(["xdg-open", str(path)])
 
 
-def style_treeview() -> None:
+#: Device-table row height at 100% scaling. Dense enough that a 1366x768
+#: laptop shows 15 or more forms at once, loose enough for the dot to breathe.
+ROW_HEIGHT = 26
+
+
+def table_row_height(widget) -> int:
+    """ROW_HEIGHT in device pixels. ttk's rowheight is raw pixels and does not
+    follow CustomTkinter's scaling, so without this a 125% display gets rows
+    too short for their own text."""
+    return round(ROW_HEIGHT * ctk.ScalingTracker.get_widget_scaling(widget))
+
+
+def style_treeview(root=None) -> None:
     """Make ttk.Treeview match the surrounding CTk surfaces.
 
     A Treeview rather than stacked CTk frames because this table routinely
@@ -389,27 +453,173 @@ def style_treeview() -> None:
     # current appearance, and _apply_theme calls it again on every switch.
     style.configure(
         "Calist.Treeview",
-        background=live(SURFACE_2), fieldbackground=live(SURFACE_2),
-        foreground=live(TEXT),
-        rowheight=32, borderwidth=0, relief="flat", font=(FONT, 10),
+        background=live(SURFACE), fieldbackground=live(SURFACE),
+        foreground=live(TEXT), borderwidth=0, relief="flat", font=(FONT, 10),
+        rowheight=table_row_height(root) if root is not None else ROW_HEIGHT,
     )
     style.configure(
         "Calist.Treeview.Heading",
         background=live(SURFACE), foreground=live(MUTED), relief="flat",
-        borderwidth=0, padding=(10, 8), font=(FONT, 9, "bold"),
+        borderwidth=0, padding=(4, 6), font=(FONT, 9),
     )
     style.map("Calist.Treeview",
               background=[("selected", live(SELECTION))],
               foreground=[("selected", live(TEXT))])
-    style.map("Calist.Treeview.Heading", background=[("active", live(SURFACE_2))])
+    style.map("Calist.Treeview.Heading", background=[("active", live(SURFACE))])
     # Drop the default border box.
     style.layout("Calist.Treeview",
                  [("Calist.Treeview.treearea", {"sticky": "nswe"})])
 
-    style.configure("Calist.Vertical.TScrollbar",
-                    background=live(SURFACE_2), troughcolor=live(SURFACE),
-                    bordercolor=live(SURFACE), arrowcolor=live(MUTED),
-                    borderwidth=0, relief="flat")
+
+def status_dots(root, row_px: int) -> dict[str, tk.PhotoImage]:
+    """A small filled circle per status tag, for the table's #0 column.
+
+    Drawn pixel by pixel into a PhotoImage — no image files, no Pillow — at a
+    size that follows the row height, so it stays crisp at any scaling.
+    PhotoImage has on/off transparency only, so the edge is decided per pixel
+    from 4x4 samples rather than blended.
+    """
+    size = max(7, round(row_px * 0.30))
+    radius = size / 2
+    dots = {}
+    for tag, colour in (("ready", FAINT), ("ok", SUCCESS), ("warn", CAUTION),
+                        ("error", DANGER), ("muted", BORDER)):
+        image = tk.PhotoImage(master=root, width=size, height=size)
+        fill = live(colour)
+        for y in range(size):
+            for x in range(size):
+                inside = sum(
+                    (x + (i + .5) / 4 - radius) ** 2 + (y + (j + .5) / 4 - radius) ** 2
+                    <= radius ** 2 for i in range(4) for j in range(4))
+                if inside >= 8:
+                    image.put(fill, (x, y))
+        dots[tag] = image
+    return dots
+
+
+# ── controls ─────────────────────────────────────────────────────────────────
+#
+# Every button is one of a few roles, so the same action looks the same
+# everywhere and a disabled button never looks pressable: CustomTkinter keeps
+# a disabled button's fill, which left 1.x's "Build register" bright blue while
+# it did nothing.
+
+BUTTON_ROLES = {
+    "primary":   dict(fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+                      text_color=ON_ACCENT, border_width=0),
+    "secondary": dict(fg_color=SURFACE_2, hover_color=BORDER, text_color=TEXT,
+                      border_width=1, border_color=BORDER),
+    "ghost":     dict(fg_color="transparent", hover_color=SURFACE_2,
+                      text_color=MUTED, border_width=0),
+    "chip":      dict(fg_color=SURFACE, hover_color=SURFACE_2, text_color=TEXT,
+                      border_width=1, border_color=BORDER),
+    "picked":    dict(fg_color=HIGHLIGHT, hover_color=HIGHLIGHT,
+                      text_color=ON_HIGHLIGHT, border_width=1,
+                      border_color=HIGHLIGHT),
+}
+DISABLED_LOOK = dict(fg_color=SURFACE_2, hover_color=SURFACE_2,
+                     text_color_disabled=FAINT)
+
+
+def make_button(master, text: str, command, *, role: str = "secondary",
+                width: int = 120, height: int = 36, font=None) -> ctk.CTkButton:
+    look = BUTTON_ROLES[role]
+    button = ctk.CTkButton(master, text=text, command=command, width=width,
+                           height=height, corner_radius=DIR.control_radius,
+                           font=font or body_font(13, "bold" if role == "primary"
+                                                  else "normal"),
+                           text_color_disabled=FAINT, **look)
+    button._calist_role = role
+    return button
+
+
+def set_enabled(button: ctk.CTkButton, enabled: bool) -> None:
+    """Enable or disable a button, and make it look it."""
+    role = getattr(button, "_calist_role", "secondary")
+    if enabled:
+        button.configure(state="normal", **BUTTON_ROLES[role])
+    else:
+        look = dict(DISABLED_LOOK)
+        if role == "ghost":
+            # A hover colour may not be "transparent"; a disabled button never
+            # shows its hover anyway, so it is simply left as it was.
+            look = dict(fg_color="transparent", text_color_disabled=FAINT)
+        button.configure(state="disabled", **look)
+
+
+def make_icon_button(master, icon: str, command, *, size: int = 34,
+                     glyph_size: int = 14) -> ctk.CTkButton:
+    """A square button carrying one Segoe MDL2 Assets glyph."""
+    button = ctk.CTkButton(master, text=theme.ICONS[icon], command=command,
+                           width=size, height=size, corner_radius=DIR.control_radius,
+                           font=icon_font(glyph_size), fg_color="transparent",
+                           hover_color=SURFACE_2, text_color=MUTED)
+    button._calist_role = "ghost"
+    return button
+
+
+def make_check(master, text: str, variable, command) -> ctk.CTkCheckBox:
+    """An on/off setting, as a checkbox.
+
+    Not a CTkSwitch: CustomTkinter draws a switch's knob larger than its
+    track, so whatever colour the knob is, it vanishes into the drawer in
+    some look and mode — white on the white drawer, black on the black one.
+    A bordered box with the accent's own check mark reads everywhere.
+    """
+    return ctk.CTkCheckBox(master, text=text, variable=variable, command=command,
+                           font=body_font(13), text_color=TEXT,
+                           checkbox_width=20, checkbox_height=20, border_width=2,
+                           corner_radius=max(DIR.control_radius // 2, 3),
+                           border_color=MUTED, hover_color=PRIMARY_HOVER,
+                           fg_color=PRIMARY, checkmark_color=ON_ACCENT)
+
+
+class Toggle(ctk.CTkFrame):
+    """Mutually exclusive choices — All/Problems, Dark/Light.
+
+    Not a CTkSegmentedButton: that takes one text colour for every segment,
+    and no single colour reads on both the accent-filled selection and the
+    plain segments in every look (D's yellow wants black text, its plain
+    segments white).
+    """
+
+    def __init__(self, master, values, command=None, height: int = 32):
+        super().__init__(master, fg_color=SURFACE_2, border_width=1,
+                         border_color=BORDER, corner_radius=DIR.control_radius)
+        self._command = command
+        self._value = values[0]
+        self._buttons = {}
+        inner = max(DIR.control_radius - 2, 2)
+        for column, value in enumerate(values):
+            button = ctk.CTkButton(self, text=value, width=76, height=height - 8,
+                                   corner_radius=inner, font=body_font(12),
+                                   command=lambda v=value: self._pick(v))
+            button.grid(row=0, column=column, padx=(4 if column == 0 else 0, 4),
+                        pady=4)
+            self._buttons[value] = button
+        self._paint()
+
+    def get(self) -> str:
+        return self._value
+
+    def set(self, value: str | None) -> None:
+        """Select `value`; None shows no selection (another filter is on)."""
+        if value is None or value in self._buttons:
+            self._value = value
+            self._paint()
+
+    def _pick(self, value: str) -> None:
+        if value != self._value:
+            self.set(value)
+            if self._command:
+                self._command(value)
+
+    def _paint(self) -> None:
+        for value, button in self._buttons.items():
+            on = value == self._value
+            button.configure(fg_color=PRIMARY if on else "transparent",
+                             hover_color=PRIMARY_HOVER if on else BORDER,
+                             text_color=ON_ACCENT if on else MUTED)
 
 
 # customtkinter needs a mixin to cooperate with tkinterdnd2's root.
@@ -596,9 +806,10 @@ class LockPanel(ctk.CTkFrame):
 class App(_Root):
     def __init__(self) -> None:
         super().__init__()
+        resolve_fonts(self)
 
         self.title("Calist")
-        self.minsize(880, 600)
+        self.minsize(1000, 600)
         self._zoom_job: str | None = None
         self._size_to_screen()
         self.configure(fg_color=BG)
@@ -610,14 +821,23 @@ class App(_Root):
         self._template = tk.StringVar(value=self._initial_template())
         self._dedup = tk.BooleanVar(value=self._settings.get("deduplicate", False))
         self._forms_only = tk.BooleanVar(value=forms_only_setting(self._settings))
-        self._turbo = tk.BooleanVar(value=self._settings.get("turbo", False))
+        #: Whether the window is in Turbo: decided from the file count
+        #: (ui_state.is_turbo), and captured once more by _start for the run.
+        self._turbo_mode = False
         self._cancel: threading.Event | None = None
         self._scan: threading.Event | None = None
         self._scan_from = 0
         self._events: queue.Queue[tuple] = queue.Queue()
         self._result: RunResult | None = None
         self._lock: LockPanel | None = None
-        self._outdir = tk.StringVar(value=self._settings.get("output_dir", ""))
+        #: A save folder chosen in Settings. For this round only (owner's
+        #: decision): Clear all and a restart go back to the round's folder, so
+        #: January's choice cannot quietly catch February's register.
+        self._outdir = tk.StringVar(value="")
+        #: What the user added, in order: (path, is_folder). The register's
+        #: default folder comes from the first (ui_state.origin_folder), and
+        #: Re-check walks them all again.
+        self._sources: list[tuple[str, bool]] = []
         self._fit_job: str | None = None
         self._fit_passes = 0
         self._started_at = 0.0
@@ -627,17 +847,35 @@ class App(_Root):
         self._live_problems: list[FileOutcome] = []
         self._live_render = 0.0
         self._log_open = False
+        #: The problem group the banner is filtering the table to, if any.
+        self._group: ui_state.Group | None = None
+        self._search_job: str | None = None
+        self._panel_open = False
+        self._panel_job: str | None = None
+        #: (rows shown, forms in the round) as of the last table refresh.
+        self._table_counts = (0, 0)
+        #: Pending stand-down of an armed "Clear all", if one is armed.
+        self._clear_job: str | None = None
+        #: Status dots for the table, drawn per theme (see status_dots).
+        self._dots: dict[str, tk.PhotoImage] = {}
+        #: One-pixel rules. CustomTkinter will not draw a frame that thin, so
+        #: these are Tk frames, re-coloured by _apply_theme.
+        self._hairlines: list[tk.Frame] = []
+        #: Raw Treeview row height, in device pixels — scaled with the display.
+        self.ROW_PX = table_row_height(self)
 
-        style_treeview()
+        style_treeview(self)
         self._build()
         self._attach_logging()
-        self._apply_turbo()
         self._enter_setup()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Control-o>", lambda _e: self._add_folder())
         self.bind("<Control-Return>", lambda _e: self._start())
-        self.bind("<Escape>", lambda _e: self._cancel_run())
+        self.bind("<Control-f>", lambda _e: self._focus_search())
+        self.bind("<Control-comma>", lambda _e: self._toggle_settings())
+        self.bind("<F5>", lambda _e: self._recheck())
+        self.bind("<Escape>", self._on_escape)
 
         # Scheduled, not called: the initial unlock belongs to run(), and
         # checking here as well would raise a second prompt behind the first.
@@ -706,18 +944,17 @@ class App(_Root):
         return str(shipped) if shipped else ""
 
     # ── layout ───────────────────────────────────────────────────────────────
+    #
+    # The page scrolls; the footer does not. What the user acts on — where the
+    # register goes, and the button that builds it — is pinned to the bottom
+    # of the window, so no state (a long table, the Details log, a result) can
+    # push it out of sight. On a 1366x768 laptop the old single page put the
+    # result's buttons below the fold.
+
+    #: Side margin of every block, in logical units.
+    PAD = 24
 
     def _build(self) -> None:
-        """Everything lives on one scrollable page.
-
-        Before this, the window was a fixed grid and the table row carried the
-        only weight — so every pixel the results card or the details drawer
-        needed came straight out of the device list, which collapsed to a sliver
-        once a run finished with the drawer open. Now the page keeps each block
-        at a usable size and scrolls when the total exceeds the window;
-        `_fit_to_window` hands any leftover space back so nothing is wasted
-        when the window is large.
-        """
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -729,11 +966,11 @@ class App(_Root):
 
         self._build_header()
         self._build_intake()
+        self._build_banner()
         self._build_table()
-        self._build_summary()
-        self._build_settings()
-        self._build_action()
         self._build_log_drawer()
+        self._build_footer()
+        self._build_settings_panel()
 
         # Reflow when the window is resized, and once at startup after the
         # first real geometry is known.
@@ -742,62 +979,47 @@ class App(_Root):
 
     def _build_header(self) -> None:
         bar = ctk.CTkFrame(self._page, fg_color="transparent")
-        bar.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 14))
-        bar.grid_columnconfigure(0, weight=1)
+        bar.grid(row=0, column=0, sticky="ew", padx=self.PAD, pady=(12, 8))
+        bar.grid_columnconfigure(2, weight=1)
         self._header = bar
 
-        mark = ctk.CTkFrame(bar, fg_color="transparent")
-        mark.grid(row=0, column=0, sticky="w")
+        brand = ctk.CTkFrame(bar, fg_color="transparent")
+        brand.grid(row=0, column=0, sticky="w")
+        # A Tk label, not a CTkLabel: CTkLabel wants a CTkImage, which needs
+        # Pillow. Its background follows the theme in _apply_theme.
+        self._mark = mark_image(self)
+        self._lbl_logo = tk.Label(brand, image=self._mark, bd=0,
+                                  highlightthickness=0, bg=live(BG))
+        if self._mark is not None:
+            self._lbl_logo.grid(row=0, column=0, padx=(0, 10))
+        self._lbl_mark = ctk.CTkLabel(brand, text="Calist", text_color=TEXT,
+                                      font=display_font(20))
+        self._lbl_mark.grid(row=0, column=1, sticky="w")
 
-        self._lbl_mark = ctk.CTkLabel(mark, text="Calist", text_color=TEXT,
-                                      font=ctk.CTkFont(FONT, 26, "bold"))
-        self._lbl_mark.grid(row=0, column=0, sticky="w")
+        # Which round this is — the folder the forms came from. Orientation
+        # for the person who has three rounds open in Explorer.
+        self._round_rule = self._hairline(bar, vertical=True)
+        self._lbl_round = ctk.CTkLabel(bar, text="", text_color=TEXT,
+                                       font=body_font(15))
 
-        # Turbo: a round switch beside the wordmark, and a flame once it is on.
-        self._flame = TurboFlame(mark)
-        self._flame.grid(row=0, column=1, padx=(10, 0))
-        self._flame.grid_remove()
-
-        self._btn_turbo = ctk.CTkButton(
-            mark, text="", width=26, height=26, corner_radius=13,
-            border_width=2, border_color=BORDER, fg_color=SURFACE,
-            hover_color=SURFACE_2, command=self._toggle_turbo)
-        self._btn_turbo.grid(row=0, column=2, padx=(12, 6))
-
-        self._lbl_turbo = ctk.CTkLabel(mark, text="Turbo", text_color=FAINT,
-                                       font=ctk.CTkFont(FONT, 12))
-        self._lbl_turbo.grid(row=0, column=3)
-
-        buttons = ctk.CTkFrame(bar, fg_color="transparent")
-        buttons.grid(row=0, column=1, sticky="e")
-
-        # Attribution sits on the button line, immediately left of Details.
-        ctk.CTkLabel(buttons, text=f"Built by {AUTHOR_NAME}", text_color=FAINT,
-                     font=ctk.CTkFont(FONT, 11)
-                     ).grid(row=0, column=0, padx=(0, 14))
-
-        self._btn_details = ctk.CTkButton(
-            buttons, text="Details", width=88, height=32, corner_radius=8,
-            fg_color=SURFACE, hover_color=SURFACE_2, text_color=MUTED,
-            font=ctk.CTkFont(FONT, 12), command=self._toggle_log,
-        )
-        self._btn_details.grid(row=0, column=1, padx=(0, 8))
-
-        ctk.CTkButton(
-            buttons, text="About", width=76, height=32, corner_radius=8,
-            fg_color=SURFACE, hover_color=SURFACE_2, text_color=MUTED,
-            font=ctk.CTkFont(FONT, 12), command=self._show_about,
-        ).grid(row=0, column=2)
+        tools = ctk.CTkFrame(bar, fg_color="transparent")
+        tools.grid(row=0, column=3, sticky="e")
+        self._btn_details = make_button(tools, "Details", self._toggle_log,
+                                        role="ghost", width=84, height=32)
+        self._btn_details.grid(row=0, column=0, padx=(0, 4))
+        self._btn_settings = make_icon_button(tools, "settings",
+                                              self._toggle_settings, size=32)
+        self._btn_settings.grid(row=0, column=1)
 
     def _build_intake(self) -> None:
-        """Adding devices is the whole point of the app, so it leads.
+        """Adding a round is the whole point of the app, so it leads.
 
-        With nothing loaded the hero fills the window; once devices are in it
-        collapses to a slim bar and hands the space to the table.
+        With nothing loaded the hero fills the window; once forms are in it
+        collapses to a toolbar — adding, re-checking, searching and the
+        All/Problems filter on one line — and hands the space to the table.
         """
-        self._intake = ctk.CTkFrame(self._page, fg_color=SURFACE, corner_radius=14,
-                                    border_width=1, border_color=BORDER)
-        self._intake.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 14))
+        self._intake = ctk.CTkFrame(self._page, fg_color="transparent")
+        self._intake.grid(row=1, column=0, sticky="nsew", padx=self.PAD, pady=(0, 8))
         self._intake.grid_columnconfigure(0, weight=1)
         self._intake.grid_rowconfigure(0, weight=1)
 
@@ -805,115 +1027,128 @@ class App(_Root):
         # Fixed height with propagation off, so _fit_to_window can grow the hero
         # into spare window space. Left to size itself it would collapse to its
         # contents, and the empty state is meant to fill the window.
-        self._hero = ctk.CTkFrame(self._intake, fg_color="transparent",
-                                  height=self.MIN_HERO_H)
-        self._hero.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        self._hero = ctk.CTkFrame(self._intake, fg_color=SURFACE,
+                                  corner_radius=DIR.radius, border_width=1,
+                                  border_color=BORDER, height=self.MIN_HERO_H)
+        self._hero.grid(row=0, column=0, sticky="nsew")
         self._hero.grid_propagate(False)
         self._hero.grid_columnconfigure(0, weight=1)
         self._hero.grid_rowconfigure(0, weight=1)
-        self._hero.grid_rowconfigure(7, weight=1)      # centres the stack
+        self._hero.grid_rowconfigure(6, weight=1)      # centres the stack
 
-        badge = ctk.CTkFrame(self._hero, fg_color=SURFACE_2, corner_radius=22,
-                             width=76, height=76, border_width=1,
-                             border_color=BORDER)
-        badge.grid(row=1, column=0, pady=(0, 18))
-        badge.grid_propagate(False)
-        ctk.CTkLabel(badge, text="+", text_color=PRIMARY,
-                     font=ctk.CTkFont(FONT, 38, "bold")).place(relx=.5, rely=.46,
-                                                               anchor="center")
-
-        ctk.CTkLabel(self._hero, text="Add your devices", text_color=TEXT,
-                     font=ctk.CTkFont(FONT, 24, "bold")).grid(row=2, column=0)
+        ctk.CTkLabel(self._hero, text=theme.ICONS["folder_open"], text_color=MUTED,
+                     font=icon_font(40)).grid(row=1, column=0, pady=(0, 14))
+        ctk.CTkLabel(self._hero, text="Add a round of inspection forms",
+                     text_color=TEXT, font=display_font(22)).grid(row=2, column=0)
+        ctk.CTkLabel(self._hero, text="Choose the round's folder. Calist reads "
+                     "every form in it, subfolders included.",
+                     text_color=MUTED, font=body_font(13)).grid(row=3, column=0,
+                                                                pady=(6, 0))
 
         buttons = ctk.CTkFrame(self._hero, fg_color="transparent")
-        buttons.grid(row=4, column=0, pady=(20, 0))
-        ctk.CTkButton(buttons, text="Add folder", width=190, height=50,
-                      corner_radius=11, fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
-                      font=ctk.CTkFont(FONT, 15, "bold"), command=self._add_folder
-                      ).pack(side="left", padx=(0, 12))
-        ctk.CTkButton(buttons, text="Add single files", width=150, height=50,
-                      corner_radius=11, fg_color=SURFACE_2, hover_color=BORDER,
-                      text_color=TEXT, font=ctk.CTkFont(FONT, 14),
-                      command=self._add_files).pack(side="left")
+        buttons.grid(row=4, column=0, pady=(22, 0))
+        make_button(buttons, "Add folder", self._add_folder, role="primary",
+                    width=170, height=44, font=display_font(15)
+                    ).pack(side="left", padx=(0, 10))
+        make_button(buttons, "Add files", self._add_files, role="secondary",
+                    width=130, height=44, font=body_font(14)).pack(side="left")
 
-        # ── slim bar ─────────────────────────────────────────────────────────
-        self._drop_slim = ctk.CTkFrame(self._intake, fg_color="transparent")
-        self._drop_slim.grid_columnconfigure(2, weight=1)
-        self._btn_slim_folder = ctk.CTkButton(
-            self._drop_slim, text="+  Add folder", width=124, height=34,
-            corner_radius=8, fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
-            font=ctk.CTkFont(FONT, 12, "bold"), command=self._add_folder)
-        self._btn_slim_folder.grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkLabel(self._hero, text="Forms named like G302-AGH001-0425 are "
+                     "recognised from the name, before anything is opened.",
+                     text_color=FAINT, font=body_font(12)
+                     ).grid(row=5, column=0, pady=(18, 0))
 
-        self._btn_slim_files = ctk.CTkButton(
-            self._drop_slim, text="+  Add files", width=112, height=34,
-            corner_radius=8, fg_color=SURFACE_2, hover_color=BORDER,
-            text_color=TEXT, font=ctk.CTkFont(FONT, 12), command=self._add_files)
-        self._btn_slim_files.grid(row=0, column=1)
-
-        self._lbl_summary = ctk.CTkLabel(self._drop_slim, text="", text_color=MUTED,
-                                         anchor="w", font=ctk.CTkFont(FONT, 12))
-        self._lbl_summary.grid(row=0, column=2, sticky="w", padx=16)
-
-        self._btn_clear = ctk.CTkButton(
-            self._drop_slim, text="Clear all", width=90, height=34, corner_radius=8,
-            fg_color="transparent", hover_color=SURFACE_2, text_color=MUTED,
-            font=ctk.CTkFont(FONT, 12), command=self._clear_files,
-        )
+        # ── toolbar, once forms are in ───────────────────────────────────────
+        bar = ctk.CTkFrame(self._intake, fg_color="transparent")
+        bar.grid_columnconfigure(4, weight=1)
+        self._toolbar = bar
+        self._btn_slim_folder = make_button(bar, "Add folder", self._add_folder,
+                                            role="primary", width=112, height=34)
+        self._btn_slim_folder.grid(row=0, column=0, padx=(0, 6))
+        self._btn_slim_files = make_button(bar, "Add files", self._add_files,
+                                           role="secondary", width=96, height=34)
+        self._btn_slim_files.grid(row=0, column=1, padx=(0, 6))
+        self._btn_recheck = make_button(bar, "Re-check", self._recheck,
+                                        role="secondary", width=92, height=34)
+        self._btn_recheck.grid(row=0, column=2, padx=(0, 2))
+        self._btn_clear = make_button(bar, "Clear all", self._arm_clear,
+                                      role="ghost", width=112, height=34)
         self._btn_clear.grid(row=0, column=3)
+
+        # Search: every word must appear somewhere in the row (ui_state.matches).
+        box = ctk.CTkFrame(bar, fg_color=SURFACE_2, corner_radius=DIR.control_radius,
+                           border_width=1, border_color=BORDER)
+        box.grid(row=0, column=5, sticky="e", padx=(12, 8))
+        self._search_box = box
+        ctk.CTkLabel(box, text=theme.ICONS["search"], text_color=FAINT,
+                     font=icon_font(13), width=18).grid(row=0, column=0, padx=(10, 2))
+        self._search = ctk.CTkEntry(
+            box, width=250, height=30, border_width=0, fg_color=SURFACE_2,
+            text_color=TEXT, placeholder_text="Search file, device, serial or code",
+            placeholder_text_color=FAINT, font=body_font(12))
+        self._search.grid(row=0, column=1, padx=(0, 4), pady=1)
+        self._search.bind("<KeyRelease>", self._on_search_typed)
+        self._search.bind("<FocusIn>", lambda _e: box.configure(border_color=PRIMARY))
+        self._search.bind("<FocusOut>", lambda _e: box.configure(border_color=BORDER))
+        self._btn_search_clear = make_icon_button(box, "cancel", self._clear_search,
+                                                  size=24, glyph_size=10)
+
+        self._filter = Toggle(bar, ("All", "Problems"),
+                              command=self._on_filter_picked)
+        self._filter.grid(row=0, column=6, sticky="e")
 
         if HAS_DND:                                    # pragma: no cover
             self._intake.drop_target_register(DND_FILES)
             self._intake.dnd_bind("<<Drop>>", self._on_drop)
 
+    def _build_banner(self) -> None:
+        """The round in one line: its counts, then its problems, grouped.
+
+        A round's worth of one mistake — fourteen forms named for a device
+        code nobody added — is one chip, and one click shows exactly those
+        files. The right end says what the table is filtered to, and how to
+        clear it.
+        """
+        self._banner = ctk.CTkFrame(self._page, fg_color="transparent")
+        self._banner.grid_columnconfigure(1, weight=1)
+
     def _build_table(self) -> None:
-        wrap = ctk.CTkFrame(self._page, fg_color=SURFACE_2, corner_radius=12,
+        wrap = ctk.CTkFrame(self._page, fg_color=SURFACE, corner_radius=DIR.radius,
                             border_width=1, border_color=BORDER)
         wrap.grid_columnconfigure(0, weight=1)
-        wrap.grid_rowconfigure(1, weight=1)
+        wrap.grid_rowconfigure(0, weight=1)
         self._table_wrap = wrap
 
-        head = ctk.CTkFrame(wrap, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
-        head.grid_columnconfigure(1, weight=1)
-
-        self._lbl_table = ctk.CTkLabel(head, text="Devices", text_color=TEXT,
-                                       font=ctk.CTkFont(FONT, 13, "bold"))
-        self._lbl_table.grid(row=0, column=0, sticky="w")
-
-        self._filter = ctk.CTkSegmentedButton(
-            head, values=["All", "Problems"], width=180, height=30,
-            font=ctk.CTkFont(FONT, 11), command=lambda _v: self._refresh_table(),
-            fg_color=SURFACE, selected_color=PRIMARY,
-            selected_hover_color=PRIMARY_HOVER, unselected_color=SURFACE,
-            unselected_hover_color=BORDER,
-        )
-        self._filter.set("All")
-        self._filter.grid(row=0, column=2, sticky="e")
-
-        body = tk.Frame(wrap, bg=live(SURFACE_2), highlightthickness=0, bd=0)
-        body.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 10))
+        body = tk.Frame(wrap, bg=live(SURFACE), highlightthickness=0, bd=0)
+        body.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=(6, 8))
         self._table_body = body
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
+        # The #0 column carries a status dot and nothing else. The dot, the
+        # status words and — for a problem — a tinted row say what state a row
+        # is in; the text itself stays neutral and readable.
         self._tree = ttk.Treeview(
-            body, style="Calist.Treeview", show="headings", selectmode="extended",
-            columns=("file", "device", "serial", "status"), height=self.MIN_ROWS,
+            body, style="Calist.Treeview", show=("tree", "headings"),
+            selectmode="extended", columns=("file", "device", "serial", "status"),
+            height=self.MIN_ROWS,
         )
-        self._tree.heading("file", text="FILE", anchor="w")
-        self._tree.heading("device", text="DEVICE TYPE", anchor="w")
-        self._tree.heading("serial", text="SERIAL NUMBER", anchor="w")
-        self._tree.heading("status", text="STATUS", anchor="w")
-        self._tree.column("file", width=260, minwidth=160, anchor="w", stretch=False)
-        self._tree.column("device", width=200, minwidth=130, anchor="w", stretch=False)
-        self._tree.column("serial", width=180, minwidth=110, anchor="w", stretch=False)
+        self._tree.heading("file", text="File", anchor="w")
+        self._tree.heading("device", text="Device", anchor="w")
+        self._tree.heading("serial", text="Serial number", anchor="w")
+        self._tree.heading("status", text="Status", anchor="w")
+        dot = self.ROW_PX
+        self._tree.column("#0", width=dot, minwidth=dot, stretch=False, anchor="center")
+        self._tree.column("file", width=270, minwidth=160, anchor="w", stretch=False)
+        self._tree.column("device", width=190, minwidth=120, anchor="w", stretch=False)
+        self._tree.column("serial", width=160, minwidth=100, anchor="w", stretch=False)
         self._tree.column("status", width=260, minwidth=150, anchor="w", stretch=True)
         self._tree.grid(row=0, column=0, sticky="nsew")
 
-        bar = ttk.Scrollbar(body, orient="vertical", command=self._tree.yview,
-                            style="Calist.Vertical.TScrollbar")
-        bar.grid(row=0, column=1, sticky="ns")
+        bar = ctk.CTkScrollbar(body, command=self._tree.yview, width=12,
+                               fg_color=SURFACE, button_color=BORDER,
+                               button_hover_color=FAINT)
+        bar.grid(row=0, column=1, sticky="ns", padx=(4, 0))
         self._tree.configure(yscrollcommand=bar.set)
         # The page binds <MouseWheel> on every descendant, so without this the
         # wheel would scroll the page instead of the list under the pointer.
@@ -924,183 +1159,217 @@ class App(_Root):
         self._tree.bind("<Double-1>", self._reveal_selected)
         self._tree.bind("<Delete>", self._remove_selected)
 
-        self._empty = ctk.CTkLabel(
-            body, text="No devices yet.\nAdd a folder to get started.",
-            text_color=FAINT, font=ctk.CTkFont(FONT, 13), justify="center")
-
-    def _build_summary(self) -> None:
-        """Turbo's stand-in for the device table.
-
-        At tens of thousands of forms a row per file is the single largest
-        per-file cost in the window, and nobody reads forty thousand rows
-        anyway. What is actually wanted is the count, and then the short list
-        of things that went wrong.
-        """
-        wrap = ctk.CTkFrame(self._page, fg_color=SURFACE_2, corner_radius=12,
-                            border_width=1, border_color=BORDER)
-        wrap.grid_columnconfigure(0, weight=1)
-        wrap.grid_rowconfigure(1, weight=1)
-        self._summary_wrap = wrap
-
-        self._lbl_summary_head = ctk.CTkLabel(
-            wrap, text="Turbo", text_color=TURBO, anchor="w",
-            font=ctk.CTkFont(FONT, 13, "bold"))
-        self._lbl_summary_head.grid(row=0, column=0, sticky="w", padx=14,
-                                    pady=(12, 6))
-
-        self._summary_box = ctk.CTkTextbox(
-            wrap, height=260, fg_color=SURFACE_2, text_color=TEXT,
-            font=ctk.CTkFont(MONO, 12), wrap="none", activate_scrollbars=True)
-        self._summary_box.grid(row=1, column=0, sticky="nsew", padx=10,
-                               pady=(0, 10))
-        self._summary_box.configure(state="disabled")
-        self._summary_box.bind("<MouseWheel>", self._wheel_over(self._summary_box))
-        wrap.grid_remove()
-
-    def _build_settings(self) -> None:
-        panel = ctk.CTkFrame(self._page, fg_color=SURFACE, corner_radius=12,
-                             border_width=1, border_color=BORDER)
-        panel.grid(row=3, column=0, sticky="ew", padx=28, pady=(14, 0))
-        panel.grid_columnconfigure(1, weight=1)
-        self._settings_panel = panel
-
-        # Template row
-        ctk.CTkLabel(panel, text="Template", text_color=MUTED, width=76, anchor="w",
-                     font=ctk.CTkFont(FONT, 12)).grid(row=0, column=0, sticky="w",
-                                                      padx=(18, 10), pady=(14, 6))
-        self._lbl_template = ctk.CTkLabel(panel, text="", text_color=TEXT, anchor="w",
-                                          font=ctk.CTkFont(FONT, 12))
-        self._lbl_template.grid(row=0, column=1, sticky="w", pady=(14, 6))
-        self._btn_change = ctk.CTkButton(
-            panel, text="Change", width=84, height=30, corner_radius=8,
-            fg_color=SURFACE_2, hover_color=BORDER, text_color=TEXT,
-            font=ctk.CTkFont(FONT, 12), command=self._pick_template)
-        self._btn_change.grid(row=0, column=2, padx=(10, 18), pady=(14, 6))
-
-        # Destination row — the answer to "where did my file go?"
-        ctk.CTkLabel(panel, text="Saves to", text_color=MUTED, width=76, anchor="w",
-                     font=ctk.CTkFont(FONT, 12)).grid(row=1, column=0, sticky="w",
-                                                      padx=(18, 10), pady=(0, 6))
-        self._lbl_dest = ctk.CTkLabel(panel, text="", text_color=TEXT, anchor="w",
-                                      font=ctk.CTkFont(FONT, 12))
-        self._lbl_dest.grid(row=1, column=1, sticky="w", pady=(0, 6))
-        self._btn_dest = ctk.CTkButton(
-            panel, text="Select folder", width=110, height=30, corner_radius=8,
-            fg_color=SURFACE_2, hover_color=BORDER, text_color=TEXT,
-            font=ctk.CTkFont(FONT, 12), command=self._pick_output_folder)
-        self._btn_dest.grid(row=1, column=2, padx=(10, 18), pady=(0, 6))
-
-        # Both switches share one row: dedup left, device forms only hard right.
-        # The weighted spacer column between them is what pins the second one
-        # to the edge as the window widens.
-        switches = ctk.CTkFrame(panel, fg_color="transparent")
-        switches.grid(row=2, column=0, columnspan=3, sticky="ew",
-                      padx=(18, 18), pady=(6, 14))
-        switches.grid_columnconfigure(0, weight=1)
-
-        self._switch_dedup = ctk.CTkSwitch(
-            switches, text="Remove duplicate serial numbers", variable=self._dedup,
-            font=ctk.CTkFont(FONT, 12), text_color=TEXT, progress_color=PRIMARY,
-            button_color=TEXT, fg_color=BORDER, command=self._remember,
-        )
-        self._switch_dedup.grid(row=0, column=0, sticky="w")
-
-        self._switch_forms = ctk.CTkSwitch(
-            switches, text=FORMS_ONLY_LABEL, variable=self._forms_only,
-            font=ctk.CTkFont(FONT, 12), text_color=TEXT,
-            progress_color=PRIMARY, button_color=TEXT, fg_color=BORDER,
-            command=self._on_forms_only_toggled,
-        )
-        self._switch_forms.grid(row=0, column=1, sticky="e", padx=(24, 0))
-
-    def _build_action(self) -> None:
-        self._action = ctk.CTkFrame(self._page, fg_color="transparent")
-        self._action.grid(row=4, column=0, sticky="ew", padx=28, pady=(14, 18))
-        self._action.grid_columnconfigure(0, weight=1)
-
-        # — idle: hint on the left, primary button on the right
-        self._idle = ctk.CTkFrame(self._action, fg_color="transparent")
-        self._idle.grid_columnconfigure(0, weight=1)
-        self._lbl_hint = ctk.CTkLabel(self._idle, text="", text_color=MUTED,
-                                      anchor="w", font=ctk.CTkFont(FONT, 12))
-        self._lbl_hint.grid(row=0, column=0, sticky="w")
-        self._btn_build = ctk.CTkButton(
-            self._idle, text="Build register", width=180, height=44,
-            corner_radius=10, fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
-            font=ctk.CTkFont(FONT, 14, "bold"), command=self._start)
-        self._btn_build.grid(row=0, column=1, sticky="e")
-
-        # — working: progress, current file, cancel
-        self._busy = ctk.CTkFrame(self._action, fg_color="transparent")
-        self._busy.grid_columnconfigure(0, weight=1)
-        self._lbl_stage = ctk.CTkLabel(self._busy, text="", text_color=TEXT,
-                                       anchor="w", font=ctk.CTkFont(FONT, 13, "bold"))
-        self._lbl_stage.grid(row=0, column=0, sticky="w")
-        self._lbl_eta = ctk.CTkLabel(self._busy, text="", text_color=MUTED,
-                                     anchor="e", font=ctk.CTkFont(FONT, 12))
-        self._lbl_eta.grid(row=0, column=1, sticky="e", padx=(0, 12))
-        self._btn_cancel = ctk.CTkButton(
-            self._busy, text="Cancel", width=100, height=36, corner_radius=9,
-            fg_color=SURFACE_2, hover_color=DANGER, text_color=TEXT,
-            font=ctk.CTkFont(FONT, 12, "bold"), command=self._cancel_run)
-        self._btn_cancel.grid(row=0, column=2, rowspan=2, sticky="e")
-
-        self._bar = ctk.CTkProgressBar(self._busy, height=8, corner_radius=4,
-                                       progress_color=PRIMARY, fg_color=SURFACE_2)
-        self._bar.set(0)
-        self._bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0),
-                       padx=(0, 12))
-        self._lbl_current = ctk.CTkLabel(self._busy, text="", text_color=FAINT,
-                                         anchor="w", font=ctk.CTkFont(MONO, 11))
-        self._lbl_current.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-
-        # — results card
-        self._done = ctk.CTkFrame(self._action, fg_color=SURFACE, corner_radius=12,
-                                  border_width=1, border_color=BORDER)
-        self._done.grid_columnconfigure(1, weight=1)
-        self._lbl_verdict = ctk.CTkLabel(self._done, text="", text_color=TEXT,
-                                         anchor="w", font=ctk.CTkFont(FONT, 15, "bold"))
-        self._lbl_verdict.grid(row=0, column=0, columnspan=2, sticky="w",
-                               padx=18, pady=(14, 0))
-        self._lbl_breakdown = ctk.CTkLabel(self._done, text="", text_color=MUTED,
-                                           anchor="w", font=ctk.CTkFont(FONT, 12))
-        self._lbl_breakdown.grid(row=1, column=0, columnspan=2, sticky="w",
-                                 padx=18, pady=(2, 8))
-        self._lbl_saved = ctk.CTkLabel(self._done, text="", text_color=TEXT,
-                                       anchor="w", font=ctk.CTkFont(MONO, 11))
-        self._lbl_saved.grid(row=2, column=0, columnspan=2, sticky="w",
-                             padx=18, pady=(0, 12))
-
-        actions = ctk.CTkFrame(self._done, fg_color="transparent")
-        actions.grid(row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 16))
-        actions.grid_columnconfigure(2, weight=1)
-        self._btn_open = ctk.CTkButton(
-            actions, text="Open register", width=150, height=38, corner_radius=9,
-            fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
-            font=ctk.CTkFont(FONT, 13, "bold"), command=self._open_result)
-        self._btn_open.grid(row=0, column=0, padx=(0, 10))
-        self._btn_reveal = ctk.CTkButton(
-            actions, text="Reveal in folder", width=150, height=38, corner_radius=9,
-            fg_color=SURFACE_2, hover_color=BORDER, text_color=TEXT,
-            font=ctk.CTkFont(FONT, 13), command=self._reveal_result)
-        self._btn_reveal.grid(row=0, column=1)
-        ctk.CTkButton(actions, text="Start over", width=120, height=38,
-                      corner_radius=9, fg_color="transparent", hover_color=SURFACE_2,
-                      text_color=MUTED, font=ctk.CTkFont(FONT, 13),
-                      command=self._enter_setup).grid(row=0, column=3, sticky="e")
+        self._empty = ctk.CTkLabel(body, text="", text_color=FAINT,
+                                   font=body_font(13), justify="center")
 
     def _build_log_drawer(self) -> None:
-        self._drawer = ctk.CTkFrame(self._page, fg_color=SURFACE_2, corner_radius=12,
-                                    border_width=1, border_color=BORDER)
+        self._drawer = ctk.CTkFrame(self._page, fg_color=SURFACE,
+                                    corner_radius=DIR.radius, border_width=1,
+                                    border_color=BORDER)
         self._drawer.grid_columnconfigure(0, weight=1)
-        self._drawer.grid_rowconfigure(0, weight=1)
-
+        self._drawer.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(self._drawer, text="Details", text_color=TEXT,
+                     font=body_font(13, "bold")).grid(row=0, column=0, sticky="w",
+                                                      padx=14, pady=(10, 0))
         self._log_box = ctk.CTkTextbox(
-            self._drawer, height=180, fg_color=SURFACE_2, text_color=MUTED,
-            font=ctk.CTkFont(MONO, 11), wrap="none", activate_scrollbars=True)
-        self._log_box.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+            self._drawer, height=170, fg_color=SURFACE, text_color=MUTED,
+            font=mono_font(11), wrap="none", activate_scrollbars=True)
+        self._log_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(2, 8))
         self._log_box.configure(state="disabled")
         self._log_box.bind("<MouseWheel>", self._wheel_over(self._log_box))
+
+    def _build_footer(self) -> None:
+        """The action bar: where the register goes, and what to do next.
+
+        One line in every state, so the table keeps the height. It is pinned
+        to the window, not the page, so nothing can scroll it out of sight.
+        """
+        self._footer = ctk.CTkFrame(self, fg_color=CHROME, corner_radius=0)
+        self._footer.grid(row=1, column=0, sticky="ew")
+        self._footer.grid_columnconfigure(0, weight=1)
+        self._hairline(self._footer).grid(row=0, column=0, sticky="ew")
+
+        self._action = ctk.CTkFrame(self._footer, fg_color="transparent")
+        self._action.grid(row=1, column=0, sticky="ew", padx=self.PAD, pady=12)
+        self._action.grid_columnconfigure(0, weight=1)
+
+        # — idle: where it saves and what is ready; the credit; the button
+        self._idle = ctk.CTkFrame(self._action, fg_color="transparent")
+        self._idle.grid_columnconfigure(4, weight=1)
+        ctk.CTkLabel(self._idle, text="Saves to", text_color=MUTED,
+                     font=body_font(12)).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._lbl_dest = ctk.CTkLabel(self._idle, text="", text_color=TEXT,
+                                      anchor="w", font=body_font(12))
+        self._lbl_dest.grid(row=0, column=1, sticky="w")
+        self._lbl_dest_note = ctk.CTkLabel(self._idle, text="", text_color=WARNING,
+                                           font=body_font(12))
+        self._lbl_dest_note.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        self._lbl_hint = ctk.CTkLabel(self._idle, text="", text_color=MUTED,
+                                      anchor="w", font=body_font(12))
+        self._lbl_hint.grid(row=0, column=3, sticky="w", padx=(20, 0))
+        self._lbl_credit = ctk.CTkLabel(self._idle, text=f"Built by {AUTHOR_NAME}",
+                                        text_color=FAINT, font=body_font(11))
+        self._lbl_credit.grid(row=0, column=5, sticky="e", padx=(12, 16))
+        self._btn_build = make_button(self._idle, "Build register", self._start,
+                                      role="primary", width=180, height=40,
+                                      font=display_font(14))
+        self._btn_build.grid(row=0, column=6, sticky="e")
+
+        # — working: stage, the file in hand, progress; cancel
+        self._busy = ctk.CTkFrame(self._action, fg_color="transparent")
+        self._busy.grid_columnconfigure(2, weight=1)
+        self._lbl_bolt = ctk.CTkLabel(self._busy, text=theme.ICONS["bolt"],
+                                      text_color=TURBO, font=icon_font(15))
+        self._lbl_stage = ctk.CTkLabel(self._busy, text="", text_color=TEXT,
+                                       anchor="w", font=body_font(13, "bold"))
+        self._lbl_stage.grid(row=0, column=1, sticky="w")
+        self._lbl_current = ctk.CTkLabel(self._busy, text="", text_color=FAINT,
+                                         anchor="w", font=mono_font(11))
+        self._lbl_current.grid(row=0, column=2, sticky="w", padx=(14, 0))
+        self._lbl_eta = ctk.CTkLabel(self._busy, text="", text_color=MUTED,
+                                     anchor="e", font=body_font(12))
+        self._lbl_eta.grid(row=0, column=3, sticky="e", padx=(0, 16))
+        self._btn_cancel = make_button(self._busy, "Cancel", self._cancel_run,
+                                       role="secondary", width=110, height=40)
+        self._btn_cancel.configure(hover_color=DANGER)
+        self._btn_cancel.grid(row=0, column=4, rowspan=2, sticky="e")
+        self._bar = ctk.CTkProgressBar(self._busy, height=6, corner_radius=3,
+                                       progress_color=PRIMARY, fg_color=SURFACE_2)
+        self._bar.set(0)
+        self._bar.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0),
+                       padx=(0, 16))
+
+        # — results: the verdict and its facts; what to do with the register
+        self._done = ctk.CTkFrame(self._action, fg_color="transparent")
+        self._done.grid_columnconfigure(1, weight=1)
+        self._verdict = ctk.CTkFrame(self._done, fg_color="transparent")
+        self._verdict.grid(row=0, column=0, rowspan=2, sticky="w")
+        self._lbl_breakdown = ctk.CTkLabel(self._done, text="", text_color=MUTED,
+                                           anchor="w", font=body_font(12))
+        self._lbl_breakdown.grid(row=0, column=1, sticky="w", padx=(16, 0))
+        self._lbl_saved = ctk.CTkLabel(self._done, text="", text_color=TEXT,
+                                       anchor="w", font=body_font(12))
+        self._lbl_saved.grid(row=1, column=1, sticky="w", padx=(16, 0))
+        actions = ctk.CTkFrame(self._done, fg_color="transparent")
+        actions.grid(row=0, column=2, rowspan=2, sticky="e")
+        self._btn_open = make_button(actions, "Open register", self._open_result,
+                                     role="primary", width=148, height=40,
+                                     font=display_font(14))
+        self._btn_open.grid(row=0, column=0, padx=(0, 8))
+        self._btn_reveal = make_button(actions, "Show in folder", self._reveal_result,
+                                       role="secondary", width=128, height=40)
+        self._btn_reveal.grid(row=0, column=1, padx=(0, 8))
+        make_button(actions, "Start over", self._enter_setup, role="ghost",
+                    width=92, height=40).grid(row=0, column=2)
+
+    #: Width of the settings drawer, in logical units.
+    PANEL_W = 380
+
+    def _build_settings_panel(self) -> None:
+        """Settings slide in from the right, over the page.
+
+        They are set once and rarely touched again, so they no longer sit
+        between the table and the button that builds from it. Where the
+        register goes stays on the footer, where it cannot be missed.
+        """
+        panel = ctk.CTkFrame(self, width=self.PANEL_W, fg_color=CHROME,
+                             corner_radius=0, border_width=0)
+        panel.grid_propagate(False)
+        panel.grid_columnconfigure(1, weight=1)
+        self._panel = panel
+        # Its left edge is a rule the full height of the window, so the drawer
+        # reads as a layer over the table rather than a patch of it.
+        self._hairline(panel, vertical=True).grid(row=0, column=0, rowspan=20,
+                                                  sticky="ns")
+        panel = ctk.CTkFrame(panel, fg_color="transparent")
+        panel.grid(row=0, column=1, rowspan=20, sticky="nsew")
+        panel.grid_columnconfigure(0, weight=1)
+        pad = 22
+
+        top = ctk.CTkFrame(panel, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=pad, pady=(18, 10))
+        top.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(top, text="Settings", text_color=TEXT,
+                     font=display_font(19)).grid(row=0, column=0, sticky="w")
+        make_icon_button(top, "cancel", self._toggle_settings, size=32
+                         ).grid(row=0, column=1, sticky="e")
+
+        def section(row: int, title: str) -> ctk.CTkFrame:
+            frame = ctk.CTkFrame(panel, fg_color="transparent")
+            frame.grid(row=row, column=0, sticky="ew", padx=pad, pady=(12, 0))
+            frame.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(frame, text=title, text_color=MUTED, anchor="w",
+                         font=body_font(12)).grid(row=0, column=0, columnspan=2,
+                                                  sticky="w")
+            return frame
+
+        def rule(row: int) -> None:
+            self._hairline(panel).grid(row=row, column=0, sticky="ew", padx=pad,
+                                       pady=(16, 0))
+
+        template = section(1, "Register template")
+        self._lbl_template = ctk.CTkLabel(template, text="", text_color=TEXT,
+                                          anchor="w", font=body_font(13))
+        self._lbl_template.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._btn_change = make_button(template, "Change", self._pick_template,
+                                       role="secondary", width=86, height=32)
+        self._btn_change.grid(row=1, column=1, sticky="e")
+
+        dest = section(2, "Save this round's register in")
+        self._lbl_panel_dest = ctk.CTkLabel(dest, text="", text_color=TEXT,
+                                            anchor="w", justify="left",
+                                            wraplength=self.PANEL_W - 2 * pad - 110,
+                                            font=body_font(13))
+        self._lbl_panel_dest.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._btn_dest = make_button(dest, "Choose", self._pick_output_folder,
+                                     role="secondary", width=86, height=32)
+        self._btn_dest.grid(row=1, column=1, sticky="e")
+        self._btn_dest_reset = make_button(dest, "Use the round's folder",
+                                           self._use_round_folder, role="ghost",
+                                           width=0, height=28)
+
+        rule(3)
+        switches = ctk.CTkFrame(panel, fg_color="transparent")
+        switches.grid(row=4, column=0, sticky="ew", padx=pad, pady=(12, 0))
+        switches.grid_columnconfigure(0, weight=1)
+        self._switch_dedup = make_check(switches, "Remove duplicate serial numbers",
+                                         self._dedup, self._remember)
+        self._switch_dedup.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(switches, text="Keeps the first form for each serial and "
+                     "lists the rest under Details.", text_color=MUTED,
+                     anchor="w", justify="left", wraplength=self.PANEL_W - 2 * pad - 32,
+                     font=body_font(12)).grid(row=1, column=0, sticky="w",
+                                              padx=(28, 0), pady=(2, 12))
+        self._switch_forms = make_check(switches, FORMS_ONLY_LABEL, self._forms_only,
+                                         self._on_forms_only_toggled)
+        self._switch_forms.grid(row=2, column=0, sticky="w")
+        ctk.CTkLabel(switches, text="Leaves out device lists, blank templates and "
+                     "names without a site code.", text_color=MUTED, anchor="w",
+                     justify="left", wraplength=self.PANEL_W - 2 * pad - 32,
+                     font=body_font(12)).grid(row=3, column=0, sticky="w",
+                                              padx=(28, 0), pady=(2, 0))
+
+        rule(5)
+        look = section(6, "Appearance")
+        self._appearance = Toggle(look, ("Dark", "Light"),
+                                  command=lambda v: self._apply_theme(v.lower()))
+        self._appearance.set(ctk.get_appearance_mode())
+        self._appearance.grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+        rule(7)
+        about = ctk.CTkFrame(panel, fg_color="transparent")
+        about.grid(row=8, column=0, sticky="ew", padx=pad, pady=(14, 0))
+        ctk.CTkLabel(about, text=f"Calist {calist.__version__}", text_color=TEXT,
+                     anchor="w", font=body_font(13, "bold")).grid(row=0, column=0,
+                                                                  sticky="w")
+        ctk.CTkLabel(about, text=f"Built by {AUTHOR_NAME}", text_color=MUTED,
+                     anchor="w", font=body_font(12)).grid(row=1, column=0, sticky="w")
+        ctk.CTkLabel(about, text=AUTHOR_EMAIL, text_color=MUTED, anchor="w",
+                     font=body_font(12)).grid(row=2, column=0, sticky="w")
+        ctk.CTkLabel(about, text="Every register Calist builds is signed with "
+                     "this credit.", text_color=FAINT, anchor="w", justify="left",
+                     wraplength=self.PANEL_W - 2 * pad, font=body_font(12)
+                     ).grid(row=3, column=0, sticky="w", pady=(6, 0))
 
     @staticmethod
     def _wheel_over(widget):
@@ -1120,10 +1389,23 @@ class App(_Root):
         return handler
 
     def _colour_tags(self) -> None:
-        """Row colours by status. Treeview tags take one colour, not a pair."""
-        for tag, colour in (("ready", MUTED), ("ok", SUCCESS), ("warn", WARNING),
-                            ("error", DANGER), ("muted", FAINT)):
-            self._tree.tag_configure(tag, foreground=live(colour))
+        """Row colours. Treeview tags take one colour, not a pair.
+
+        A row that needs a look is tinted amber, one that could not be read
+        red — findable while scrolling a thousand rows — and the dot and the
+        words say the same thing without colour. Rows that contribute nothing
+        (a copy, a file left out, a cancelled read) are dimmed. Every other
+        row is striped. Configured stripe first: a later tag wins.
+        """
+        self._tree.tag_configure("stripe", background=live(ROW_ALT))
+        for tag in ("ready", "ok"):
+            self._tree.tag_configure(tag, foreground=live(TEXT))
+        self._tree.tag_configure("warn", foreground=live(TEXT),
+                                 background=live(WARN_TINT))
+        self._tree.tag_configure("error", foreground=live(TEXT),
+                                 background=live(DANGER_TINT))
+        self._tree.tag_configure("muted", foreground=live(FAINT))
+        self._dots = status_dots(self, self.ROW_PX)
 
     def _apply_theme(self, mode: str) -> None:
         """Switch between light and dark, Tk-native widgets included.
@@ -1133,10 +1415,17 @@ class App(_Root):
         given the other.
         """
         ctk.set_appearance_mode(mode)
-        style_treeview()
+        style_treeview(self)
         self._colour_tags()
-        self._table_body.configure(bg=live(SURFACE_2))
-        self._flame.configure(bg=live(BG))
+        self._table_body.configure(bg=live(SURFACE))
+        self._lbl_logo.configure(bg=live(BG))
+        for line in self._hairlines:
+            if line.winfo_exists():
+                line.configure(bg=live(BORDER))
+        self._refresh_table()
+        if self._result is not None:
+            self._show_verdict(self._result)
+        self._remember()
         self.after(50, lambda: tint_title_bar(self))
 
     def _attach_logging(self) -> None:
@@ -1145,6 +1434,12 @@ class App(_Root):
         calist.log.addHandler(handler)
         calist.log.setLevel(logging.INFO)
         calist.log.propagate = False
+
+    def _hairline(self, master, vertical: bool = False) -> tk.Frame:
+        line = tk.Frame(master, bg=live(BORDER), bd=0, highlightthickness=0,
+                        width=1 if vertical else 0, height=0 if vertical else 1)
+        self._hairlines.append(line)
+        return line
 
     # ── state transitions ────────────────────────────────────────────────────
 
@@ -1174,23 +1469,29 @@ class App(_Root):
         Changing the template or the device set mid-run would describe a build
         that isn't the one actually happening.
         """
-        state = "normal" if enabled else "disabled"
-        for widget in (self._btn_change, self._switch_dedup, self._switch_forms,
+        for widget in (self._btn_change, self._btn_dest, self._btn_dest_reset,
                        self._btn_clear, self._btn_slim_folder, self._btn_slim_files,
-                       self._btn_turbo):
-            widget.configure(state=state)
+                       self._btn_recheck):
+            set_enabled(widget, enabled)
+        for switch in (self._switch_dedup, self._switch_forms):
+            switch.configure(state="normal" if enabled else "disabled")
 
     def _enter_working(self, total: int) -> None:
         self._show_action(self._busy)
         self._set_inputs_enabled(False)
         self._bar.set(0)
-        self._lbl_stage.configure(text=f"Reading device 0 of {total}")
+        self._lbl_stage.configure(text=f"Reading form 0 of {total:,}")
         self._lbl_eta.configure(text="")
         self._lbl_current.configure(text="")
-        self._btn_cancel.configure(state="normal", text="Cancel")
+        set_enabled(self._btn_cancel, True)
+        self._btn_cancel.configure(text="Cancel")
+        if self._turbo_mode:
+            self._lbl_bolt.grid(row=0, column=0, padx=(0, 6))
+        else:
+            self._lbl_bolt.grid_remove()
 
     def _enter_scanning(self) -> None:
-        """The busy card again, but with no total — a walk cannot know one
+        """The busy footer again, but with no total — a walk cannot know one
         until it has finished walking."""
         self._show_action(self._busy)
         self._set_inputs_enabled(False)
@@ -1198,54 +1499,52 @@ class App(_Root):
         self._lbl_stage.configure(text="Looking for inspection forms…")
         self._lbl_eta.configure(text="")
         self._lbl_current.configure(text="")
-        self._btn_cancel.configure(state="normal", text="Cancel")
+        set_enabled(self._btn_cancel, True)
+        self._btn_cancel.configure(text="Cancel")
+        self._lbl_bolt.grid_remove()
 
     def _enter_results(self, result: RunResult) -> None:
         self._result = result
+        self._lbl_bolt.grid_remove()
         self._show_action(self._done)
         self._set_inputs_enabled(True)
 
+        built = result.succeeded and not result.cancelled
+        set_enabled(self._btn_open, built)
+        set_enabled(self._btn_reveal, built)
         if result.cancelled:
-            self._lbl_verdict.configure(text="Cancelled", text_color=WARNING)
             self._lbl_breakdown.configure(
-                text=f"Stopped after {result.files_read} of "
-                     f"{len(result.outcomes)} devices. Nothing was written.")
+                text=f"Stopped after {result.files_read:,} of "
+                     f"{len(result.outcomes):,} forms. Nothing was written.")
             self._lbl_saved.configure(text="")
-            self._btn_open.configure(state="disabled")
-            self._btn_reveal.configure(state="disabled")
         elif not result.succeeded:
-            self._lbl_verdict.configure(text="Could not build the register",
-                                        text_color=DANGER)
             self._lbl_breakdown.configure(
-                text=result.error or "See Details for what went wrong.")
+                text=result.error or "Open Details to see what went wrong.")
             self._lbl_saved.configure(text="")
-            self._btn_open.configure(state="disabled")
-            self._btn_reveal.configure(state="disabled")
         else:
-            bits = [f"{result.files_read} read"]
-            if result.second_rows_added:
-                bits.append(f"{result.second_rows_added} module rows added")
-            if result.problems:
-                bits.append(f"{len(result.problems)} skipped")
-            if result.copies:
-                bits.append(f"{len(result.copies)} copies left out")
-            if result.left_out:
-                bits.append(f"{len(result.left_out)} not device forms")
-            if result.duplicates_removed:
-                bits.append(f"{result.duplicates_removed} duplicates removed")
-
-            self._lbl_verdict.configure(text="Register built", text_color=SUCCESS)
-            self._lbl_breakdown.configure(
-                text=f"{result.rows_written} rows from "
-                     f"{len(result.outcomes)} devices  ·  " + "  ·  ".join(bits))
+            self._lbl_breakdown.configure(text=result_breakdown(result))
             self._lbl_saved.configure(
-                text=f"Saved to   {shorten_path(result.output_path, 72)}")
-            self._btn_open.configure(state="normal")
-            self._btn_reveal.configure(state="normal")
+                text=f"Saved to {shorten_path(result.output_path, 64)}")
+        self._show_verdict(result)
 
-        if result.problems and not self._turbo.get():
+        if result.problems and not self._turbo_mode:
             self._filter.set("Problems")
         self._refresh_all()
+
+    def _show_verdict(self, result: RunResult) -> None:
+        """The verdict: a glyph in the verdict colour, and plain words."""
+        for child in self._verdict.winfo_children():
+            child.destroy()
+        if result.cancelled:
+            words, colour, glyph = "Cancelled", WARNING, "warning"
+        elif not result.succeeded:
+            words, colour, glyph = "Not built", DANGER, "error"
+        else:
+            words, colour, glyph = "Register built", SUCCESS, "check"
+        ctk.CTkLabel(self._verdict, text=theme.ICONS[glyph], text_color=colour,
+                     font=icon_font(22)).grid(row=0, column=0, padx=(0, 10))
+        ctk.CTkLabel(self._verdict, text=words, text_color=TEXT,
+                     font=display_font(17)).grid(row=0, column=1, sticky="w")
 
     # ── file intake ──────────────────────────────────────────────────────────
 
@@ -1254,13 +1553,22 @@ class App(_Root):
     #: queue is not the bottleneck.
     SCAN_BATCH = 200
 
-    def _add_paths(self, paths: list[str]) -> None:
-        """Absorb a batch of paths. Folders are walked on a worker thread."""
+    def _add_paths(self, paths: list[str], *, record: bool = True) -> None:
+        """Absorb a batch of paths. Folders are walked on a worker thread.
+
+        Each pick is remembered in order (`record`), for the register's
+        default folder and for Re-check — which passes record=False, since it
+        is walking picks already remembered.
+        """
         forms_only = bool(self._forms_only.get())   # threading rule 1: read it here
         before = len(self._files)
         folders, singles = [], []
         for raw in paths:
             path = Path(raw)
+            if record and path.exists():
+                pick = (str(path), path.is_dir())
+                if pick not in self._sources:
+                    self._sources.append(pick)
             if path.is_dir():
                 folders.append(str(path))
             elif path.is_file():
@@ -1284,8 +1592,9 @@ class App(_Root):
 
     def _finish_intake(self, added: int) -> None:
         if added:
-            log_ui.debug("Added %d file(s)", added)
-            calist.log.info("Added %d device(s). Total: %d", added, len(self._files))
+            log_ui.debug("Added %d files", added)
+            calist.log.info("Added %s. Total: %s.", calist.plural(added, "form"),
+                            f"{len(self._files):,}")
         self._enter_setup()
         if added:
             self._log_left_out()
@@ -1300,7 +1609,9 @@ class App(_Root):
                       key=lambda o: o.filename.lower())
         if not left:
             return
-        calist.log.info("Left out %d file(s) that are not device forms:", len(left))
+        calist.log.info("Left out %s that %s not device forms:",
+                        calist.plural(len(left), "file"),
+                        "is" if len(left) == 1 else "are")
         for outcome in left:
             calist.log.info("   %s — %s", outcome.filename, outcome.detail)
 
@@ -1342,7 +1653,8 @@ class App(_Root):
         self._scan = None
         added = len(self._files) - self._scan_from
         if stopped:
-            calist.log.warning("Scan stopped — %d device(s) added so far.", added)
+            calist.log.warning("Scan stopped — %s added so far.",
+                               calist.plural(added, "form"))
         self._finish_intake(added)
 
     def _add_folder(self) -> None:
@@ -1368,10 +1680,53 @@ class App(_Root):
     def _on_drop(self, event) -> None:                 # pragma: no cover
         self._add_paths(list(self.tk.splitlist(event.data)))
 
+    #: How long "Clear the list?" waits for its second click.
+    CLEAR_CONFIRM_MS = 3000
+
+    def _arm_clear(self) -> None:
+        """Clear all asks once, in place.
+
+        It sits beside Re-check and throws away the whole round's list, so a
+        slip must not cost the round. No dialog: the button itself asks, and
+        quietly stands down if the second click does not come. The files on
+        disk are never touched either way.
+        """
+        if self._clear_job is not None:
+            self.after_cancel(self._clear_job)
+            self._disarm_clear()
+            self._clear_files()
+            return
+        self._btn_clear.configure(text="Clear the list?", text_color=DANGER)
+        self._clear_job = self.after(self.CLEAR_CONFIRM_MS, self._disarm_clear)
+
+    def _disarm_clear(self) -> None:
+        self._clear_job = None
+        self._btn_clear.configure(text="Clear all", text_color=MUTED)
+
     def _clear_files(self) -> None:
         self._files.clear()
+        self._sources.clear()
+        self._outdir.set("")              # a chosen folder is for one round
+        self._group = None
         calist.log.info("Cleared all devices.")
         self._enter_setup()
+
+    def _recheck(self) -> None:
+        """Walk every folder and file added again, after fixing forms outside.
+
+        Renamed files are found under their new names and deleted ones drop
+        out; the round's folder and any chosen save folder stay as they are.
+        """
+        if not self._sources or self._cancel is not None or self._scan is not None:
+            return
+        gone = [path for path, _ in self._sources if not Path(path).exists()]
+        self._files.clear()
+        self._group = None
+        calist.log.info("Re-checking what was added (%s)…",
+                        calist.plural(len(self._sources), "pick"))
+        for path in gone:
+            calist.log.warning("No longer there: %s", path)
+        self._add_paths([path for path, _ in self._sources], record=False)
 
     def _remove_selected(self, _event=None) -> None:
         for iid in self._tree.selection():
@@ -1398,21 +1753,19 @@ class App(_Root):
     def _remember(self) -> None:
         # The old filename-check keys are dropped, not kept alongside: an older
         # build reading `strict_names` would enforce the filename format this
-        # switch replaced. Without them it reads the check as off.
-        self._settings.pop("name_check", None)
-        self._settings.pop("strict_names", None)
+        # switch replaced. Without them it reads the check as off. `turbo`
+        # went the same way when Turbo became automatic.
+        for stale in ("name_check", "strict_names", "turbo"):
+            self._settings.pop(stale, None)
         self._settings.update(deduplicate=bool(self._dedup.get()),
                               real_forms_only=bool(self._forms_only.get()),
-                              turbo=bool(self._turbo.get()))
+                              appearance=ctk.get_appearance_mode().lower())
 
-        # A folder that has since been deleted or unmounted must not be carried
-        # forward, or the next run fails on a destination the user cannot see.
-        outdir = self._outdir.get()
-        if outdir and Path(outdir).is_dir():
-            self._settings["output_dir"] = outdir
-        else:
+        # A chosen save folder lasts one round, so it is never written down —
+        # and one an older build did write is dropped.
+        self._settings.pop("output_dir", None)
+        if self._outdir.get() and not Path(self._outdir.get()).is_dir():
             self._outdir.set("")
-            self._settings.pop("output_dir", None)
 
         # Never persist the built-in template. In a frozen build it lives in
         # PyInstaller's temp extraction folder, which is deleted on exit and
@@ -1435,156 +1788,7 @@ class App(_Root):
         return os.path.normcase(os.path.abspath(path)) == \
             os.path.normcase(os.path.abspath(str(shipped)))
 
-    # ── turbo ────────────────────────────────────────────────────────────────
-
-    def _toggle_turbo(self) -> None:
-        self._turbo.set(not self._turbo.get())
-        self._remember()
-        on = bool(self._turbo.get())
-        calist.log.info("Turbo %s — %s", "on" if on else "off",
-                        "log and summary only, built for tens of thousands"
-                        if on else "per-device table is back")
-        if on and not self._log_open:
-            self._toggle_log()          # Turbo is the log and the summary
-        self._apply_turbo()
-        self._refresh_all()
-
-    def _apply_turbo(self) -> None:
-        """Reflect the switch: red wordmark, lit button, burning flame."""
-        on = bool(self._turbo.get())
-        self._lbl_mark.configure(text_color=TURBO if on else TEXT)
-        self._lbl_turbo.configure(text_color=TURBO if on else FAINT)
-        self._btn_turbo.configure(
-            fg_color=TURBO if on else SURFACE,
-            hover_color=TURBO_HOVER if on else SURFACE_2,
-            border_color=TURBO if on else BORDER)
-        if on:
-            self._flame.grid()
-            self._flame.start()
-        else:
-            self._flame.stop()
-            self._flame.grid_remove()
-
-    def _summary_lines(self, result: RunResult | None) -> list[str]:
-        """What Turbo shows instead of a table.
-
-        Everything here is already carried by RunResult; nothing is scraped
-        back out of the log.
-        """
-        if result is None and self._cancel is not None:
-            # Mid-run. The counts and the ETA live on the progress card; what
-            # belongs here is the list of things already going wrong, so the
-            # user can start opening those forms without waiting for the end.
-            problems = self._live_problems
-            unknown = self._unknown_codes(problems)
-            lines = [f"Running — {len(problems):,} problem(s) so far.", ""]
-            if unknown:
-                lines += ["Unrecognised device codes", *unknown, ""]
-            failed = [o for o in problems if o.status != UNKNOWN_CODE]
-            if failed:
-                lines.append(f"Files that failed ({len(failed):,})")
-                lines += [f"   {o.filename}   {o.detail}" for o in failed[-40:]]
-            return lines
-
-        if result is None:
-            total = len(self._files)
-            unknown = self._unknown_codes(self._files.values())
-            lines = [f"{total:,} device(s) loaded, not built yet.", ""]
-            if unknown:
-                lines += ["Unrecognised device codes", *unknown, ""]
-            lines.append("Press Build register to start.")
-            return lines
-
-        elapsed = time.monotonic() - self._started_at
-        read = result.files_read
-        problems = result.problems
-        # "Failed" means a form that was opened and would not read. A form the
-        # app never opened because its name resolves to no known device is a
-        # different finding with a different fix, and lumping them together
-        # makes a round of misnamed files look like a broken app.
-        failed = [o for o in problems if o.status == ERROR]
-        skipped = len(problems) - len(failed)
-        seen = len(result.outcomes)
-        lines = [
-            f"read        {read:,}",
-            f"skipped     {skipped:,}   unrecognised code or unsupported type",
-            f"failed      {len(failed):,}   opened but could not be read",
-            f"copies      {len(result.copies):,}   same device as a form "
-            f"already in the register",
-            f"left out    {len(result.left_out):,}   not device forms",
-            f"rows        {result.rows_written:,}"
-            + (f"   (+{result.second_rows_added:,} module rows)"
-               if result.second_rows_added else ""),
-            f"duplicates  {result.duplicates_removed:,}",
-            f"time        {human_duration(elapsed)}"
-            + (f"   ({seen / elapsed:,.0f} forms/s)" if elapsed > 0 and seen else ""),
-            "",
-        ]
-
-        unknown = self._unknown_codes(result.outcomes)
-        if unknown:
-            lines += ["Unrecognised device codes", *unknown, ""]
-
-        if result.duplicates:
-            # A two-row device drops both its rows on one repeated serial, so
-            # the same pair of files would otherwise be listed twice running.
-            # The count stays honest — it counts records — but the list is of
-            # files to go and open, and each belongs on it once.
-            seen, pairs = set(), []
-            for hit in result.duplicates:
-                key = (hit.serial, hit.dropped, hit.kept)
-                if key not in seen:
-                    seen.add(key)
-                    pairs.append(hit)
-            lines.append(f"Duplicate serials ({result.duplicates_removed:,} "
-                         f"row(s) from {len(pairs):,} file(s))")
-            for hit in pairs[:40]:
-                lines.append(f"   {hit.serial:<22} {hit.dropped}"
-                             f"   (already in {hit.kept})")
-            if len(pairs) > 40:
-                lines.append(f"   … and {len(pairs) - 40:,} more")
-            lines.append("")
-
-        if failed:
-            lines.append(f"Files that failed ({len(failed):,})")
-            for outcome in failed[:40]:
-                lines.append(f"   {outcome.filename}   {outcome.detail}")
-            if len(failed) > 40:
-                lines.append(f"   … and {len(failed) - 40:,} more")
-            lines.append("")
-
-        if result.copies:
-            lines.append(f"Copies left out ({len(result.copies):,})")
-            for outcome in result.copies[:40]:
-                lines.append(f"   {outcome.filename}   {outcome.detail}")
-            if len(result.copies) > 40:
-                lines.append(f"   … and {len(result.copies) - 40:,} more")
-
-        if not unknown and not result.duplicates and not failed:
-            lines.append("Nothing needed attention.")
-        return lines
-
-    @staticmethod
-    def _unknown_codes(outcomes) -> list[str]:
-        """Unrecognised codes grouped by code — "ZZ — 14 files", not 14 rows.
-
-        A round of forms named for a device nobody has added to the table
-        produces one finding, not one per file.
-        """
-        counts: dict[str, int] = {}
-        for outcome in outcomes:
-            if outcome.status == UNKNOWN_CODE:
-                counts[outcome.device_code or "(none)"] = \
-                    counts.get(outcome.device_code or "(none)", 0) + 1
-        width = max((len(code) for code in counts), default=0)
-        return [f"   {code:<{width}}   {count:,} file(s)"
-                for code, count in sorted(counts.items())]
-
-    def _render_summary(self, result: RunResult | None) -> None:
-        self._summary_box.configure(state="normal")
-        self._summary_box.delete("1.0", "end")
-        self._summary_box.insert("1.0", "\n".join(self._summary_lines(result)))
-        self._summary_box.configure(state="disabled")
+    # ── Turbo ────────────────────────────────────────────────────────────────
 
     def _on_forms_only_toggled(self) -> None:
         """Re-check every loaded name against the switch.
@@ -1601,11 +1805,120 @@ class App(_Root):
         if on:
             self._log_left_out()
 
+    # ── search, filters, the drawer ──────────────────────────────────────────
+
+    def _on_search_typed(self, event=None) -> None:
+        """Filter as the user types, once they pause — not on every key."""
+        if event is not None and event.keysym == "Escape":
+            self._clear_search()
+            return
+        if self._search.get():
+            self._btn_search_clear.grid(row=0, column=2, padx=(0, 4))
+        else:
+            self._btn_search_clear.grid_remove()
+        if self._search_job is not None:
+            self.after_cancel(self._search_job)
+        self._search_job = self.after(120, self._run_search)
+
+    def _run_search(self) -> None:
+        self._search_job = None
+        self._refresh_table()
+        self._refresh_banner()
+
+    def _clear_search(self) -> None:
+        self._search.delete(0, "end")
+        # CustomTkinter restores a placeholder only on focus-out; a clear made
+        # while the box is not focused would otherwise leave it blank.
+        restore = getattr(self._search, "_activate_placeholder", None)
+        if restore is not None and self.focus_get() is not self._search._entry:
+            restore()
+        self._btn_search_clear.grid_remove()
+        self._refresh_table()
+        self.focus_set()
+
+    def _focus_search(self) -> None:
+        if self._files and not self._turbo_mode:
+            self._search.focus_set()
+
+    def _pick_group(self, group: ui_state.Group | None) -> None:
+        """Show only one kind of problem — or, clicked again, everything.
+
+        While a group is picked, All/Problems shows neither: the group is the
+        filter, and the status line names it with a way back.
+        """
+        same = group is not None and self._group is not None \
+            and group.key == self._group.key
+        self._group = None if same else group
+        self._filter.set(None if self._group is not None else "All")
+        self._refresh_table()
+        self._refresh_banner()
+
+    def _on_filter_picked(self, _value: str) -> None:
+        self._group = None
+        self._refresh_table()
+        self._refresh_banner()
+
+    def _filter_problems(self) -> None:
+        self._group = None
+        self._filter.set("Problems")
+        self._refresh_table()
+        self._refresh_banner()
+
+    def _show_all(self) -> None:
+        """Drop every filter: the group, Problems, and the search."""
+        self._group = None
+        self._filter.set("All")
+        self._search.delete(0, "end")
+        self._clear_search()
+        self._refresh_banner()
+
+    def _on_escape(self, _event=None) -> None:
+        """Esc backs out one step: the drawer, then a filter, then a run."""
+        if self._panel_open:
+            self._toggle_settings()
+        elif self._search.get() or self._group is not None \
+                or self._filter.get() != "All":
+            self._show_all()
+        else:
+            self._cancel_run()
+
+    def _toggle_settings(self) -> None:
+        """Slide the settings drawer in or out (about 160 ms, eased)."""
+        if self._lock is not None:
+            return
+        self._panel_open = not self._panel_open
+        if self._panel_job is not None:
+            self.after_cancel(self._panel_job)
+            self._panel_job = None
+        if self._panel_open:
+            self._refresh_settings()
+            self._panel.place(relx=1.0, x=self.PANEL_W, rely=0, relheight=1.0,
+                              anchor="ne")
+            self._panel.lift()
+        self._slide_panel(0)
+
+    #: Frames of the drawer's slide; 8 at 20 ms is about 160 ms.
+    SLIDE_FRAMES = 8
+
+    def _slide_panel(self, step: int) -> None:
+        # Ease out: fast at first, settling at the end.
+        t = (step + 1) / self.SLIDE_FRAMES
+        eased = 1 - (1 - t) ** 3
+        shown = eased if self._panel_open else 1 - eased
+        self._panel.place_configure(x=round(self.PANEL_W * (1 - shown)))
+        if step + 1 < self.SLIDE_FRAMES:
+            self._panel_job = self.after(20, lambda: self._slide_panel(step + 1))
+        else:
+            self._panel_job = None
+            if not self._panel_open:
+                self._panel.place_forget()
+
     # ── rendering ────────────────────────────────────────────────────────────
 
     def _refresh_all(self) -> None:
         self._refresh_intake()
         self._refresh_table()
+        self._refresh_banner()
         self._refresh_settings()
         self._refresh_hint()
 
@@ -1617,14 +1930,11 @@ class App(_Root):
     # table once it is not — and give it back when the window shrinks, at which
     # point the scrollbar takes over rather than any block being crushed.
 
-    #: Treeview row height, from style_treeview(). Used to convert spare pixels
-    #: into whole table rows.
-    ROW_PX = 32
     MIN_ROWS, MAX_ROWS = 5, 40
-    #: The hero absorbs spare height, but only up to a point — past MAX it is
-    #: just an expanse of empty card, so the leftover is left below the panel
-    #: instead. MIN is a little above the badge-title-buttons stack.
-    MIN_HERO_H, MAX_HERO_H = 230, 380
+    #: The hero absorbs the spare height down to the footer, so the empty
+    #: window is one card, not a card and a dead band. MIN is a little above
+    #: the glyph-title-buttons stack.
+    MIN_HERO_H, MAX_HERO_H = 300, 1400
     #: Cap on the settle loop below, so a layout that cannot converge on an
     #: exact fit stops oscillating instead of rescheduling itself forever.
     MAX_FIT_PASSES = 6
@@ -1638,6 +1948,17 @@ class App(_Root):
         if self._fit_job is not None:
             self.after_cancel(self._fit_job)
         self._fit_job = self.after(70, self._fit_to_window)
+
+    def _show_page_scrollbar(self, needed: bool) -> None:
+        """The page's scrollbar only when the page actually scrolls: beside the
+        table's own it is a second bar and a gutter for nothing."""
+        bar = getattr(self._page, "_scrollbar", None)
+        if bar is None:
+            return
+        if needed and not bar.winfo_ismapped():
+            bar.grid()
+        elif not needed and bar.winfo_ismapped():
+            bar.grid_remove()
 
     def _fit_to_window(self) -> None:
         self._fit_job = None
@@ -1654,9 +1975,12 @@ class App(_Root):
         # Positive slack means unused window; negative means we overflow and
         # the scrollbar is carrying the difference.
         slack = viewport - self._page.winfo_reqheight()
+        self._show_page_scrollbar(slack < 0)
 
         if self._files:
-            if abs(slack) < self.ROW_PX:
+            # A small surplus is left alone, but a small overflow costs a row:
+            # it would otherwise bring the page's scrollbar out for a few pixels.
+            if 0 <= slack < self.ROW_PX:
                 return
             current = int(self._tree.cget("height"))
             wanted = max(self.MIN_ROWS,
@@ -1682,86 +2006,183 @@ class App(_Root):
 
     def _refresh_intake(self) -> None:
         """Hand the vertical space to whichever of hero/table matters now."""
+        counts = ui_state.count(self._files.values())
+        if self._cancel is None:                 # a run keeps what it started as
+            self._turbo_mode = ui_state.is_turbo(counts.total)
+
+        name = ui_state.round_name(self._files) if self._files else ""
+        self.title(f"{name} — Calist" if name else "Calist")
+        if name:
+            self._round_rule.grid(row=0, column=1, sticky="ns", padx=14, pady=4)
+            self._lbl_round.configure(text=name)
+            self._lbl_round.grid(row=0, column=2, sticky="w")
+        else:
+            self._round_rule.grid_remove()
+            self._lbl_round.grid_remove()
+
         if self._files:
             self._hero.grid_remove()
-            self._drop_slim.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
+            self._toolbar.grid(row=0, column=0, sticky="ew")
             self._intake.grid_configure(sticky="ew")
             self._intake.grid_rowconfigure(0, weight=0)
-            self._page.grid_rowconfigure(1, weight=0)
-            self._page.grid_rowconfigure(2, weight=0)
-            # Turbo shows the summary in the table's slot: at forty thousand
-            # forms a row per file is the biggest per-file cost in the window.
-            if self._turbo.get():
-                self._table_wrap.grid_remove()
-                self._summary_wrap.grid(row=2, column=0, sticky="nsew", padx=28)
+            self._table_wrap.grid(row=3, column=0, sticky="nsew", padx=self.PAD)
+            # Turbo lists problems only, so there is nothing for All to show.
+            if self._turbo_mode:
+                self._filter.grid_remove()
             else:
-                self._summary_wrap.grid_remove()
-                self._table_wrap.grid(row=2, column=0, sticky="nsew", padx=28)
-
-            ready = sum(1 for o in self._files.values() if o.status == READY)
-            done = sum(1 for o in self._files.values() if o.status == OK)
-            problems = sum(1 for o in self._files.values() if o.is_problem)
-            left = sum(1 for o in self._files.values() if o.status == LEFT_OUT)
-
-            counted = f"{done} read" if done else f"{ready} recognised"
-            text = f"{len(self._files) - left} devices  ·  {counted}"
-            if problems:
-                text += f"  ·  {problems} need attention"
-            if left:
-                text += f"  ·  {left} left out (see Details)"
-            self._lbl_summary.configure(
-                text=text, text_color=WARNING if problems else MUTED)
+                self._filter.grid()
         else:
-            self._drop_slim.grid_remove()
+            self._toolbar.grid_remove()
             self._table_wrap.grid_remove()
-            self._summary_wrap.grid_remove()
             self._hero.grid()
             self._intake.grid_configure(sticky="nsew")
             self._intake.grid_rowconfigure(0, weight=1)
-            self._page.grid_rowconfigure(1, weight=0)
-            self._page.grid_rowconfigure(2, weight=0)
 
         self._on_resize()
 
+    def _render_counts(self, parent, counts: ui_state.Counts) -> int:
+        """The round's counts, as the start of the status line. Returns the
+        next free column."""
+        done = counts.read > 0
+        items = [(None, f"{counts.total:,} forms"),
+                 (SUCCESS, f"{counts.read if done else counts.ready:,} "
+                           f"{'read' if done else 'ready'}")]
+        if counts.left_out:
+            items.append((BORDER, f"{counts.left_out:,} left out"))
+        for column, (colour, words) in enumerate(items):
+            chip = ctk.CTkFrame(parent, fg_color="transparent")
+            chip.grid(row=0, column=column, padx=(0, 16))
+            if colour is not None:
+                ctk.CTkFrame(chip, width=8, height=8, corner_radius=4,
+                             fg_color=colour).grid(row=0, column=0, padx=(0, 6))
+            ctk.CTkLabel(chip, text=words,
+                         text_color=TEXT if colour is None else MUTED,
+                         font=body_font(13, "bold" if colour is None else "normal")
+                         ).grid(row=0, column=1)
+        return len(items)
+
+    #: Problem groups shown as chips; the rest are one "more" chip, so a round
+    #: with many unknown codes cannot push the line off the window.
+    MAX_CHIPS = 4
+
+    def _refresh_banner(self) -> None:
+        """The status line: the round's counts, then its problems, grouped,
+        then what the table is filtered to."""
+        for child in self._banner.winfo_children():
+            child.destroy()
+        if not self._files:
+            self._banner.grid_remove()
+            return
+        self._banner.grid(row=2, column=0, sticky="ew", padx=self.PAD, pady=(0, 8))
+
+        outcomes = list(self._files.values())
+        counts = ui_state.count(outcomes)
+        groups = ui_state.problem_groups(outcomes)
+        # A filter on a group that has since been fixed must not stick.
+        if self._group is not None:
+            self._group = next((g for g in groups if g.key == self._group.key), None)
+            if self._group is None:
+                self._filter.set("All")
+
+        line = ctk.CTkFrame(self._banner, fg_color="transparent")
+        line.grid(row=0, column=0, sticky="w")
+        column = self._render_counts(line, counts)
+
+        if groups:
+            files = sum(g.count for g in groups)
+            ctk.CTkLabel(line, text=theme.ICONS["warning"], text_color=CAUTION,
+                         font=icon_font(14)).grid(row=0, column=column, padx=(4, 6))
+            ctk.CTkLabel(line, text=f"{files:,} need a look", text_color=TEXT,
+                         font=body_font(13, "bold")
+                         ).grid(row=0, column=column + 1, padx=(0, 10))
+            column += 2
+            for group in groups[:self.MAX_CHIPS]:
+                picked = self._group is not None and group.key == self._group.key
+                make_button(line, f"{group.label}   {group.count:,}",
+                            lambda g=group: self._pick_group(g),
+                            role="picked" if picked else "chip", height=28, width=0
+                            ).grid(row=0, column=column, padx=(0, 6))
+                column += 1
+            rest = groups[self.MAX_CHIPS:]
+            if rest:
+                more = sum(g.count for g in rest)
+                make_button(line, f"{len(rest)} more   {more:,}",
+                            lambda: self._filter_problems(), role="chip",
+                            height=28, width=0).grid(row=0, column=column)
+        elif counts.total:
+            ctk.CTkLabel(line, text=theme.ICONS["check"], text_color=SUCCESS,
+                         font=icon_font(13)).grid(row=0, column=column, padx=(4, 6))
+            ctk.CTkLabel(line, text="Nothing needs a look", text_color=MUTED,
+                         font=body_font(13)).grid(row=0, column=column + 1)
+
+        self._render_filter_note()
+
+    def _render_filter_note(self) -> None:
+        """The right end of the status line: what the table is showing.
+
+        The frame is made only when it will hold something: an empty CTkFrame
+        falls back to 200x200 and would open a band above and below the line.
+        """
+        counts = ui_state.count(self._files.values())
+        shown, total = self._table_counts
+        if not (self._turbo_mode or shown != total or counts.copies):
+            return
+        side = ctk.CTkFrame(self._banner, fg_color="transparent")
+        side.grid(row=0, column=1, sticky="e")
+        if self._turbo_mode:
+            ctk.CTkLabel(side, text=theme.ICONS["bolt"], text_color=TURBO,
+                         font=icon_font(13)).grid(row=0, column=0, padx=(0, 6))
+            ctk.CTkLabel(side, text=f"Turbo: {ui_state.TURBO_AT:,} forms or more, "
+                         "so only problems are listed", text_color=MUTED,
+                         font=body_font(12)).grid(row=0, column=1)
+            return
+        if shown != total:
+            what = self._group.label if self._group is not None else (
+                "problems" if self._filter.get() == "Problems" else "search")
+            ctk.CTkLabel(side, text=f"Showing {shown:,} of {total:,}: {what}",
+                         text_color=MUTED, font=body_font(12)
+                         ).grid(row=0, column=0, padx=(0, 6))
+            make_button(side, "Show all", self._show_all, role="ghost", height=28,
+                        width=0).grid(row=0, column=1)
+            return
+        if counts.copies:
+            make_button(side, f"{counts.copies:,} "
+                        f"cop{'ies' if counts.copies != 1 else 'y'} left out, "
+                        "see Details", self._show_details, role="ghost",
+                        height=28, width=0).grid(row=0, column=0)
+
+    def _show_details(self) -> None:
+        if not self._log_open:
+            self._toggle_log()
+
     def _visible_outcomes(self) -> list[tuple[str, FileOutcome]]:
-        # Files the switch leaves out are not in the table at all: the user
-        # asked not to see them. Details lists them, with the reason.
-        items = sorted(((path, o) for path, o in self._files.items()
-                        if o.status != LEFT_OUT),
-                       key=lambda kv: kv[1].filename.lower())
-        if self._filter.get() == "Problems":
-            items = [kv for kv in items if kv[1].is_problem]
-        return items
+        return ui_state.visible(
+            self._files.items(),
+            problems_only=self._turbo_mode or self._filter.get() == "Problems",
+            group=self._group, query=self._search.get(), status_text=status_text)
 
     def _refresh_table(self) -> None:
-        if self._turbo.get():
-            # Nothing is inserted per file in Turbo, and anything a previous
-            # normal run left behind is dropped rather than merely hidden —
-            # otherwise the rows go on costing memory for the whole session.
-            if self._tree.get_children():
-                self._tree.delete(*self._tree.get_children())
-            self._render_summary(self._result)
-            return
         self._tree.delete(*self._tree.get_children())
         rows = self._visible_outcomes()
 
-        for path, outcome in rows:
-            label, tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))
-            detail = f"{label} — {outcome.detail}" if outcome.detail else label
+        for index, (path, outcome) in enumerate(rows):
+            tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))[1]
+            tags = (tag, "stripe") if index % 2 else (tag,)
             self._tree.insert(
-                "", "end", iid=path, tags=(tag,),
+                "", "end", iid=path, tags=tags, image=self._dots.get(tag, ""),
                 values=(outcome.filename, outcome.device_name or "—",
-                        outcome.serial or "—", detail))
+                        outcome.serial or "—", status_text(outcome)))
 
+        total = sum(1 for o in self._files.values() if o.status != LEFT_OUT)
+        self._table_counts = (len(rows), total)
         if rows:
             self._empty.grid_remove()
         else:
+            self._empty.configure(
+                text="No problems so far." if self._turbo_mode
+                else "Nothing matches. Clear the search, or choose All."
+                if total else "No forms yet.")
             self._empty.grid(row=0, column=0)
-
-        if self._filter.get() == "Problems":
-            self._lbl_table.configure(text=f"Devices  ({len(rows)} needing attention)")
-        else:
-            self._lbl_table.configure(text=f"Devices  ({len(rows)})")
 
     def _destination(self) -> tuple[Path | None, str]:
         """Where the register will land, and any warning about it."""
@@ -1773,10 +2194,20 @@ class App(_Root):
             # over is work nobody asked for.
             path = calist.resolve_output_path([min(self._files)],
                                               self._template.get(),
-                                              self._outdir.get() or None)
+                                              self._save_folder() or None)
         except ValueError as exc:
             return None, str(exc)
         return path, "Replaces the existing file" if path.exists() else ""
+
+    def _save_folder(self) -> str:
+        """Where the register goes: the folder chosen for this round, else the
+        round's own folder (ui_state.origin_folder)."""
+        return self._outdir.get() or ui_state.origin_folder(self._sources)
+
+    def _use_round_folder(self) -> None:
+        self._outdir.set("")
+        self._refresh_settings()
+        self._refresh_hint()
 
     def _pick_output_folder(self) -> None:
         """Choose where the register is saved.
@@ -1806,30 +2237,36 @@ class App(_Root):
         else:
             self._lbl_template.configure(text="Not chosen yet", text_color=FAINT)
 
-        # The chooser is always available — it is how the folder gets picked in
-        # the first place, so it must not depend on there being one already.
         path, note = self._destination()
-        chosen = self._outdir.get()
         if path:
-            text = shorten_path(path)
-            if note:
-                text += f"      ({note})"
-            self._lbl_dest.configure(text=text, text_color=WARNING if note else TEXT)
+            self._lbl_dest.configure(text=shorten_path(path, 70),
+                                     text_color=WARNING if note else TEXT)
+            self._lbl_dest_note.configure(text=f"({note.lower()})" if note else "")
         elif note:
             self._lbl_dest.configure(text=note, text_color=DANGER)
-        elif chosen:
-            self._lbl_dest.configure(text=shorten_path(Path(chosen) / calist.OUTPUT_NAME),
-                                     text_color=TEXT)
+            self._lbl_dest_note.configure(text="")
         else:
-            self._lbl_dest.configure(
-                text="Beside your forms — or select a folder to save in",
-                text_color=FAINT)
+            self._lbl_dest.configure(text="the round's folder, once forms are added",
+                                     text_color=FAINT)
+            self._lbl_dest_note.configure(text="")
+
+        chosen = self._outdir.get()
+        if chosen:
+            self._lbl_panel_dest.configure(text=shorten_path(chosen, 40))
+            self._btn_dest_reset.grid(row=2, column=0, columnspan=2, sticky="w",
+                                      pady=(6, 0))
+        else:
+            origin = ui_state.origin_folder(self._sources)
+            self._lbl_panel_dest.configure(
+                text=f"The round's folder ({os.path.basename(origin)})" if origin
+                else "The round's folder: the first folder you add")
+            self._btn_dest_reset.grid_remove()
 
     def _refresh_hint(self) -> None:
         if not self._files:
-            hint, ready = "Add devices to continue", False
+            hint, ready = "Add forms to build a register", False
         elif not self._template.get():
-            hint, ready = "Choose a register template to continue", False
+            hint, ready = "Choose a register template in Settings", False
         else:
             path, note = self._destination()
             if path is None:
@@ -1837,14 +2274,14 @@ class App(_Root):
             else:
                 usable = sum(1 for o in self._files.values() if o.status == READY)
                 if not usable:
-                    hint, ready = "No recognised devices to build from", False
+                    hint, ready = "No recognised forms to build from", False
                 else:
-                    hint = (f"Ready to build the register from {usable} device"
-                            f"{'s' if usable != 1 else ''}")
+                    hint = (f"{usable:,} form{'s' if usable != 1 else ''} "
+                            f"ready to build")
                     ready = True
 
         self._lbl_hint.configure(text=hint, text_color=MUTED if ready else FAINT)
-        self._btn_build.configure(state="normal" if ready else "disabled")
+        set_enabled(self._btn_build, ready)
 
     # ── the run ──────────────────────────────────────────────────────────────
 
@@ -1862,8 +2299,9 @@ class App(_Root):
         template = self._template.get()
         deduplicate = bool(self._dedup.get())
         forms_only = bool(self._forms_only.get())
-        output_dir = self._outdir.get() or None
-        turbo = bool(self._turbo.get())
+        output_dir = self._save_folder() or None
+        turbo = ui_state.is_turbo(len(files))
+        self._turbo_mode = turbo
 
         total = len(files)
         cancel = threading.Event()
@@ -1944,9 +2382,10 @@ class App(_Root):
 
         if latest:
             self._update_progress(*latest)
-            if self._turbo.get() and time.monotonic() - self._live_render > 0.5:
+            # The banner's groups follow the run, twice a second at most.
+            if time.monotonic() - self._live_render > 0.5:
                 self._live_render = time.monotonic()
-                self._render_summary(None)
+                self._refresh_banner()
 
         if finished is not None:
             self._on_run_done(finished)
@@ -1956,13 +2395,23 @@ class App(_Root):
             self.after(60, self._drain)
 
     def _update_row(self, outcome: FileOutcome) -> None:
-        if self._turbo.get() or not self._tree.exists(outcome.path):
+        tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))[1]
+        if self._turbo_mode:
+            # Turbo lists problems only: one that surfaces mid-run is added.
+            if outcome.is_problem and not self._tree.exists(outcome.path):
+                self._tree.insert("", "end", iid=outcome.path, tags=(tag,),
+                                  image=self._dots.get(tag, ""),
+                                  values=(outcome.filename, outcome.device_name or "—",
+                                          outcome.serial or "—", status_text(outcome)))
             return
-        label, tag = STATUS_DISPLAY.get(outcome.status, (outcome.status, "muted"))
-        detail = f"{label} — {outcome.detail}" if outcome.detail else label
-        self._tree.item(outcome.path, tags=(tag,),
+        if not self._tree.exists(outcome.path):
+            return
+        # Keep the row's stripe: it belongs to its position, not its status.
+        striped = "stripe" in self._tree.item(outcome.path, "tags")
+        self._tree.item(outcome.path, tags=(tag, "stripe") if striped else (tag,),
+                        image=self._dots.get(tag, ""),
                         values=(outcome.filename, outcome.device_name or "—",
-                                outcome.serial or "—", detail))
+                                outcome.serial or "—", status_text(outcome)))
 
     #: How many recent progress marks the ETA is derived from. A whole-run
     #: average is skewed for the rest of the run by whatever came first, and a
@@ -1970,11 +2419,11 @@ class App(_Root):
     ETA_WINDOW = 12
 
     def _update_progress(self, outcome: FileOutcome, index: int, total: int) -> None:
-        if not self._turbo.get() and self._tree.exists(outcome.path):
+        if not self._turbo_mode and self._tree.exists(outcome.path):
             self._tree.see(outcome.path)
 
         self._bar.set(index / total if total else 0)
-        self._lbl_stage.configure(text=f"Reading device {index:,} of {total:,}")
+        self._lbl_stage.configure(text=f"Reading form {index:,} of {total:,}")
         self._lbl_current.configure(text=outcome.filename)
 
         now = time.monotonic()
@@ -2039,9 +2488,11 @@ class App(_Root):
     def _toggle_log(self) -> None:
         self._log_open = not self._log_open
         if self._log_open:
-            self._page.grid_rowconfigure(5, weight=0)
-            self._drawer.grid(row=5, column=0, sticky="ew", padx=28, pady=(0, 18))
+            self._drawer.grid(row=4, column=0, sticky="ew", padx=self.PAD,
+                              pady=(8, 12))
             self._btn_details.configure(text="Hide details")
+            # It opens below the table: bring it into view.
+            self.after(80, lambda: self._page._parent_canvas.yview_moveto(1.0))
         else:
             self._drawer.grid_forget()
             self._btn_details.configure(text="Details")
@@ -2052,17 +2503,21 @@ class App(_Root):
     def show_lock(self) -> None:
         """Cover the window with the PIN panel and take the app out of reach.
 
-        The whole page is removed from the layout, not merely hidden behind the
-        panel, so nothing back there can be reached by tabbing to it. The root
-        is never withdrawn — see the class docstring on LockPanel for why that
-        matters.
+        The page and the footer are removed from the layout, not merely hidden
+        behind the panel, so nothing back there can be reached by tabbing to
+        it. The root is never withdrawn — see the class docstring on LockPanel
+        for why that matters.
         """
         if getattr(self, "_lock", None) is not None:
             return
 
+        if self._panel_open:
+            self._panel_open = False
+            self._panel.place_forget()
         self._page.grid_remove()
+        self._footer.grid_remove()
         self._lock = LockPanel(self, self._settings, self._on_unlocked)
-        self._lock.grid(row=0, column=0, sticky="nsew")
+        self._lock.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self._lock.take_focus()
 
     def _on_unlocked(self, panel: "LockPanel") -> None:
@@ -2072,6 +2527,7 @@ class App(_Root):
         panel.destroy()
         self._lock = None
         self._page.grid()
+        self._footer.grid()
 
         self._refresh_all()
         self.after(80, self._fit_to_window)
@@ -2092,13 +2548,9 @@ class App(_Root):
         self.after(NEW_DAY_CHECK_MS, self._watch_for_new_day)
 
     def _show_about(self) -> None:
-        messagebox.showinfo(
-            "About Calist",
-            f"Calist {calist.__version__} — compile device inspection forms "
-            f"into one equipment register.\n\n"
-            f"Built by {AUTHOR_NAME}\n{AUTHOR_EMAIL}\n\n"
-            f"Every register Calist produces is signed with this attribution.",
-            parent=self)
+        """About lives at the foot of Settings."""
+        if not self._panel_open:
+            self._toggle_settings()
 
     def _on_close(self) -> None:
         if self._cancel is not None and not self._cancel.is_set():

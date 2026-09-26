@@ -219,6 +219,11 @@ ProgressHook = Callable[[FileOutcome, int, int], None]
 # Value normalisation
 # ──────────────────────────────────────────────────────────────────────────────
 
+def plural(count: int, word: str, many: str | None = None) -> str:
+    """"1 file", "2 files" — counts in the log read as sentences, not "file(s)"."""
+    return f"{count:,} {word if count == 1 else (many or word + 's')}"
+
+
 def clean(value: object) -> str:
     """Render a raw cell value as the string that belongs in the output.
 
@@ -2810,7 +2815,8 @@ def extract_records(
             for remaining in ordered[index - 1:]:
                 outcomes.append(FileOutcome(os.path.basename(remaining), remaining,
                                             CANCELLED, detail="Run cancelled"))
-            log.warning("Cancelled — %d file(s) not processed.", total - index + 1)
+            log.warning("Cancelled — %s not processed.",
+                        plural(total - index + 1, "file"))
             break
 
         filename = os.path.basename(filepath)
@@ -3158,7 +3164,7 @@ def process_files(
 
     log.info(rule)
     log.info("Template : %s", os.path.basename(template_file))
-    log.info("Sources  : %d file(s) selected", len(source_files))
+    log.info("Sources  : %s selected", plural(len(source_files), "file"))
     log.info(rule)
 
     try:
@@ -3174,10 +3180,11 @@ def process_files(
                                    if o.rows == 2 and o.status == OK)
     records = sort_records(records)
     if result.copies:
-        log.info("%d copy file(s) left out — the same device as a form already "
-                 "in the register.", len(result.copies))
+        log.info("%s left out — the same device as a form already in the "
+                 "register.", plural(len(result.copies), "copy", "copies"))
     if result.left_out:
-        log.info("%d file(s) left out — not device forms.", len(result.left_out))
+        log.info("%s left out — not device forms.",
+                 plural(len(result.left_out), "file"))
 
     if cancel is not None and cancel.is_set():
         result.cancelled = True
@@ -3188,7 +3195,7 @@ def process_files(
         before = len(records)
         records = deduplicate_records(records, result.duplicates)
         result.duplicates_removed = before - len(records)
-        log.info("%d duplicate record(s) removed.", result.duplicates_removed) \
+        log.info("%s removed.", plural(result.duplicates_removed, "duplicate record")) \
             if result.duplicates_removed else log.info("No duplicates found.")
 
     if not records:
@@ -3196,7 +3203,7 @@ def process_files(
         log.warning("%s", result.error)
         return result
 
-    log.info("Writing %s row(s)…", f"{len(records):,}")
+    log.info("Writing %s…", plural(len(records), "row"))
     try:
         write_output(records, template_file, output_path)
     except Exception as exc:
@@ -3208,7 +3215,7 @@ def process_files(
     result.rows_written = len(records)
 
     log.info(rule)
-    log.info("✔ Success! %d record(s) written.", len(records))
+    log.info("✔ Success! %s written.", plural(len(records), "record"))
     log.info("NEW FILE SAVED AT: %s", output_path)
     return result
 

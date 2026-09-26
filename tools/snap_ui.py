@@ -24,7 +24,6 @@ import ctypes
 import sys
 import tempfile
 import time
-from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,7 +117,11 @@ def paths() -> list[str]:
 
 
 def serial_of(filename: str) -> str:
-    return next(s for _, name, s in DEVICES if name == filename)
+    known = next((s for _, name, s in DEVICES if name == filename), None)
+    if known is not None:
+        return known
+    import zlib                            # a generated name: invent one, stably
+    return f"SN-{zlib.crc32(filename.encode()) % 90000 + 10000}"
 
 
 def read_outcome(calist, path: str):
@@ -159,6 +162,7 @@ def fake_result(calist, outcomes):
 
 def load(app, calist) -> None:
     app._files.clear()
+    app._sources[:] = [(str(ROUND), True)]      # "Add folder" on the round
     for path in paths():
         app._files[path] = calist.classify_file(path)
     app._enter_setup()
@@ -212,8 +216,76 @@ def st_results_all(app, calist):
 
 def st_details(app, calist):
     st_results(app, calist)
+    # What a real run writes to Details; the screenshot run does not read forms.
+    for line in (
+            "Template : Device List.xlsx",
+            "Sources  : 30 files selected",
+            "[WARN]  L02-ZZZ099-0925.xlsx: unknown device code 'ZZZ'",
+            "[WARN]  W01-QQQ100-0925.xlsx: unknown device code 'QQQ'",
+            "[ERROR]  T03-AE012-0925.xlsx: the workbook is password-protected",
+            "Copy left out: I05-AF007-0925 (2).xlsx (same device as I05-AF007-0925.xlsx)",
+            "[WARN]  Duplicate serial PM-88301: I05-AGH021-0925.xlsx (already in "
+            "I05-AGH020-0925.xlsx)",
+            "Writing 27 rows…",
+            "Saved C:\Rounds\January round\device list.xlsx"):
+        calist.log.info(line)
     if not app._log_open:
         app._toggle_log()
+
+
+def st_search(app, calist):
+    load(app, calist)
+    app._search.insert(0, "I05 monitor")
+    app._on_search_typed()
+    app._run_search()
+
+
+def st_group(app, calist):
+    load(app, calist)
+    import ui_state
+    app._pick_group(ui_state.problem_groups(app._files.values())[0])
+
+
+def st_clear(app, calist):
+    """Clear all, armed: the button asks before it throws the list away."""
+    load(app, calist)
+    app._arm_clear()
+
+
+def st_settings(app, calist):
+    load(app, calist)
+    app._dedup.set(True)                  # one setting on, one off
+    app._toggle_settings()
+
+
+def st_turbo(app, calist):
+    """A 1,200-form archive run, part way through: Turbo takes over."""
+    app._files.clear()
+    for n in range(1200):
+        folder, name, _ = DEVICES[n % 24]
+        stem, ext = name.rsplit(".", 1)
+        site, code, month = stem.split("-")
+        path = str(ROUND / folder / f"{site}-{code[:-3]}{n:03d}-{month}.{ext}")
+        app._files[path] = calist.classify_file(path)
+    for path in paths()[24:27]:                      # a few unknown codes
+        app._files[path] = calist.classify_file(path)
+    app._enter_setup()
+    files = sorted(app._files)
+    total = len(files)
+    app._turbo_mode = True
+    app._cancel = __import__("threading").Event()
+    app._enter_working(total)
+    app._started_at = time.monotonic() - 3
+    app._marks = [(0, app._started_at)]
+    for index, path in enumerate(files[:500], start=1):
+        outcome = read_outcome(calist, path)
+        app._files[path] = outcome
+        if outcome.is_problem:
+            app._live_problems.append(outcome)
+        app._marks.append((index, app._started_at + index * 0.006))
+    app._update_progress(outcome, 500, total)
+    app._refresh_table()
+    app._refresh_banner()
 
 
 def st_lock(app, calist):
@@ -224,10 +296,15 @@ STATES = {
     "empty": st_empty,
     "loaded": st_loaded,
     "problems": st_problems,
+    "group": st_group,
+    "search": st_search,
+    "settings": st_settings,
+    "clear": st_clear,
     "working": st_working,
     "results": st_results,
     "results-all": st_results_all,
     "details": st_details,
+    "turbo": st_turbo,
     "lock": st_lock,
 }
 
@@ -278,7 +355,8 @@ def main() -> int:
     # Tk sizes point fonts (the device table) from its own scaling, which
     # CustomTkinter's settings do not reach.
     app.tk.call("tk", "scaling", args.scale * 96 / 72)
-    ui.style_treeview()
+    ui.style_treeview(app)
+    app._colour_tags()
 
     width = round(screen_w / args.scale)
     height = round((screen_h - CHROME_H * args.scale) / args.scale)
@@ -295,10 +373,26 @@ def main() -> int:
             app._lock.destroy()
             app._lock = None
             app._page.grid()
+            app._footer.grid()
+        if app._panel_open:                  # so is the settings drawer
+            app._panel_open = False
+            app._panel.place_forget()
+        app._cancel = None
+        app._turbo_mode = False
+        app._group = None
+        app._clear_search()
+        if app._log_open:
+            app._toggle_log()
+        if app._clear_job is not None:       # an armed Clear all stands down
+            app.after_cancel(app._clear_job)
+            app._disarm_clear()
         STATES[name](app, calist)
         settle(app)
         path = folder / f"{tag}-{name}.png"
-        ImageGrab.grab(bbox=window_bounds(app), all_screens=True).save(path)
+        # The frame's last row is Windows 11's 1px border, and whatever is on
+        # screen behind the window shows through it — not the app's pixels.
+        left, top, right, bottom = window_bounds(app)
+        ImageGrab.grab(bbox=(left, top, right, bottom - 1), all_screens=True).save(path)
         print(path.relative_to(ROOT))
 
     app.destroy()
