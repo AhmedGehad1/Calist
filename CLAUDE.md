@@ -14,7 +14,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (450 tests)
+python -m pytest                            # the whole suite (460 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -165,6 +165,7 @@ the archive's 89,538 workbooks, the slips `repair_name` undoes are:
 |---|---|---|---|
 | leading dot, quote, backtick, invisible mark | `.G414-CA002-0426` | `G414-CA002-0426` | no |
 | spaces around a dash, before `.xlsx`; lower case | `G119-CE007 -0525 `, `k116-AX001-0123` | `G119-CE007-0525` | no |
+| a doubled dash; an invisible mark *inside* the name (2.0.1) | `F32--BE002-0725`, `G372-AِA001-1025` (a kasra) | `F32-BE002-0725`, `G372-AA001-1025` | no |
 | `Copy of ` / `Final ` in front | `Copy of B14-BB036-0126` | `B14-BB036-0126` | yes |
 | a letter O for the zero of the customer code | `JO8-AGH001-1025` | `J08-AGH001-1025` | yes |
 | anything after the date | `G302-BB001-0326-pending`, ` (2)`, ` FAIL` | `G302-BB001-0326` | yes (dots/dashes only: no) |
@@ -176,6 +177,13 @@ the house shape at all (`GE  TEC850  OR  SQAX00871`, `5071938426`, `H58-BM010` w
 exactly as it is: there is nothing to repair it toward. `test_a_name_is_written_with_its_slips_undone`
 holds every example. **Proof: on all 89,538 archive names, 0 of the 78,923 already-correct names
 change.**
+
+The doubled dash and the invisible mark are undone *before* the code is read, not only in the
+Code column: `without_marks` strips Unicode's combining and format marks (Mn, Me, Cf) and is
+applied by `repair_name`, `extract_device_code` and `has_device_name` alike, and a run of dashes
+counts as one between the parts. Without that, `F32--BE002` read no code at all and the kasra cut
+`AِA001` to the code `A`. Measured over all 187,904 workbook names under the archive root, the
+change touches exactly those 8 files (plus a `Device List---oold`, still no device) and no other.
 
 Rules that are load-bearing:
 
@@ -300,8 +308,24 @@ dates and serials as text, so nothing needs converting.
 
 It does mean non-text cells pass through in Excel's own form — a real date cell becomes
 `"2024-01-15 00:00:00"`, a numeric serial `"123456.0"`, and in `.xls` a date is the bare serial number
-(`"45306.0"`) because xlrd returns it as a float. If a form ever starts using real date or number cells,
-that's where to fix it. Tests lock the current behaviour in, so a change there is a deliberate one.
+(`"45306.0"`) because xlrd returns it as a float. Tests lock that in for `clean()` itself.
+
+**The register drops the ".0" from its text fields** (`_drop_float_zero`, owner's decision, 2.0.1):
+`S.N`, `S.N2`, `Model`, `Manufacturer`, `Location`, `Status`, `Status2` — **never `Date`**, whose
+`.xls` serial number is read as a date downstream. Only a whole number loses it (`"11195.0"` →
+`"11195"`); `"1742.60318475"` and `"37.254"` are serials and stay. `extract_records` calls it right
+after `read_best`, so it cannot change *which* cells are read — `plausible()`, `classify_serial()` and
+the caption checks all still see the raw text, which is what they were tuned on (`_READING_RE`
+deliberately lets `"115.0"` through as a serial). The S.N column is written as a Text cell
+(`number_format = "@"`), so a serial typed over later keeps a leading zero. A leading zero an `.xls`
+already lost, by storing the serial as a number, cannot be brought back.
+
+**The Firebase export keeps the ".0", deliberately — do not move the call into `read_best`.** The
+export numbers devices by serial, and a device filed as `.xls` one year (`"200180028.0"`) and `.xlsx`
+the next (`"200180028"`) has been two devices there for years (`J08-AK004` and `J08-AK014`).
+Measured over the whole archive, dropping the ".0" there moved **519** existing record ids — 341
+devices joining their other files and 178 renumbered behind them, at 180 sites — so the owner chose
+"register only". `test_the_register_drops_point_zero_but_the_export_keeps_its_serials` pins it.
 
 `load_workbook(data_only=True)` returns *cached* formula results — a file written by a script and never
 opened in Excel yields `None` for those cells.
@@ -406,7 +430,10 @@ Three steps, in order:
    (`_ENGINEER_CODE`: `JTE-`, `STE-18`) or **a bare number** (`_A_READING`: `191.2` joules, `5.1`),
    which is dropped to `""` — and kept, amber, in the register. On older Centrifuge forms the map's
    `K25` is the "Revised by" box, captioned *above* it where the caption check cannot see, and 45 rows
-   read `JTE-` as a verdict. **`0` is not a reading**: see below.
+   read `JTE-` as a verdict. **`0` is not a reading**: see below. **A caption** (`Safety:`, anything
+   ending in a colon — `_is_a_label`) is the one exception to "kept, amber": it is the form's own
+   print, not something an engineer wrote, so since 2.0.1 it is blanked **plainly**, with no amber
+   and no note, by the owner's decision. An answer, a reading and an engineer's code are still marked.
 
 Four things there are load-bearing:
 
@@ -480,6 +507,15 @@ no uniform offset, so a field without a printed label cannot follow the others. 
 a config places it from a located one: Therapeutic Ultrasound's Date is two rows above its Model,
 wherever that block sits (`{"Date": ("Model", -2)}`). Mapping that block's rows directly was tried
 first and read test readings on 105 fields — the label search was already right about identity.
+
+An entry may also name a **column** — `{"Status": ("Model", 9, "F")}` — for a box that sits in a
+fixed column below a block that moves sideways. That is Therapeutic Ultrasound's verdict (2.0.1):
+the box captioned `Status` in F, nine rows under the Model, on **all 91** of its forms read by label.
+Before, its K22 read the Accessories line of the visual-inspection table — `Pass` on devices whose
+own box says `fail` — and 59 BN verdicts changed with the fix, every one to the box the form captions
+`Status`. `"found_by_labels": True` in the same config says the moving block *is* the layout, so the
+labels route marks nothing amber for it ("this layout is not in the device table yet" was on every
+field of every BN row).
 
 **Other tabs: ordinary ones first, certificates last.** The certificate repeats the device's
 identity but never its verdict. Once `Equipment Data` became a recognised heading, the other-tab
@@ -592,13 +628,15 @@ bytes): the archive holds `.xlsx` workbooks saved under a `.xls` name, which fai
 
 ### The register marks what it keeps but doubts (`_flags`)
 
-**By the owner's decision, the register never drops a value silently.** A caption in the Status
-box, a serial that is not one, a record no layout fits — each is written as found, the cell filled
-amber, with an Excel note saying why (`_mark_for_checking`). The column layout is untouched.
+**By the owner's decision, the register never drops a value silently.** An answer to another
+question in the Status box, a serial that is not one, a record no layout fits — each is written as
+found, the cell filled amber, with an Excel note saying why (`_mark_for_checking`). The column layout
+is untouched. The one exception is a printed **caption** in the Status box (`Safety:`), which since
+2.0.1 is left out plainly — see *The Status box moves on its own*.
 
 This lives in an underscore side-channel, `record["_flags"]` — the same pattern as `_group` and
 `_source`, which never reaches `FIELDS`. **The marks never reach the Firebase export**: it reads
-only named fields (`record.get("S.N")` …), and `_settle_status` still blanks a caption in the
+only named fields (`record.get("S.N")` …), and `_settle_status` still blanks a non-verdict in the
 named field while recording the raw text in `_flags["Status"]["show"]` for the register alone.
 The *fixes* do reach it, by the owner's decision — a corrected map, a repaired date, a status that
 was a caption or a reading, a skipped file — which is why the audit proves every one of them.
@@ -764,8 +802,16 @@ which is why BD has `"source": "word"` and no cells at all. 48 of 53 have a cert
 stay unread. `test_mammography_is_read_only_from_its_word_certificate` pins this.
 
 `FC` (High Flow Nasal Cannula) is mapped: 128 of its 131 forms are a 2023 batch whose only device
-block is on a tab called `cert`, reached by the other-tab label search. `BJ` (Auto Refractometer)
-remains unmapped: one archive file, and no coherent field block.
+block is on a tab called `cert`, reached by the other-tab label search. `BJ` (Auto Refractometer) is
+mapped since 2.0.1 on the standard block; its two G19 files are blank templates (no model, no serial,
+a printed `FAIL` in the box) and read as blank forms do.
+
+**Added in 2.0.1, named by the owner**, each read on every archive file carrying its code before it
+went in: `GN` Panorama X-ray (15 files, the imaging block like BF), `HB` Sentifit System, `HC`
+Therapeutic apheresis machine, `HD` Microtome, `J` OR Table (Electrical Safety) — its own code, not
+`FJ` — `GR` Laser Therapy, `GT` Spinal Traction, `GU` Shockwave Therapy, `GV` Electrotherapy Machine,
+`GY` Infrared Sterilizer, `HA` HPLC Analyzer, `GX` PRF Generator (Model at E23, Status G32). `GZ`,
+`HE` and the single `F1002` file stay unknown, by the owner's decision.
 
 Device names are reproduced verbatim in output, spelling slips included (`Protien Analyzer`,
 `Tornique`). Correcting them changes the text written into every register, so treat it as a deliberate
@@ -879,6 +925,14 @@ footer     Saves to ...\January round\device list.xlsx  26 ready   Built by ... 
   `ui_state.problem_groups`, at most `MAX_CHIPS` plus a "more" chip. A chip filters the table to
   those files (`_pick_group`). While a group is picked the All/Problems `Toggle` shows *no* selection
   — the group is the filter — and the line's right end names it, with **Show all**.
+- **The status line is rebuilt only when its *shape* changes** (`_banner_shape`: the chips, the
+  pick, the filter note). While a run only moves the numbers, the count labels are updated in place,
+  at most once a second (`_drain`). 2.0.0 tore the line down and rebuilt it twice a second, and an
+  emptied `CTkFrame` falls back to 200x200 for a moment — the line vanished, the table jumped, and a
+  42,000-form run flickered for its whole length. A new shape is built off-screen and swapped in
+  before the old one is destroyed, so the layout never sees an empty frame.
+- **The window opens at its minimum, 1000x600 logical** (`WINDOW_W`/`WINDOW_H`, the owner's choice),
+  centred; `minsize` is the same, so it can only grow. Anyone who wants more drags it or maximises.
 - **Esc backs out one step**: the drawer, then any filter or search, then a run.
 - **Keys:** Ctrl+O add a folder, Ctrl+F search, F5 Re-check, Ctrl+Enter the footer's main action
   (Build, or Open register after a run), Ctrl+, Settings.
@@ -887,7 +941,7 @@ footer     Saves to ...\January round\device list.xlsx  26 ready   Built by ... 
 
 - **An empty `CTkFrame` is 200x200.** With no grid children it falls back to its default size and
   opens a band in the layout. Build such a frame only when it will hold something
-  (`_render_filter_note`).
+  (`_build_filter_note`).
 - **CustomTkinter will not draw a 1 px frame.** Hairlines are `tk.Frame`s from `_hairline()`,
   collected in `_hairlines` and re-coloured by `_apply_theme`.
 - **A disabled `CTkButton` keeps its fill.** 1.x's disabled Build button stayed bright blue. Every

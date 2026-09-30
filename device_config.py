@@ -266,8 +266,12 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # "6.9") on 105 fields. What the labels cannot place is the Date, which
     # sits two rows above the Model wherever the block is — hence
     # label_offsets (see calist._best_layout).
+    # The Status box is in column F, nine rows below the Model. The block's
+    # moving is this form's layout, not a rescue, so finding it by its labels
+    # marks nothing in the register ("found_by_labels").
     "BN": {"device_name": "Therapeutic Ultrasound", "cells": form(18, "K22"),
-           "label_offsets": {"Date": ("Model", -2)}},
+           "label_offsets": {"Date": ("Model", -2), "Status": ("Model", 9, "F")},
+           "found_by_labels": True},
     "CN": {"device_name": "Microwave",              "cells": form(18, "K22")},
     "GE": {"device_name": "Temperature Calibration Tester", "cells": form(18, "K22"),
            "alt_cells": [form(17, "K21")]},
@@ -494,6 +498,29 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "BD": {"device_name": "Mammography", "source": "word",
            "cells": {"Manufacturer": "", "Model": "", "S.N": "", "Location": "",
                      "Date": "", "Status": ""}},
+
+    # ── Added in 2.0.1, named by the owner ────────────────────────────────────
+    # Each read on every archive file that carries the code (1 to 15 each).
+    # The imaging sheet, like the X-ray and Catheter Lab forms: its device tab
+    # says "Panorama" beside "X-ray".
+    "GN": {"device_name": "Panorama X-ray",
+           "cells": form(18, "J27", extra={"Location": "K22"})},
+    "HB": {"device_name": "Sentifit System",         "cells": form(18, "K22"),
+           "alt_cells": [form(15, "F29")]},
+    "HC": {"device_name": "Therapeutic apheresis machine", "cells": form(18, "K22")},
+    "HD": {"device_name": "Microtome",               "cells": form(18, "K22")},
+    # Not FJ: the electrical-safety check of an OR table has its own code.
+    "J": {"device_name": "OR Table (Electrical Safety)", "cells": form(18, "K22")},
+    "GR": {"device_name": "Laser Therapy",           "cells": form(18, "K22")},
+    "GT": {"device_name": "Spinal Traction",         "cells": form(18, "K22")},
+    "GU": {"device_name": "Shockwave Therapy",       "cells": form(18, "K22")},
+    "GV": {"device_name": "Electrotherapy Machine",  "cells": form(18, "K22")},
+    "GY": {"device_name": "Infrared Sterilizer",     "cells": form(18, "K22")},
+    "HA": {"device_name": "HPLC Analyzer",           "cells": form(15, "F29")},
+    # The block sits five rows lower, under the client header; Status is the
+    # box at G32, captioned "Status" above it.
+    "GX": {"device_name": "PRF Generator",           "cells": form(23, "G32")},
+    "BJ": {"device_name": "Auto Refractometer",      "cells": form(18, "K22")},
 }
 
 # "AG" is "AGH" with the H dropped — the same Patient Monitor form, typed short.

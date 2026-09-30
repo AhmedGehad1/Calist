@@ -376,8 +376,6 @@ def main() -> int:
     ctk.set_window_scaling(args.scale / dpi)
 
     app = ui.App()
-    if getattr(app, "_zoom_job", None):       # a laptop-sized screen: we size it
-        app.after_cancel(app._zoom_job)
     # Tk sizes point fonts (the device table) from its own scaling, which
     # CustomTkinter's settings do not reach.
     app.tk.call("tk", "scaling", args.scale * 96 / 72)

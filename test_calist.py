@@ -38,6 +38,17 @@ def test_code_is_none_when_no_letters():
     assert calist.extract_device_code("123.xlsx") is None
 
 
+def test_a_doubled_dash_or_an_invisible_mark_does_not_hide_the_code():
+    """"F32--BE002" is an X-ray (Mobile); "G372-AِA001" has an Arabic kasra
+    between its letters, typed with the keyboard switched, and is Anesthesia."""
+    assert calist.extract_device_code("F32--BE002-0725.xlsm") == "BE"
+    assert calist.extract_device_code("G372-AِA001-1025.xlsx") == "AA"
+    assert calist.has_device_name("F32--BE002-0725.xlsm")
+    assert calist.has_device_name("G372-AِA001-1025.xlsx")
+    outcome = calist.classify_file("G372-AِA001-1025.xlsx")
+    assert outcome.device_name == "Anesthesia" and outcome.code == "G372-AA001-1025"
+
+
 # ── clean ─────────────────────────────────────────────────────────────────────
 
 def test_clean_none_is_blank():
@@ -278,6 +289,8 @@ def test_classify_does_not_open_the_file():
     ("K86-CE013-0323 - Copy", "K86-CE013-0323"),
     ("J11-AGH027-1224..........", "J11-AGH027-1224"),
     ("F30-FF001-0724applied parts safety report", "F30-FF001-0724"),
+    ("F32--BE002-0725", "F32-BE002-0725"),            # a doubled dash
+    ("G372-AِA001-1025", "G372-AA001-1025"),     # a kasra inside the code
 ])
 def test_a_name_is_written_with_its_slips_undone(stem, name):
     assert calist.repair_name(stem, 2026).name == name
@@ -371,7 +384,8 @@ def test_a_forms_date_as_mmyy(text, mmyy):
 def test_only_repairs_that_change_what_the_name_says_are_marked():
     """A space, a dot or lower case are not worth a person's time."""
     for stem in ("G119-CE007 -0525", ".G414-CA002-0426", "k116-AX001-0123",
-                 "\u206fD38-AGH178-0224", "J11-AGH027-1224.........."):
+                 "\u206fD38-AGH178-0224", "J11-AGH027-1224..........",
+                 "F32--BE002-0725", "G372-A\u0650A001-1025"):
         assert calist.repair_name(stem, 2026).notes == [], stem
     for stem in ("Copy of B14-BB036-0126", "JO8-AGH001-1025",
                  "F29-AI041-0625 Pending", "D38-AGH090-0225 (2)"):
@@ -1705,9 +1719,10 @@ def test_a_doubtful_value_is_kept_amber_with_a_note(tmp_path):
     assert model.comment is None and model.fill.fill_type is None
 
 
-def test_a_caption_in_the_status_box_reaches_the_register_but_not_the_export(tmp_path):
-    """Kept and marked in the register, by the owner's decision; still blank
-    for the Firebase export, which reads the named field only."""
+def test_a_caption_in_the_status_box_is_left_out_plainly(tmp_path):
+    """The form's own print, not something an engineer wrote: blank in the
+    register and the export alike, with no amber and no note (owner's
+    decision, 2.0.1)."""
     wb = Workbook()
     ws = wb.active
     _block(ws, 18, {"Model": "Bililed", "S.N": "BXP-7266-318",
@@ -1717,8 +1732,24 @@ def test_a_caption_in_the_status_box_reaches_the_register_but_not_the_export(tmp
     wb.save(path)
     config = {"device_name": "Phototherapy", "cells": form(18, "F37", col="D", val="J")}
     record, _ = calist.read_best(str(path), config)
-    assert record["Status"] == ""                            # the export
-    assert record["_flags"]["Status"]["show"] == "Safety:"   # the register
+    assert record["Status"] == ""
+    assert "Status" not in record["_flags"]
+
+
+def test_an_answer_to_another_question_in_the_status_box_is_still_marked(tmp_path):
+    """"Large" is something an engineer wrote, just in the wrong box: the
+    register keeps it, amber, as before."""
+    wb = Workbook()
+    ws = wb.active
+    _block(ws, 18, {"Model": "Bililed", "S.N": "BXP-7266-318",
+                    "Manufacturer": "Novos", "Location": "NICU"}, col="D", val="J")
+    ws["F37"] = "Large"
+    path = tmp_path / "D38-AL010-0224.xlsx"
+    wb.save(path)
+    config = {"device_name": "Phototherapy", "cells": form(18, "F37", col="D", val="J")}
+    record, _ = calist.read_best(str(path), config)
+    assert record["Status"] == ""
+    assert record["_flags"]["Status"]["show"] == "Large"
 
 
 def test_an_empty_verdict_box_showing_zero_is_not_flagged(tmp_path):
@@ -1779,6 +1810,87 @@ def test_a_date_with_no_label_is_placed_from_the_located_model(tmp_path):
     assert how == "labels"
     assert record["Date"] == "06-03-2026"
     assert record["S.N"] == "37.254"
+
+
+def test_therapeutic_ultrasound_reads_its_own_status_box_unmarked(tmp_path):
+    """The verdict is the box captioned "Status" in column F, nine rows below
+    the Model — not K22, which on this layout is a visual-inspection line
+    ("Pass" for Accessories on a device that failed). The block moving is this
+    form's layout, so nothing is marked amber for it."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "data entry"
+    ws["I16"], ws["K22"] = "Status", "Pass"            # the inspection table
+    _block(ws, 69, {"Model": "US-700", "S.N": "9902390060TA",
+                    "Manufacturer": "ITO", "Location": "Physiotherapy"},
+           col="D", val="J")
+    ws["D67"] = "14-03-2024"
+    ws["F77"], ws["F78"] = "Status", "fail"
+    ws["B78"] = "Pass/Fail/Limited"                   # the legend beside it
+    path = tmp_path / "B14-BN004-0324.xlsx"
+    wb.save(path)
+    record, how = calist.read_best(str(path), DEVICE_CONFIGS["BN"])
+    assert how == "labels"
+    assert record["Status"] == "fail"
+    assert record["_flags"] == {}
+
+
+def test_a_label_offset_may_name_a_column():
+    assert calist._shift("D69", 9, "F") == "F78"
+    assert calist._shift("D69", -2) == "D67"
+
+
+def test_the_new_devices_of_2_0_1_are_known():
+    """Named by the owner; each map was read against every archive file with
+    the code before it went in."""
+    expected = {"GN": "Panorama X-ray", "HB": "Sentifit System",
+                "HC": "Therapeutic apheresis machine", "HD": "Microtome",
+                "J": "OR Table (Electrical Safety)", "GR": "Laser Therapy",
+                "GT": "Spinal Traction", "GU": "Shockwave Therapy",
+                "GV": "Electrotherapy Machine", "GY": "Infrared Sterilizer",
+                "HA": "HPLC Analyzer", "GX": "PRF Generator",
+                "BJ": "Auto Refractometer"}
+    for code, name in expected.items():
+        assert DEVICE_CONFIGS[code]["device_name"] == name, code
+    # FJ stays the plain OR Table; J is its electrical-safety check.
+    assert DEVICE_CONFIGS["FJ"]["device_name"] == "OR Table"
+    assert calist.classify_file("F18-J002-0426.xls").device_code == "J"
+
+
+def test_a_whole_number_loses_the_point_zero_an_xls_gives_it():
+    """xlrd hands a numeric cell back as a float, and str() wrote serial 11195
+    as "11195.0". Text fields only: an .xls date IS its serial number."""
+    record = {"S.N": "11195.0", "S.N2": "0123.00", "Model": "3000.0",
+              "Manufacturer": "Erka", "Location": "12.0", "Status": "0.0",
+              "Status2": "5.5", "Date": "45306.0"}
+    calist._drop_float_zero(record)
+    assert record == {"S.N": "11195", "S.N2": "0123", "Model": "3000",
+                      "Manufacturer": "Erka", "Location": "12", "Status": "0",
+                      "Status2": "5.5", "Date": "45306.0"}
+    for kept in ("1742.60318475", "37.254", "1.05", "SN-11195.0", "11195.0 A"):
+        record = {"S.N": kept}
+        calist._drop_float_zero(record)
+        assert record["S.N"] == kept, kept
+
+
+def test_the_register_drops_point_zero_but_the_export_keeps_its_serials(tmp_path):
+    """The export numbers devices by serial: joining "11195.0" and "11195"
+    would move 519 existing record ids, so by the owner's choice only the
+    register drops it. read_best is what the export reads through."""
+    path = _form(tmp_path / "G302-AC001-0425.xlsx",
+                 {"E15": "R-Series", "K15": "11195.0"})
+    record, _ = calist.read_best(path, DEVICE_CONFIGS["AC"])
+    assert record["S.N"] == "11195.0"
+    records, outcomes = calist.extract_records([path])
+    assert records[0]["S.N"] == "11195" and outcomes[0].serial == "11195"
+
+
+def test_the_serial_column_is_written_as_text(tmp_path):
+    """So a serial typed over later keeps a leading zero."""
+    out = tmp_path / "out.xlsx"
+    calist.write_output([{"Device": "Syringe", "S.N": "0123"}], _template(tmp_path), out)
+    serial = _cell(load_workbook(out).active, "S.N")
+    assert serial.value == "0123" and serial.number_format == "@"
 
 
 def test_the_data_tab_is_searched_before_the_certificate(tmp_path):

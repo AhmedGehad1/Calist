@@ -22,6 +22,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -84,7 +85,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -285,13 +286,28 @@ _PREFIX = r"(?P<prefix>(?:(?:copy\s+of|final)\s+)*)"
 
 #: The device part must end where it seems to: "H59-BZ00F-1025" is not the
 #: 000 template "BZ00" with an F after it, it is a name nobody can repair.
+#: A doubled dash between the parts ("F32--BE002-0725") is a slip of the
+#: finger, like a space.
 _HOUSE_NAME_RE = re.compile(
     rf"{_LEAD}{_PREFIX}"
-    r"(?P<site>[A-Za-z]+\d+)\s*-\s*(?P<tag>[A-Za-z]+\d+)(?![A-Za-z0-9])"
-    r"(?:\s*-\s*(?P<date>\d+))?"
+    r"(?P<site>[A-Za-z]+\d+)\s*-+\s*(?P<tag>[A-Za-z]+\d+)(?![A-Za-z0-9])"
+    r"(?:\s*-+\s*(?P<date>\d+))?"
     r"(?P<tail>.*)\Z",
     re.IGNORECASE | re.DOTALL,
 )
+
+#: Unicode's combining and format marks: an Arabic vowel sign typed into a
+#: name while the keyboard was switched ("G372-AِA001-1025" is AA001, with a
+#: kasra between its letters), or a direction mark. None of them can be seen,
+#: and none of them is part of a name.
+_INVISIBLE = frozenset(("Mn", "Me", "Cf"))
+
+
+def without_marks(stem: str) -> str:
+    """A filename stem with its invisible marks taken out. See [_INVISIBLE]."""
+    if stem.isascii():
+        return stem
+    return "".join(c for c in stem if unicodedata.category(c) not in _INVISIBLE)
 
 #: Just the customer code at the front, for a name whose device part is past
 #: repair: it still says whose device it is.
@@ -410,7 +426,7 @@ def repair_name(stem: str, latest_year: int | None = None) -> NameRepair:
     app, the round after the folder's for the archive export. A later one is a
     slip — "0329" typed for a March 2026 visit.
     """
-    match = _HOUSE_NAME_RE.match(stem)
+    match = _HOUSE_NAME_RE.match(without_marks(stem))
     if not match:
         # Nothing to repair toward. The customer code is still worth knowing,
         # for the "real device forms only" switch — see [left_out_because].
@@ -544,10 +560,12 @@ def extract_device_code(filename: str) -> str | None:
 
         "Clinic-AGH001.xlsx" -> "AGH"
         "VNT023.xlsx"        -> "VNT"
+        "F32--BE002.xlsm"    -> "BE"   (a doubled dash is a slip)
+        "G372-AِA001.xlsx"   -> "AA"   (so is an invisible mark)
     """
-    stem = Path(filename).stem
+    stem = without_marks(Path(filename).stem)
     _, separator, tail = stem.partition("-")
-    match = re.match(r"[A-Za-z]+", tail if separator else stem)
+    match = re.match(r"[A-Za-z]+", tail.lstrip("-") if separator else stem)
     return match.group(0).upper() if match else None
 
 
@@ -1729,9 +1747,10 @@ def _uniform_offset(configured: dict[str, str],
     return None
 
 
-def _shift(ref: str, rows: int) -> str:
+def _shift(ref: str, rows: int, column_letter: str | None = None) -> str:
+    """``ref`` moved ``rows`` down — and into ``column_letter``, when given."""
     row, column = coordinate_to_tuple(ref)
-    return f"{get_column_letter(column)}{row + rows}"
+    return f"{column_letter or get_column_letter(column)}{row + rows}"
 
 
 def _read_with(source, cell_map: dict[str, str]) -> Record:
@@ -1884,7 +1903,8 @@ def _settle_status(source, cells: dict[str, str], record: Record) -> None:
        answer to a different question**, which is dropped. "Safety:" and
        "Syringe brand:" were reaching the register as a device's verdict, and a
        map one column out reports that question's answer, "Large". A blank is
-       honest and neither of those was.
+       honest and neither of those was. A caption is dropped plainly; an
+       answer, a reading or an engineer's code stays in the register, amber.
 
     Only ``Status`` is searched, and only on a form with a single box. Where a
     device has a ``Status2`` the two verdicts belong to different modules and
@@ -1899,7 +1919,13 @@ def _settle_status(source, cells: dict[str, str], record: Record) -> None:
             continue                        # blank stays blank; a status stays
 
         engineer = _ENGINEER_CODE.match(raw)
-        if (engineer or _is_a_label(raw) or _A_READING.match(raw)
+        if not engineer and _is_a_label(raw):
+            # The form's own print — "Safety:", "Syringe brand:" — is nothing
+            # an engineer wrote, so it is left out plainly: no amber, no note
+            # (owner's decision). A box that says something is still marked.
+            record[field] = ""
+            continue
+        if (engineer or _A_READING.match(raw)
                 or raw.strip().lower().rstrip(".") in _NOT_A_VERDICT):
             record[field] = ""              # never EXPORT a caption, or a size
             # …but the register keeps what the form said, marked for checking,
@@ -1999,11 +2025,39 @@ def read_best(filepath: str, config: dict,
             raise LeftOut("nothing is filled in — a blank form or template", record)
         if cells.get("Date"):
             _repair_date_field(record, filepath)
-        record["_flags"] = {**_flags_for(record, how, cells),
+        record["_flags"] = {**_flags_for(record, how, cells, config),
                             **record.get("_flags", {})}
         return record, how
     finally:
         source.close()
+
+
+#: A whole number as xlrd hands it back from an .xls: serial 11195 is the
+#: float 11195.0, and str() writes "11195.0". Excel itself shows 11195.
+_FLOAT_ZERO_RE = re.compile(r"^(-?\d+)\.0+$")
+
+#: The fields that are text, whatever the cell held. Never the Date: an .xls
+#: date is its serial number ("45306.0"), which is read as a date downstream.
+TEXT_FIELDS = ("S.N", "S.N2", "Model", "Manufacturer", "Location", "Status", "Status2")
+
+
+def _drop_float_zero(record: Record) -> None:
+    """"11195.0" -> "11195" in the text fields, by the owner's decision.
+
+    **The register only.** [extract_records] calls it once the layout is
+    chosen, so it cannot change which cells are read. The Firebase export
+    does not: it numbers devices by serial, and a device filed as .xls one
+    year ("200180028.0") and .xlsx the next ("200180028") has been two
+    devices there for years — joining them would move 519 record ids, so the
+    owner kept the export as it was. A serial's leading zero, once an .xls
+    stored the serial as a number, is already gone from the file.
+    """
+    for field in TEXT_FIELDS:
+        value = record.get(field)
+        if isinstance(value, str):
+            whole = _FLOAT_ZERO_RE.match(value)
+            if whole:
+                record[field] = whole[1]
 
 
 def _pick_field_cells(source, cells: dict[str, str],
@@ -2078,7 +2132,8 @@ def _looks_like_date(text: str) -> bool:
                 or _EXCEL_DATE_NUMBER.match(text))
 
 
-def _flags_for(record: Record, how: str, cells: dict[str, str]) -> dict:
+def _flags_for(record: Record, how: str, cells: dict[str, str],
+               config: dict | None = None) -> dict:
     flags: dict[str, dict] = {}
 
     def flag(field: str, reason: str) -> None:
@@ -2091,6 +2146,8 @@ def _flags_for(record: Record, how: str, cells: dict[str, str]) -> dict:
             if clean(record.get(field)):
                 flag(field, "No known layout fits this form — this is whatever "
                             "sits in the mapped cell.")
+    elif how == "labels" and (config or {}).get("found_by_labels"):
+        pass    # this device's block moves on every form: labels ARE its layout
     elif how.startswith("labels"):
         for field in identity:
             if clean(record.get(field)):
@@ -2297,7 +2354,7 @@ _HEADING_SPELLINGS = {"device name": "device", "sn": "s.n", "s/n": "s.n",
 
 #: A device's number written the house way — `G302-AGH001` — anywhere in the
 #: name, so "Copy of D41-AA002-0624" still counts as named for its device.
-_DEVICE_NAME_RE = re.compile(r"[A-Za-z]+\d+-[A-Za-z]+\d+")
+_DEVICE_NAME_RE = re.compile(r"[A-Za-z]+\d+-+[A-Za-z]+\d+")
 
 
 def has_device_name(filepath: str) -> bool:
@@ -2309,7 +2366,7 @@ def has_device_name(filepath: str) -> bool:
     letters: a Philips serial reads as a Microwave, a GE vaporizer as a
     Temperature Calibration Tester.
     """
-    return bool(_DEVICE_NAME_RE.search(Path(filepath).stem))
+    return bool(_DEVICE_NAME_RE.search(without_marks(Path(filepath).stem)))
 
 
 def _is_device_list(source, filepath: str) -> bool:
@@ -2548,10 +2605,11 @@ def _best_layout(source, cells: dict[str, str], config: dict,
         # so a field with no label of its own is placed from a located one:
         # Therapeutic Ultrasound prints its Date two rows above its Model,
         # wherever that block sits — without this its date read the caption
-        # "Test Parameter" on 95 forms.
-        for field, (anchor, down) in config.get("label_offsets", {}).items():
+        # "Test Parameter" on 95 forms. An entry may name a column as well,
+        # for a box that sits in a fixed column below the block: its Status.
+        for field, (anchor, down, *column) in config.get("label_offsets", {}).items():
             if located.get(anchor):
-                candidate[field] = _shift(located[anchor], down)
+                candidate[field] = _shift(located[anchor], down, *column)
         found = _read_with(source, candidate)
         if plausible(found):
             # Neither placement reached a date: ask the form's date caption.
@@ -2865,6 +2923,9 @@ def extract_records(
                 # has a row for it because the fallback found the fields.
                 log.info("%s — read using %s (the form has moved since its "
                          "cell map was written)", filename, layout)
+            # The register's own: the Firebase export reads through read_best
+            # too, and keeps the values exactly as they were (owner's choice).
+            _drop_float_zero(record)
 
             repair = settle_name_date(repair_name(Path(filename).stem),
                                       clean(record.get("Date")))
@@ -3080,6 +3141,10 @@ def write_output(records: list[Record], template_file: str, output_path: Path) -
                     value = mark["show"]
                 cell = sheet.cell(row=row, column=TEMPLATE_START_COL + offset,
                                   value=value)
+                if name == "S.N":
+                    # Text, so a serial someone types over later keeps its
+                    # leading zero rather than turning into a number.
+                    cell.number_format = "@"
                 if mark:
                     _mark_for_checking(cell, mark["reason"])
 

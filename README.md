@@ -17,8 +17,8 @@ de-duplicated equipment register — automatically, without opening a single fil
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![Tests passing](https://img.shields.io/badge/tests-450%20passing-brightgreen)
-![Device types](https://img.shields.io/badge/device%20types-95-blue)
+![Tests passing](https://img.shields.io/badge/tests-460%20passing-brightgreen)
+![Device types](https://img.shields.io/badge/device%20types-111-blue)
 ![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20|%2011-lightgrey)
 ![Size](https://img.shields.io/badge/download-12.7%20MB-lightgrey)
@@ -48,18 +48,18 @@ The trap is that **those six cells sit somewhere different on every device's for
 | Sphygmomanometer | `K47` |
 | Baby Incubator | `L72` |
 
-Ninety-five device types. Ninety-five layouts. Building the register by hand means opening every
+A hundred and eleven device types, and as many layouts. Building the register by hand means opening every
 file, working out which layout you are looking at, finding six scattered cells, and copying them
 across — several hundred times, without a single transcription error.
 
-**Calist already knows all ninety-five.** Point it at the folder and walk away.
+**Calist already knows all of them.** Point it at the folder and walk away.
 
 <div align="center">
 
 | Doing it by hand | With Calist |
 |:---|:---|
 | Open 300 files, one at a time | Pick the folder once |
-| Remember 95 different cell layouts | Recognised automatically from the filename |
+| Remember 111 different cell layouts | Recognised automatically from the filename |
 | Find the one bad file at row 214 | Flagged **before** the run even starts |
 | Retype serial numbers and hope | Read straight from the cell, never retyped |
 | Sort and number the rows yourself | Sorted, numbered and de-duplicated for you |
@@ -433,7 +433,7 @@ never touched.
 
 ## The device engine
 
-All 95 layouts live in [`device_config.py`](device_config.py). Because 90 of the 95 forms turn out to
+All 111 layouts live in [`device_config.py`](device_config.py). Because 106 of the 111 forms turn out to
 be *the same layout at a different row offset*, they are generated rather than typed out:
 
 ```python
@@ -461,7 +461,7 @@ Keyword arguments absorb every variation:
 | `date_gap=4` | an extra line sits above the Date | `form(26, "G35", date_gap=4)` |
 | `extra={...}` | a second serial, a second status, or a one-off cell | `form(17, "H30", extra={"S.N2": "L21"})` |
 
-The result: **90 of the 95 devices are a single readable line each**, and only 5 genuinely
+The result: **106 of the 111 devices are a single readable line each**, and only 5 genuinely
 different forms (`AK` Baby Incubator, `CF` Baby Warmer) are written out in full. That asymmetry is
 deliberate — the odd ones out are supposed to stand out, not hide inside a wall of near-identical
 blocks.
@@ -477,44 +477,49 @@ Find the Model cell on the form, note the Status cell, and add:
 No code changes. No special cases. Sorting, second rows and de-duplication all follow automatically.
 
 <details>
-<summary><b>All 95 supported devices</b></summary>
+<summary><b>All 111 supported devices</b></summary>
 
 <br>
 
 | | | |
 |---|---|---|
-| `AA` Anesthesia | `BV` Blood gas analyzer | `EU` Lab Oven |
-| `AB` Vaporizer | `BW` CT | `EV` Blood Mixer |
-| `AC` Defibrillator | `BX` MRI | `EY` Freezer |
-| `AD` Pacemaker | `BZ` Syringe | `EZ` Non-invasive Hemodynamic Monitor |
-| `AE` ESU | `CA` Dental X-Ray | `FA` Elisa Washer |
-| `AF` ECG | `CB` Digital blood pressure | `FD` Drugs Analyzer |
-| `AG` Patient Monitor | `CD` Endoscopic Set | `FE` Nebulizer |
-| `AGH` Patient Monitor | `CE` Sphygmomanometer | `FF` EEG |
-| `AH` SPO2 | `CF` Baby Warmer | `FG` ACT |
-| `AI` Infusion | `CK` Infrared lamp | `FI` Hormone Analyzer |
-| `AJ` Suction | `CN` Microwave | `FJ` OR Table |
-| `AK` Baby Incubator | `CP` Vertebral Column Stretcher | `FM` PCR Rotor |
-| `AL` Phototherapy | `CZ` Mixture Device | `FP` Dexa Scan |
-| `AM` Ventilator | `DA` Shaker | `FQ` C-pap |
-| `AN` Thermo | `DB` Hot Plate | `FR` Sodium & Potassium Analyzer |
-| `AO` Thermometer, patient | `DE` Colony Counter | `FT` Biofeedback |
-| `AQ` Water Bath | `DG` CBC Analyzer | `FU` Joint Mobiliser |
-| `AR` Electrolyte Analyzer | `DL` Sealing Machine | `FV` Cardiac Enzyme Analyzer |
-| `AS` Centrifuge | `DO` O2 conc | `FW` Blood Culture System |
-| `AU` Chemistry analyzer | `DS` Spirometer | `FZ` Endoscope |
-| `AV` Elisa reader | `DU` Immunoassay Analyzer | `GC` Portable Data Logger |
-| `AX` Lab Incubator | `DV` Light source | `GD` Protien Analyzer |
-| `AY` Virus & PCR Analyzer | `DW` Heater Air Mattress | `GE` Temperature Calibration Tester |
-| `BB` Ultrasound | `DX` Fetal Doppler | `GH` Bipap |
-| `BC` Ultrasound (Eye) | `EA` C-Arm | `GI` Bacteria Analyzer |
-| `BE` X-ray (Mobile) | `EC` Laminar flow | `GJAF` Aortic balloon |
-| `BF` X-ray | `ED` Heart lung Machine | `GK` Tornique |
-| `BL` Autoclave | `EE` Flowmeter | `GM` Corona Virus Analyzer |
-| `BM` Hemodialysis Machine | `EN` Catheter Lab | `GP` Holter machines |
-| `BN` Therapeutic Ultrasound | `EO` Pipet | `VAGH` Patient Monitor |
-| `BP` Balance | `EP` Refrigerator | `VAH` Vital Sign (SPO2 Module) |
-| `BQ` Flatbed Platelet Agitator | `EQ` Urine Analyzer |  |
+| `AA` Anesthesia | `BZ` Syringe | `FF` EEG |
+| `AB` Vaporizer | `CA` Dental X-Ray | `FG` ACT |
+| `AC` Defibrillator | `CB` Digital blood pressure | `FI` Hormone Analyzer |
+| `AD` Pacemaker | `CD` Endoscopic Set | `FJ` OR Table |
+| `AE` ESU | `CE` Sphygmomanometer | `FM` PCR Rotor |
+| `AF` ECG | `CF` Baby Warmer | `FP` Dexa Scan |
+| `AG` Patient Monitor | `CK` Infrared lamp | `FQ` C-pap |
+| `AGH` Patient Monitor | `CN` Microwave | `FR` Sodium & Potassium Analyzer |
+| `AH` SPO2 | `CP` Vertebral Column Stretcher | `FT` Biofeedback |
+| `AI` Infusion | `CZ` Mixture Device | `FU` Joint Mobiliser |
+| `AJ` Suction | `DA` Shaker | `FV` Cardiac Enzyme Analyzer |
+| `AK` Baby Incubator | `DB` Hot Plate | `FW` Blood Culture System |
+| `AL` Phototherapy | `DE` Colony Counter | `FZ` Endoscope |
+| `AM` Ventilator | `DG` CBC Analyzer | `GC` Portable Data Logger |
+| `AN` Thermo | `DL` Sealing Machine | `GD` Protien Analyzer |
+| `AO` Thermometer, patient | `DO` O2 conc | `GE` Temperature Calibration Tester |
+| `AQ` Water Bath | `DS` Spirometer | `GH` Bipap |
+| `AR` Electrolyte Analyzer | `DU` Immunoassay Analyzer | `GI` Bacteria Analyzer |
+| `AS` Centrifuge | `DV` OR Light | `GJAF` Aortic balloon |
+| `AU` Chemistry analyzer | `DW` Heater Air Mattress | `GK` Tornique |
+| `AV` Elisa reader | `DX` Fetal Doppler | `GM` Corona Virus Analyzer |
+| `AX` Lab Incubator | `EA` C-Arm | `GN` Panorama X-ray |
+| `AY` Virus & PCR Analyzer | `EC` Laminar flow | `GO` ICU Bed |
+| `BB` Ultrasound | `ED` Heart lung Machine | `GP` Holter machines |
+| `BC` Ultrasound (Eye) | `EE` Flowmeter | `GR` Laser Therapy |
+| `BD` Mammography | `EN` Catheter Lab | `GT` Spinal Traction |
+| `BE` X-ray (Mobile) | `EO` Pipet | `GU` Shockwave Therapy |
+| `BF` X-ray | `EP` Refrigerator | `GV` Electrotherapy Machine |
+| `BJ` Auto Refractometer | `EQ` Urine Analyzer | `GX` PRF Generator |
+| `BL` Autoclave | `EU` Lab Oven | `GY` Infrared Sterilizer |
+| `BM` Hemodialysis Machine | `EV` Blood Mixer | `HA` HPLC Analyzer |
+| `BN` Therapeutic Ultrasound | `EY` Freezer | `HB` Sentifit System |
+| `BP` Balance | `EZ` Non-invasive Hemodynamic Monitor | `HC` Therapeutic apheresis machine |
+| `BQ` Flatbed Platelet Agitator | `FA` Elisa Washer | `HD` Microtome |
+| `BV` Blood gas analyzer | `FC` High Flow Nasal Cannula | `J` OR Table (Electrical Safety) |
+| `BW` CT | `FD` Drugs Analyzer | `VAGH` Patient Monitor |
+| `BX` MRI | `FE` Nebulizer | `VAH` Vital Sign (SPO2 Module) |
 
 </details>
 
@@ -645,10 +650,12 @@ toolkit.
 ### Project layout
 
 ```
-calist.py                    the extraction pipeline - imports no GUI toolkit    (664 lines)
-ui.py                        the desktop interface, CustomTkinter               (1399 lines)
+calist.py                    the extraction pipeline - imports no GUI toolkit   (3404 lines)
+ui.py                        the desktop interface, CustomTkinter               (2793 lines)
+theme.py                     colours, fonts and icons - pure data                (228 lines)
+ui_state.py                  what the window shows - pure logic                  (174 lines)
 access.py                    the daily access code - pure, standalone            (138 lines)
-device_config.py             95 device layouts and the form() helper             (436 lines)
+device_config.py             111 device layouts and the form() helper            (578 lines)
 calist.spec                  PyInstaller build recipe
 template/Device List.xlsx    reference register template
 ```

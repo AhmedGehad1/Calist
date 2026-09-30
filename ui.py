@@ -875,8 +875,7 @@ class App(_Root):
         resolve_fonts(self)
 
         self.title("Calist")
-        self.minsize(1000, 600)
-        self._zoom_job: str | None = None
+        self.minsize(self.WINDOW_W, self.WINDOW_H)
         self._size_to_screen()
         self.configure(fg_color=BG)
         self._apply_icon()
@@ -920,6 +919,10 @@ class App(_Root):
         self._panel_job: str | None = None
         #: (rows shown, forms in the round) as of the last table refresh.
         self._table_counts = (0, 0)
+        #: What the status line last drew, and its count labels (updated in
+        #: place while only the numbers change — see _refresh_banner).
+        self._banner_shape: tuple | None = None
+        self._count_labels: list = []
         #: Pending stand-down of an armed "Clear all", if one is armed.
         self._clear_job: str | None = None
         #: Status dots for the table, drawn per theme (see status_dots).
@@ -973,30 +976,20 @@ class App(_Root):
         apply()
         self.after(250, apply)
 
-    #: The window a normal screen opens with, in CustomTkinter's logical units.
-    WINDOW_W, WINDOW_H = 1180, 780
-    #: At or below this many logical pixels of screen height — a 1366x768
-    #: laptop, the machine most engineers carry — the window opens maximised,
-    #: because every row it gives up is a row of the device table.
-    SMALL_SCREEN_H = 800
+    #: The smallest the window can be, and the size it opens at (the owner's
+    #: choice): anyone who wants more drags it bigger or maximises it.
+    WINDOW_W, WINDOW_H = 1000, 600
 
     def _size_to_screen(self) -> None:
-        """Open centred on a roomy screen, maximised on a laptop.
-
-        Maximising is scheduled, never done here: CustomTkinter hides and
-        re-shows the window on its first mainloop pass, and a state set before
-        that is not the state it restores.
-        """
+        """Open at the minimum size, centred on the screen."""
         scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
         screen_w = self.winfo_screenwidth() / scale
         screen_h = self.winfo_screenheight() / scale
-        width = int(min(self.WINDOW_W, screen_w - 40))
-        height = int(min(self.WINDOW_H, screen_h - 90))
+        width = int(min(self.WINDOW_W, screen_w))
+        height = int(min(self.WINDOW_H, screen_h - 60))
         x = max(0, int((screen_w - width) / 2))
         y = max(0, int((screen_h - height) / 2) - 20)
         self.geometry(f"{width}x{height}+{x}+{y}")
-        if screen_h <= self.SMALL_SCREEN_H:
-            self._zoom_job = self.after(80, lambda: self.state("zoomed"))
 
     def _initial_template(self) -> str:
         """The remembered template, else the one shipped with the app.
@@ -2164,42 +2157,43 @@ class App(_Root):
 
         self._on_resize()
 
-    def _render_counts(self, parent, counts: ui_state.Counts) -> int:
-        """The round's counts, as the start of the status line. Returns the
-        next free column."""
-        done = counts.read > 0
-        items = [(None, f"{counts.total:,} forms"),
-                 (SUCCESS if done else FAINT, f"{counts.read if done else counts.ready:,} "
-                           f"{'read' if done else 'ready'}")]
-        if counts.left_out:
-            items.append((FAINT, f"{counts.left_out:,} left out"))
-        for column, (colour, words) in enumerate(items):
-            chip = ctk.CTkFrame(parent, fg_color="transparent")
-            chip.grid(row=0, column=column, padx=(0, 16))
-            if colour is not None:
-                ctk.CTkFrame(chip, width=8, height=8, corner_radius=4,
-                             fg_color=colour).grid(row=0, column=0, padx=(0, 6))
-            ctk.CTkLabel(chip, text=words,
-                         text_color=TEXT if colour is None else MUTED,
-                         font=body_font(13, "bold" if colour is None else "normal")
-                         ).grid(row=0, column=1)
-        return len(items)
-
     #: Problem groups shown as chips; the rest are one "more" chip, so a round
     #: with many unknown codes cannot push the line off the window.
     MAX_CHIPS = 4
 
+    @staticmethod
+    def _count_items(counts: ui_state.Counts) -> list[tuple]:
+        """(dot colour or None, words) for each count at the head of the line."""
+        done = counts.read > 0
+        items = [(None, f"{counts.total:,} forms"),
+                 (SUCCESS if done else FAINT,
+                  f"{counts.read if done else counts.ready:,} {'read' if done else 'ready'}")]
+        if counts.left_out:
+            items.append((FAINT, f"{counts.left_out:,} left out"))
+        return items
+
     def _refresh_banner(self) -> None:
         """The status line: the round's counts, then its problems, grouped,
-        then what the table is filtered to."""
-        for child in self._banner.winfo_children():
-            child.destroy()
-        if not self._files:
-            self._banner.grid_remove()
-            return
-        self._banner.grid(row=2, column=0, sticky="ew", padx=self.PAD, pady=(0, 8))
+        then what the table is filtered to.
 
-        outcomes = list(self._files.values())
+        It is redrawn only when its *shape* changes — a new problem group, a
+        pick, a different filter note. While a run is in flight the counts tick
+        every second, and those are updated in place: tearing the line down
+        and building it again twice a second is what made 2.0.0 flicker (an
+        emptied CTkFrame falls back to 200x200 for a moment) and slowed a big
+        run by a third. A new shape is built off-screen and swapped in, so the
+        layout never sees an empty frame.
+        """
+        if not self._files:
+            if self._banner_shape is not None:
+                self._banner_shape = None
+                for child in self._banner.winfo_children():
+                    child.destroy()
+                self._banner.grid_remove()
+                self._on_resize()
+            return
+
+        outcomes = self._files.values()
         counts = ui_state.count(outcomes)
         groups = ui_state.problem_groups(outcomes)
         # A filter on a group that has since been fixed must not stick.
@@ -2208,9 +2202,40 @@ class App(_Root):
             if self._group is None:
                 self._filter.set("All")
 
+        items = self._count_items(counts)
+        shown = groups[:self.MAX_CHIPS]
+        rest = groups[self.MAX_CHIPS:]
+        note = self._filter_note(counts)
+        shape = (tuple(colour for colour, _ in items),
+                 tuple((g.key, g.label, g.count) for g in shown),
+                 (len(rest), sum(g.count for g in rest)),
+                 sum(g.count for g in groups), bool(counts.total),
+                 self._group.key if self._group is not None else None, note)
+
+        if shape == self._banner_shape:
+            for label, (_, words) in zip(self._count_labels, items):
+                if label.cget("text") != words:
+                    label.configure(text=words)
+            return
+
+        first = self._banner_shape is None
+        self._banner_shape = shape
+        old = self._banner.winfo_children()
+
         line = ctk.CTkFrame(self._banner, fg_color="transparent")
-        line.grid(row=0, column=0, sticky="w")
-        column = self._render_counts(line, counts)
+        self._count_labels = []
+        for column, (colour, words) in enumerate(items):
+            chip = ctk.CTkFrame(line, fg_color="transparent")
+            chip.grid(row=0, column=column, padx=(0, 16))
+            if colour is not None:
+                ctk.CTkFrame(chip, width=8, height=8, corner_radius=4,
+                             fg_color=colour).grid(row=0, column=0, padx=(0, 6))
+            label = ctk.CTkLabel(chip, text=words,
+                                 text_color=TEXT if colour is None else MUTED,
+                                 font=body_font(13, "bold" if colour is None else "normal"))
+            label.grid(row=0, column=1)
+            self._count_labels.append(label)
+        column = len(items)
 
         if groups:
             files = sum(g.count for g in groups)
@@ -2220,14 +2245,13 @@ class App(_Root):
                          font=body_font(13, "bold")
                          ).grid(row=0, column=column + 1, padx=(0, 10))
             column += 2
-            for group in groups[:self.MAX_CHIPS]:
+            for group in shown:
                 picked = self._group is not None and group.key == self._group.key
                 make_button(line, f"{group.label}   {group.count:,}",
                             lambda g=group: self._pick_group(g),
                             role="picked" if picked else "chip", height=28, width=0
                             ).grid(row=0, column=column, padx=(0, 6))
                 column += 1
-            rest = groups[self.MAX_CHIPS:]
             if rest:
                 more = sum(g.count for g in rest)
                 make_button(line, f"{len(rest)} more   {more:,}",
@@ -2239,28 +2263,24 @@ class App(_Root):
             ctk.CTkLabel(line, text="Nothing needs a look", text_color=MUTED,
                          font=body_font(13)).grid(row=0, column=column + 1)
 
-        self._render_filter_note()
-        self._on_resize()
+        side = self._build_filter_note(note)
 
-    def _render_filter_note(self) -> None:
-        """The right end of the status line: what the table is showing.
+        # Swap: the new line goes in before the old one leaves.
+        line.grid(row=0, column=0, sticky="w")
+        if side is not None:
+            side.grid(row=0, column=1, sticky="e")
+        for child in old:
+            child.destroy()
+        if first:
+            self._banner.grid(row=2, column=0, sticky="ew", padx=self.PAD, pady=(0, 8))
+            self._on_resize()
 
-        The frame is made only when it will hold something: an empty CTkFrame
-        falls back to 200x200 and would open a band above and below the line.
-        """
-        counts = ui_state.count(self._files.values())
-        shown, total = self._table_counts
-        if not (self._turbo_mode or shown != total or counts.copies):
-            return
-        side = ctk.CTkFrame(self._banner, fg_color="transparent")
-        side.grid(row=0, column=1, sticky="e")
+    def _filter_note(self, counts: ui_state.Counts) -> tuple | None:
+        """What the right end of the status line says, as data: ("turbo",),
+        ("filter", words), ("copies", n) — or None when it says nothing."""
         if self._turbo_mode:
-            ctk.CTkLabel(side, text=theme.ICONS["bolt"], text_color=TURBO,
-                         font=icon_font(13)).grid(row=0, column=0, padx=(0, 6))
-            ctk.CTkLabel(side, text=f"Turbo: {ui_state.TURBO_AT:,} forms or more, "
-                         "so only problems are listed", text_color=MUTED,
-                         font=body_font(12)).grid(row=0, column=1)
-            return
+            return ("turbo",)
+        shown, total = self._table_counts
         if shown != total:
             what = f"Showing {shown:,} of {total:,}"
             if self._group is not None:
@@ -2270,17 +2290,37 @@ class App(_Root):
             query = " ".join(self._search.get().split())
             if query:
                 what += f' matching "{query}"'
-            ctk.CTkLabel(side, text=what,
-                         text_color=MUTED, font=body_font(12)
+            return ("filter", what)
+        if counts.copies:
+            return ("copies", counts.copies)
+        return None
+
+    def _build_filter_note(self, note: tuple | None):
+        """The right end of the status line, built but not placed.
+
+        Made only when it will hold something: an empty CTkFrame falls back to
+        200x200 and would open a band above and below the line.
+        """
+        if note is None:
+            return None
+        side = ctk.CTkFrame(self._banner, fg_color="transparent")
+        if note[0] == "turbo":
+            ctk.CTkLabel(side, text=theme.ICONS["bolt"], text_color=TURBO,
+                         font=icon_font(13)).grid(row=0, column=0, padx=(0, 6))
+            ctk.CTkLabel(side, text=f"Turbo: {ui_state.TURBO_AT:,} forms or more, "
+                         "so only problems are listed", text_color=MUTED,
+                         font=body_font(12)).grid(row=0, column=1)
+        elif note[0] == "filter":
+            ctk.CTkLabel(side, text=note[1], text_color=MUTED, font=body_font(12)
                          ).grid(row=0, column=0, padx=(0, 6))
             make_button(side, "Show all", self._show_all, role="ghost", height=28,
                         width=0).grid(row=0, column=1)
-            return
-        if counts.copies:
-            make_button(side, f"{counts.copies:,} "
-                        f"cop{'ies' if counts.copies != 1 else 'y'} left out, "
+        else:
+            copies = note[1]
+            make_button(side, f"{copies:,} cop{'ies' if copies != 1 else 'y'} left out, "
                         "see Details", self._show_details, role="ghost",
                         height=28, width=0).grid(row=0, column=0)
+        return side
 
     def _show_details(self) -> None:
         if not self._log_open:
@@ -2515,8 +2555,8 @@ class App(_Root):
 
         if latest:
             self._update_progress(*latest)
-            # The banner's groups follow the run, twice a second at most.
-            if time.monotonic() - self._live_render > 0.5:
+            # The status line follows the run, once a second at most.
+            if time.monotonic() - self._live_render > 1.0:
                 self._live_render = time.monotonic()
                 self._refresh_banner()
 
