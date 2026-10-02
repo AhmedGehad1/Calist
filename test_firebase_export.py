@@ -134,7 +134,7 @@ def test_gjaf_is_an_aortic_balloon_not_an_ecg():
     # The form prints "ECG Performance Test", because a balloon pump triggers
     # off the ECG signal. That heading is a section, not the device -- reading
     # it as the identity gives ECG, which is wrong.
-    assert DEVICE_CONFIGS["GJAF"]["device_name"] == "Aortic balloon"
+    assert DEVICE_CONFIGS["GJAF"]["device_name"] == "Aortic Balloon"
     assert DEVICE_CONFIGS["GJAF"]["device_name"] != DEVICE_CONFIGS["AF"]["device_name"]
 
 

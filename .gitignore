@@ -58,5 +58,5 @@ desktop.ini
 # none of which belong in a public repository.
 /some automated files/
 
-# Design-review screenshots from tools/snap_ui.py (docs/ui-*.png are the published ones)
+# Design-review screenshots from tools/snap_ui.py (docs/readme/ holds the published ones)
 docs/review/

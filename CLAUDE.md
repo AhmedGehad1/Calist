@@ -14,7 +14,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (460 tests)
+python -m pytest                            # the whole suite (469 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -25,6 +25,7 @@ $env:CALIST_ONEDIR=1; pyinstaller calist.spec    # -> dist/Calist/    (folder)
 python docs/make_icon.py                         # redraw the app icon and its in-window marks
 python tools/snap_ui.py --theme dark             # every screen to docs/review/, for design review
 python tools/snap_ui.py --theme light --win10    #   … as a Windows 10 machine draws it
+python docs/make_readme_art.py                   # the README's illustrations and charts (docs/readme/)
 ```
 
 Seven test files, all runnable without a display: `test_calist.py` (the pipeline),
@@ -532,6 +533,12 @@ cover page and its verdict from its own box — 408 fields across the archive. N
 form opens on a test sheet, the map's Status cell there is a test line, and a Balance form once read
 `Fail` from it (`test_a_rescue_from_a_data_tab_takes_its_verdict_from_that_tab`).
 
+Such a rescue's amber note says what was missing (`_explain_rescue`, owner's choice, 2026-10-02):
+*"The Serial No. box is empty on the 'data entry' tab, so this was read from the 'Cover Report'
+tab."* — not "this layout is not in the device table yet", which is wrong there: the layout *is* in
+the table. Same cells marked, same values; on the 882 archive forms rescued from another tab, 258
+notes reworded and nothing else changed.
+
 **The date is found by its own caption.** `locate_by_labels` places no Date, so every rescue from
 another tab — and a same-tab labels read whose block moved columns — used to leave it blank:
 `date_by_caption` takes the date beside `Date of receipt:` (a data tab), `Test Date` (a cover page)
@@ -808,14 +815,30 @@ a printed `FAIL` in the box) and read as blank forms do.
 
 **Added in 2.0.1, named by the owner**, each read on every archive file carrying its code before it
 went in: `GN` Panorama X-ray (15 files, the imaging block like BF), `HB` Sentifit System, `HC`
-Therapeutic apheresis machine, `HD` Microtome, `J` OR Table (Electrical Safety) — its own code, not
+Therapeutic Apheresis Machine, `HD` Microtome, `J` OR Table (Electrical Safety) — its own code, not
 `FJ` — `GR` Laser Therapy, `GT` Spinal Traction, `GU` Shockwave Therapy, `GV` Electrotherapy Machine,
 `GY` Infrared Sterilizer, `HA` HPLC Analyzer, `GX` PRF Generator (Model at E23, Status G32). `GZ`,
 `HE` and the single `F1002` file stay unknown, by the owner's decision.
 
-Device names are reproduced verbatim in output, spelling slips included (`Protien Analyzer`,
-`Tornique`). Correcting them changes the text written into every register, so treat it as a deliberate
-data change, not a typo fix — the owner has been asked and has not said yes.
+Device names are reproduced verbatim in output. Changing one changes the text written into every
+register — and, on the next `--push`, the `deviceName` the phone app labels its folders with (display
+only: it groups by `deviceCode`) — so treat it as a deliberate data change, not a typo fix. **The
+owner renamed a batch on 2026-10-02**: `Protein Analyzer`, `Tourniquet`, Title Case for the names
+that lacked it, `Holter Machine`, `Patient Thermometer`, `Pulse Oximeter` (was `SPO2`), and the
+monitor's second row `NIBP Module` (`ALLOWED_SHARED_SN_PAIRS` follows it). Proven on the 700 archive
+files not named for a device — the only ones where a name is compared with the form's stated type
+(`names_device`): every record identical apart from the new wording.
+
+**`AN` is named per form** (`named_by_device_type`, `name_from_device_type`). It was `Thermo`, and
+its 655 forms are infrared, digital, room and fridge thermometers alike. By the owner's decision the
+register writes what the data tab's own **Device Type:** box says ("Infrared" → `Infrared
+Thermometer`, "Digital thermometer" → `Digital Thermometer`); a plain "Thermometer", or no box, is
+`Infrared Thermometer`; a certificate saying `Portable Data Logger` is taken at its word. **Never
+from the model or the location** — the owner refused that explicitly. The certificate's Equipment
+Type is otherwise ignored: it says "Thermometer" on 592 forms, infrared models included. Archive
+result: 645 Infrared, 9 Data Logger, 1 Digital. The export and the app keep **one** name for the code
+(`device_name`, `Infrared Thermometer`), because the app labels a code's folder from whichever record
+it reads first. Costs an AN form ≈7–12 ms; no other device pays.
 
 ## Daily PIN gate (`access.py`)
 
@@ -1061,7 +1084,11 @@ both rows.
 - **`tools/snap_ui.py` is how the window is reviewed.** It renders every state from invented data,
   emulating a 1366x768 laptop at 100% (or `--size`/`--scale`, or `--win10` fonts), into the
   git-ignored `docs/review/`. Every design change in 2.0 was checked on its screenshots by
-  Impeccable's finish reviewer before it landed.
+  Impeccable's finish reviewer before it landed. The README's screenshots are copies of these,
+  light and dark, in `docs/readme/screen-*-{light,dark}.png`, shown through `<picture>` so GitHub
+  picks the reader's theme; re-copy them after a visible UI change. `docs/make_readme_art.py`
+  draws the rest of `docs/readme/` (illustrations from invented data, and two charts whose numbers
+  are typed in from the audit and the benchmark — update them by hand when those are re-measured).
 
 ## Packaging (`calist.spec`) and the antivirus problem
 

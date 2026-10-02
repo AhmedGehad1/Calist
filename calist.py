@@ -71,7 +71,7 @@ UNKNOWN_FALLBACK = {
 #: Device pairs permitted to share one serial number, because the second row is
 #: generated from the same physical unit. Names must match device_config.py.
 ALLOWED_SHARED_SN_PAIRS = {
-    frozenset({"Patient Monitor", "NIBP"}),
+    frozenset({"Patient Monitor", "NIBP Module"}),
     frozenset({"Vital Sign (SPO2 Module)", "Vital Sign (NIBP Module)"}),
 }
 
@@ -85,7 +85,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -2023,6 +2023,9 @@ def read_best(filepath: str, config: dict,
         elif forms_only and not _holds_identity(record) and not _workbook_holds_identity(
                 source, config["cells"]):
             raise LeftOut("nothing is filled in — a blank form or template", record)
+        if config.get("named_by_device_type"):
+            # For the register alone; the export names a code once.
+            record["_device"] = name_from_device_type(source, config["device_name"])
         if cells.get("Date"):
             _repair_date_field(record, filepath)
         record["_flags"] = {**_flags_for(record, how, cells, config),
@@ -2435,42 +2438,118 @@ def names_device(device_name: str, stated: str) -> bool:
     return bool(mine and theirs) and (mine <= theirs or theirs <= mine)
 
 
+#: Where a type caption is looked for: A–F only (it sits in B or C), before its
+#: row is read. Every reference costs a scan of the sheet, and reading the
+#: whole A1:N60 grid of each tab doubled the time of the forms that come here.
+_TYPE_CAPTION_CELLS = frozenset(f"{c}{r}" for r in range(1, 61) for c in "ABCDEF")
+
+
+def _type_beside(source, caption: re.Pattern,
+                 cells: frozenset[str] = _TYPE_CAPTION_CELLS) -> str:
+    """What the current sheet writes beside ``caption``, looked for in
+    ``cells``; "" for nothing or a placeholder."""
+    found = source.values(cells)
+    for ref in sorted((r for r, v in found.items() if caption.match(clean(v))),
+                      key=coordinate_to_tuple):
+        row, column = coordinate_to_tuple(ref)
+        right = [f"{get_column_letter(c)}{row}"
+                 for c in range(column + 1, len(_LABEL_COLUMNS) + 1)]
+        values = source.values(right)
+        for cell in right:
+            text = clean(values.get(cell))
+            if text and not caption.match(text):
+                if classify_serial(text) != "placeholder":
+                    return text
+                break
+    return ""
+
+
 def stated_device_type(source) -> str:
     """The device type the form states beside its own "Equipment Type:" or
     "Device Type:" caption, on any tab; "" when it states none.
 
-    Leaves the source on the sheet it started on.
-
-    Certificates first, where "Equipment Type:" is printed, and the caption
-    looked for in A–F only (it sits in B or C) before its row is read: every
-    reference costs a scan of the sheet, and reading the whole A1:N60 grid of
-    each tab doubled the time of the forms that come here.
+    Leaves the source on the sheet it started on. Certificates first, where
+    "Equipment Type:" is printed.
     """
-    captions = {f"{c}{r}" for r in range(1, 61) for c in "ABCDEF"}
     opening = getattr(source, "sheet_name", None)
     tabs = sorted(getattr(source, "sheet_names", []),
                   key=lambda tab: not _CERTIFICATE_TAB.search(tab))
     try:
         for name in tabs:
-            if not source.select_sheet(name):
-                continue
-            found = source.values(captions)
-            for ref in sorted((r for r, v in found.items() if _TYPE_CAPTION.match(clean(v))),
-                              key=coordinate_to_tuple):
-                row, column = coordinate_to_tuple(ref)
-                right = [f"{get_column_letter(c)}{row}"
-                         for c in range(column + 1, len(_LABEL_COLUMNS) + 1)]
-                values = source.values(right)
-                for cell in right:
-                    text = clean(values.get(cell))
-                    if text and not _TYPE_CAPTION.match(text):
-                        if classify_serial(text) != "placeholder":
-                            return text
-                        break
+            if source.select_sheet(name):
+                text = _type_beside(source, _TYPE_CAPTION)
+                if text:
+                    return text
     finally:
         if opening is not None:
             source.select_sheet(opening)
     return ""
+
+
+#: The "Device Type:" box newer data tabs carry, where the engineer writes the
+#: kind of device — not the certificate's "Equipment Type:", which on AN says
+#: "Thermometer" on 592 of 655 forms, infrared ones included: template text.
+_DEVICE_TYPE_BOX = re.compile(r"^\s*device\s*type\s*:?\s*$", re.I)
+_DATA_LOGGER = re.compile(r"data\s*logger", re.I)
+#: Where AN prints both: "Device Type:" at C22 on all 90 forms with the box,
+#: "Equipment Type:" in B25–B31 on the certificates. A quarter of the
+#: A1:F60 band — which cost an AN form 22 ms on its own.
+_KIND_CAPTION_CELLS = frozenset(f"{c}{r}" for r in range(15, 41) for c in "BCD")
+
+
+def thermometer_kind(stated: str, default: str) -> str:
+    """The register's name for what a thermometer form says it is.
+
+    Anything saying "infrared" is an "Infrared Thermometer", however it is
+    spelt after that; "Digital thermometer" is a "Digital Thermometer"; a plain
+    "Thermometer" says no kind, and is ``default``. Only the form's words —
+    never its model.
+    """
+    text = " ".join(stated.split())
+    if re.search(r"infra", text, re.I):
+        return "Infrared Thermometer"
+    if _DATA_LOGGER.search(text):
+        return "Portable Data Logger"
+    if not _type_words(text) - {"thermometer"}:
+        return default
+    words = text.split()
+    if "thermometer" not in (word.lower() for word in words):
+        words.append("thermometer")
+    return " ".join(word[:1].upper() + word[1:] for word in words)
+
+
+def name_from_device_type(source, default: str) -> str:
+    """The Device a form names itself as, for a device whose forms cover
+    several kinds — AN, filed for infrared, digital and room thermometers
+    alike (owner's decision, 2026-10-02).
+
+    The data tab's "Device Type:" box decides. Without one, a certificate
+    naming a "Portable Data Logger" is taken at its word, and anything else is
+    ``default``. 91 of the 655 AN forms carry the box, 43 of them among the
+    127 of 2026. Only a config with ``named_by_device_type`` pays the search.
+
+    One walk, data tabs first, stopping at the box: reading every tab twice
+    doubled what an AN form costs.
+    """
+    opening = getattr(source, "sheet_name", None)
+    tabs = sorted(getattr(source, "sheet_names", []),
+                  key=lambda tab: bool(_CERTIFICATE_TAB.search(tab)))
+    logger = False
+    try:
+        for name in tabs:
+            if not source.select_sheet(name):
+                continue
+            if _CERTIFICATE_TAB.search(name):
+                logger = logger or bool(_DATA_LOGGER.search(
+                    _type_beside(source, _TYPE_CAPTION, _KIND_CAPTION_CELLS)))
+                continue
+            stated = _type_beside(source, _DEVICE_TYPE_BOX, _KIND_CAPTION_CELLS)
+            if stated:
+                return thermometer_kind(stated, default)
+    finally:
+        if opening is not None:
+            source.select_sheet(opening)
+    return "Portable Data Logger" if logger else default
 
 
 def _is_identity_text(text: str) -> bool:
@@ -2564,6 +2643,46 @@ def _refuse_if_not_this_device(source, config: dict, record: Record,
             source, config["cells"]):
         raise NotAForm("not named for a device, and nothing is filled in "
                        "(a blank form or template)")
+
+
+def _what_the_map_lacks(record: Record) -> str:
+    """Why a record read from the right boxes is still not plausible — the
+    sentence's subject for [_explain_rescue]. Mirrors [plausible]."""
+    serial, model = clean(record.get("S.N")), clean(record.get("Model"))
+    no_serial = classify_serial(serial) in ("suspect", "blank")
+    if no_serial and not model:
+        return "The Model and Serial No. boxes are empty"
+    if not model:
+        return "The Model box is empty"
+    if no_serial:
+        return ("The Serial No. box holds no serial number" if serial
+                else "The Serial No. box is empty")
+    if model.lower() in _PLACEHOLDERS:
+        return "The Model and Serial No. boxes hold only placeholders"
+    return "The Model and Serial No. boxes hold the same text"
+
+
+def _explain_rescue(found: Record, cells: dict[str, str], mapped: Record,
+                    opening: str | None, tab: str, kept_date: bool) -> None:
+    """Say what really happened when the map was right but incomplete.
+
+    The opening tab's captions confirm the map, so "this layout is not in the
+    device table yet" — the note every other labels rescue gets — would be
+    wrong: the layout is there, and an engineer left a box empty (an ECG whose
+    serial was typed on the Cover Report only). Same fields marked, same
+    amber; only the reason changes.
+    """
+    gap = _what_the_map_lacks(mapped)
+    here = repr(opening) if opening else "form's own"
+    for field in ("Manufacturer", "Model", "S.N", "Location", "Date"):
+        if not (cells.get(field) and clean(found.get(field))):
+            continue
+        if field == "Date" and kept_date:
+            reason = (f"Read from the {here} tab. {gap} there, so the other "
+                      f"details were read from the {tab!r} tab.")
+        else:
+            reason = f"{gap} on the {here} tab, so this was read from the {tab!r} tab."
+        found.setdefault("_flags", {})[field] = {"show": None, "reason": reason}
 
 
 def _best_layout(source, cells: dict[str, str], config: dict,
@@ -2662,9 +2781,11 @@ def _best_layout(source, cells: dict[str, str], config: dict,
         # or when the opening tab's captions confirm the map. Not otherwise:
         # then the opening tab may be a test sheet, and a Balance form's
         # mapped cell there reads a test line's "Fail".
+        kept_date = False
         if map_confirmed or _CERTIFICATE_TAB.search(name):
             if not found.get("Date") and _looks_like_date(record.get("Date", "")):
                 found["Date"] = record["Date"]
+                kept_date = True
             for field in ("Status", "Status2"):
                 if (cells.get(field) and not normalise_status(found.get(field))
                         and normalise_status(record.get(field))):
@@ -2678,14 +2799,18 @@ def _best_layout(source, cells: dict[str, str], config: dict,
         # A certificate's typed placeholder serial is a worse answer than a
         # real serial on another tab: keep looking, and settle for it last.
         if classify_serial(found.get("S.N", "")) in ("real", "assigned"):
+            if map_confirmed:
+                _explain_rescue(found, cells, record, opening_sheet, name, kept_date)
             return found, f"labels on {name!r}"
-        fallback = fallback or (found, name)
+        fallback = fallback or (found, name, kept_date)
 
     if fallback is not None:
         # The walk has moved on; the Status search that follows reads the
         # current tab, so go back to the one this record came from.
-        found, name = fallback
+        found, name, kept_date = fallback
         source.select_sheet(name)
+        if map_confirmed:
+            _explain_rescue(found, cells, record, opening_sheet, name, kept_date)
         return found, f"labels on {name!r}"
     if opening_sheet is not None:
         source.select_sheet(opening_sheet)
@@ -2931,7 +3056,7 @@ def extract_records(
                                       clean(record.get("Date")))
             notes += repair.notes
             record["Code"] = repair.name
-            record["Device"] = config["device_name"]
+            record["Device"] = record.pop("_device", "") or config["device_name"]
 
             # Devices with a probe or tube carry a second serial; show both.
             if record.get("S.N2", "").strip():

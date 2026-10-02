@@ -81,13 +81,17 @@ def form(
 #
 # Confirmed synonyms, not conflicts — do not "correct" these:
 #
-#   AH   SPO2 here, "Pulse Oximeter" in the master list.  Same device.
 #   AE   ESU here, "Diathermy,Cryo" there.
 #   CE   Sphygmomanometer here, "Mercury Meter" there.
 #   BB   Ultrasound here, "Utrasound,Abdomen" there.
 #
 # Changing any device_name rewrites that text in every register rebuilt
 # afterwards, so treat it as a data decision rather than a typo fix.
+#
+# The owner made one such decision on 2026-10-02: the two spelling slips
+# (Protein Analyzer, Tourniquet), Title Case for the names that lacked it, the
+# Holter singular, "Patient Thermometer", "NIBP Module" for the monitor's
+# second row and "Pulse Oximeter" for AH (which was "SPO2").
 # ──────────────────────────────────────────────────────────────────────────────
 
 DEVICE_CONFIGS: dict[str, dict] = {
@@ -95,7 +99,7 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AGH": {
         "device_name": "Patient Monitor",
         "cells": form(18, "D39", extra={"Status2": "J39"}),
-        "second_row": {"device_name": "NIBP", "code_replace": ("AGH", "AGCB")},
+        "second_row": {"device_name": "NIBP Module", "code_replace": ("AGH", "AGCB")},
     },
     "VAH": {
         "device_name": "Vital Sign (SPO2 Module)",
@@ -154,10 +158,9 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "AA": {"device_name": "Anesthesia",             "cells": form(17, "G33")},
     "BP": {"device_name": "Balance",                "cells": form(18, "G30")},
     "EO": {"device_name": "Pipet",                  "cells": form(18, "H29")},
-    # SPO2 and "Pulse Oximeter" (the master list's wording) are the same device.
-    "AH": {"device_name": "SPO2",                   "cells": form(14, "G27")},
+    "AH": {"device_name": "Pulse Oximeter",         "cells": form(14, "G27")},
     "EE": {"device_name": "Flowmeter",              "cells": form(17, "G31")},
-    "GP": {"device_name": "Holter machines",        "cells": form(18, "G26")},
+    "GP": {"device_name": "Holter Machine",         "cells": form(18, "G26")},
     # The master code list calls it a light source; the engineers call it the
     # OR light, and that is the wording the register carries.
     # ~400 of the 1,005 files use the ordinary E/K block instead of row 15.
@@ -186,13 +189,13 @@ DEVICE_CONFIGS: dict[str, dict] = {
     # that layout labels F27/G27 and answers at F29/G29.
     "DG": {"device_name": "CBC Analyzer",           "cells": form(18, "K22"),
            "alt_cells": [form(15, "G29")]},
-    "AU": {"device_name": "Chemistry analyzer",     "cells": form(18, "K22")},
+    "AU": {"device_name": "Chemistry Analyzer",     "cells": form(18, "K22")},
     "AX": {"device_name": "Lab Incubator",          "cells": form(18, "H32")},
     "EY": {"device_name": "Freezer",                "cells": form(18, "H32")},
     "EP": {"device_name": "Refrigerator",           "cells": form(18, "H32"),
            "alt_cells": [form(19, "H33")]},
     "DL": {"device_name": "Sealing Machine",        "cells": form(18, "K22")},
-    "BV": {"device_name": "Blood gas analyzer",     "cells": form(18, "K22"),
+    "BV": {"device_name": "Blood Gas Analyzer",     "cells": form(18, "K22"),
            "alt_cells": [form(15, "K19")]},
     "FQ": {"device_name": "C-pap",                  "cells": form(17, "G34")},
     # Two layouts in the wild. The original map is unchanged and still tried
@@ -212,13 +215,13 @@ DEVICE_CONFIGS: dict[str, dict] = {
     "FJ": {"device_name": "OR Table",               "cells": form(18, "K22")},
     "AB": {"device_name": "Vaporizer",              "cells": form(18, "K22")},
     "AD": {"device_name": "Pacemaker",              "cells": form(22, "G31")},
-    "AV": {"device_name": "Elisa reader",           "cells": form(18, "K22")},
+    "AV": {"device_name": "Elisa Reader",           "cells": form(18, "K22")},
     "FE": {"device_name": "Nebulizer",              "cells": form(17, "K31"),
            "alt_cells": [form(18, "K32")]},
     # Was "Infrared", which is what CK is. The master code list has AO as the
     # patient thermometer, and two codes sharing one name was the clue that one
     # of them had been copied from the other.
-    "AO": {"device_name": "Thermometer, patient",   "cells": form(18, "H32")},
+    "AO": {"device_name": "Patient Thermometer",    "cells": form(18, "H32")},
     # A second layout sits one row up with an extra line above the date. Its
     # status cell was guessed at K23, following the +4 offset forms of this
     # shape usually use. The guess was wrong: K23 read blank on all 132 sampled
@@ -230,7 +233,7 @@ DEVICE_CONFIGS: dict[str, dict] = {
     },
     "DA": {"device_name": "Shaker",                 "cells": form(18, "H29")},
     "GI": {"device_name": "Bacteria Analyzer",      "cells": form(18, "K22")},
-    "ED": {"device_name": "Heart lung Machine",     "cells": form(15, "G43")},
+    "ED": {"device_name": "Heart Lung Machine",     "cells": form(15, "G43")},
     # The forms in the archive all use the ordinary E/K layout — labels checked
     # in column D: "Model:" r18, "Manufacturer:" r20, "Serial No.:" I18,
     # "Location" I20. The original map is kept and still tried first.
@@ -239,12 +242,12 @@ DEVICE_CONFIGS: dict[str, dict] = {
         "cells": form(15, "G43"),
         "alt_cells": [form(18, "K22")],
     },
-    "GK": {"device_name": "Tornique",               "cells": form(23, "G32")},
+    "GK": {"device_name": "Tourniquet",             "cells": form(23, "G32")},
     "AQ": {"device_name": "Water Bath",             "cells": form(18, "H32"),
            "alt_cells": [form(17, "H31")]},
     "EV": {"device_name": "Blood Mixer",            "cells": form(18, "K22"),
            "alt_cells": [form(15, "K19")]},
-    "GD": {"device_name": "Protien Analyzer",       "cells": form(18, "K22")},
+    "GD": {"device_name": "Protein Analyzer",       "cells": form(18, "K22")},
     "AR": {"device_name": "Electrolyte Analyzer",   "cells": form(18, "K22"),
            "alt_cells": [form(15, "K19")]},
 
@@ -328,16 +331,22 @@ DEVICE_CONFIGS: dict[str, dict] = {
         ],
     },
     "CE": {"device_name": "Sphygmomanometer",       "cells": form(47, "H59", date_gap=4)},
-    "CB": {"device_name": "Digital blood pressure", "cells": form(18, "G26", date_gap=4)},
+    "CB": {"device_name": "Digital Blood Pressure", "cells": form(18, "G26", date_gap=4)},
     # Date is E13, the calibration date; E11 matched it only by coincidence
     # (886 forms) and was wrong on 5. Proven by value on every form: 0 broken.
     "AE": {"device_name": "ESU",                    "cells": form(15, "G24"),
            "field_alternates": {"Date": ["E11"]}},
     "BL": {"device_name": "Autoclave",              "cells": form(18, "K22", date_gap=4)},
-    "AN": {"device_name": "Thermo",                 "cells": form(18, "H32", date_gap=4),
-           "alt_cells": [form(19, "H33", date_gap=4), form(20, "H34", date_gap=4)]},
-    "EC": {"device_name": "Laminar flow",           "cells": form(18, "F31", date_gap=4)},
-    "CK": {"device_name": "Infrared lamp",          "cells": form(18, "F31", date_gap=4)},
+    # Was "Thermo". AN is filed for infrared, digital and room thermometers
+    # alike, so by the owner's decision (2026-10-02) the register names each
+    # form by its own "Device Type:" box — "Infrared", "Digital thermometer" —
+    # and a plain "Thermometer", or no box, is an infrared one. Never by its
+    # model. The export and the app keep one name for the code: device_name.
+    "AN": {"device_name": "Infrared Thermometer",   "cells": form(18, "H32", date_gap=4),
+           "alt_cells": [form(19, "H33", date_gap=4), form(20, "H34", date_gap=4)],
+           "named_by_device_type": True},
+    "EC": {"device_name": "Laminar Flow",           "cells": form(18, "F31", date_gap=4)},
+    "CK": {"device_name": "Infrared Lamp",          "cells": form(18, "F31", date_gap=4)},
 
     # ── Odd one out ───────────────────────────────────────────────────────────
     # NOTE: Location is K19. Every other standard form puts it 2 rows below the
@@ -507,7 +516,7 @@ DEVICE_CONFIGS: dict[str, dict] = {
            "cells": form(18, "J27", extra={"Location": "K22"})},
     "HB": {"device_name": "Sentifit System",         "cells": form(18, "K22"),
            "alt_cells": [form(15, "F29")]},
-    "HC": {"device_name": "Therapeutic apheresis machine", "cells": form(18, "K22")},
+    "HC": {"device_name": "Therapeutic Apheresis Machine", "cells": form(18, "K22")},
     "HD": {"device_name": "Microtome",               "cells": form(18, "K22")},
     # Not FJ: the electrical-safety check of an OR table has its own code.
     "J": {"device_name": "OR Table (Electrical Safety)", "cells": form(18, "K22")},
@@ -534,7 +543,7 @@ DEVICE_CONFIGS: dict[str, dict] = {
 DEVICE_CONFIGS["AG"] = {
     "device_name": DEVICE_CONFIGS["AGH"]["device_name"],
     "cells": DEVICE_CONFIGS["AGH"]["cells"],
-    "second_row": {"device_name": "NIBP", "code_replace": ("AG", "AGCB")},
+    "second_row": {"device_name": "NIBP Module", "code_replace": ("AG", "AGCB")},
 }
 
 # "VAGH" is "AGH" with a stray V typed in front — 12 files at one site, confirmed
@@ -553,12 +562,12 @@ DEVICE_CONFIGS["AG"] = {
 # only when the whole record is implausible, so it could never be reached.
 #
 # Note for the owner: the model on these files is a Contec CMS 51000, a vital
-# signs monitor. The device_name and the NIBP sub-row are left as they are,
-# because changing them rewrites the text in every register built afterwards.
+# signs monitor. The device_name and the NIBP Module sub-row are left as they
+# are, because changing them rewrites the text in every register built afterwards.
 DEVICE_CONFIGS["VAGH"] = {
     "device_name": DEVICE_CONFIGS["AGH"]["device_name"],
     "cells": form(18, "G38", extra={"Status2": "J38"}),
-    "second_row": {"device_name": "NIBP", "code_replace": ("VAGH", "AGCB")},
+    "second_row": {"device_name": "NIBP Module", "code_replace": ("VAGH", "AGCB")},
 }
 
 # "GJAF" is the aortic balloon pump — a GJ, confirmed by the owner.
@@ -572,7 +581,7 @@ DEVICE_CONFIGS["VAGH"] = {
 # The two layouts below were read off the files themselves: one anchored at row
 # 32 and a later re-lay-out at row 60.
 DEVICE_CONFIGS["GJAF"] = {
-    "device_name": "Aortic balloon",
+    "device_name": "Aortic Balloon", 
     "cells": form(32, "J70", col="D", val="J", date_gap=4),
     "alt_cells": [form(60, "J70", col="D", val="J", date_gap=4)],
 }

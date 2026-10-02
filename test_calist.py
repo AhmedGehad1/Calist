@@ -139,14 +139,15 @@ def test_plain_duplicate_is_dropped():
 
 
 def test_monitor_and_nibp_may_share_a_serial():
-    records = [_rec("Patient Monitor", "SN1"), _rec("NIBP", "SN1")]
+    records = [_rec("Patient Monitor", "SN1"), _rec("NIBP Module", "SN1")]
     assert len(calist.deduplicate_records(records)) == 2
 
 
 def test_third_record_on_a_shared_serial_is_dropped():
-    records = [_rec("Patient Monitor", "SN1"), _rec("NIBP", "SN1"), _rec("ECG", "SN1")]
+    records = [_rec("Patient Monitor", "SN1"), _rec("NIBP Module", "SN1"),
+               _rec("ECG", "SN1")]
     kept = calist.deduplicate_records(records)
-    assert [r["Device"] for r in kept] == ["Patient Monitor", "NIBP"]
+    assert [r["Device"] for r in kept] == ["Patient Monitor", "NIBP Module"]
 
 
 def test_unpaired_devices_may_not_share_a_serial():
@@ -1844,7 +1845,7 @@ def test_the_new_devices_of_2_0_1_are_known():
     """Named by the owner; each map was read against every archive file with
     the code before it went in."""
     expected = {"GN": "Panorama X-ray", "HB": "Sentifit System",
-                "HC": "Therapeutic apheresis machine", "HD": "Microtome",
+                "HC": "Therapeutic Apheresis Machine", "HD": "Microtome",
                 "J": "OR Table (Electrical Safety)", "GR": "Laser Therapy",
                 "GT": "Spinal Traction", "GU": "Shockwave Therapy",
                 "GV": "Electrotherapy Machine", "GY": "Infrared Sterilizer",
@@ -1855,6 +1856,52 @@ def test_the_new_devices_of_2_0_1_are_known():
     # FJ stays the plain OR Table; J is its electrical-safety check.
     assert DEVICE_CONFIGS["FJ"]["device_name"] == "OR Table"
     assert calist.classify_file("F18-J002-0426.xls").device_code == "J"
+
+
+def _thermometer(tmp_path, device_type=None, certificate=None):
+    """An AN form, with or without the data tab's "Device Type:" box (C22)
+    and a certificate's "Equipment Type:"."""
+    wb = Workbook()
+    data = wb.active
+    data.title = "data entry"
+    _block(data, 18, {"Model": "TP500", "S.N": "TP19060112",
+                      "Manufacturer": "Contec", "Location": "ER"})
+    data["E14"], data["H32"] = "12-03-2026", "Pass"
+    if device_type is not None:
+        data["C22"], data["D22"] = "Device Type:", device_type
+    if certificate is not None:
+        _certificate(wb.create_sheet("Certificate"), certificate)
+    path = tmp_path / "H62-AN004-0326.xlsx"
+    wb.save(path)
+    return str(path)
+
+
+@pytest.mark.parametrize("device_type, certificate, device", [
+    ("Infrared", "Thermometer", "Infrared Thermometer"),
+    ("Infrared Therometer", None, "Infrared Thermometer"),    # the form's slip
+    ("Digital thermometer", None, "Digital Thermometer"),
+    ("Thermometer", "Portable Data Logger", "Infrared Thermometer"),  # the box decides
+    (None, "Thermometer", "Infrared Thermometer"),             # template text
+    (None, "Portable Data Logger", "Portable Data Logger"),
+    (None, None, "Infrared Thermometer"),
+])
+def test_a_thermometer_is_named_by_its_own_device_type_box(tmp_path, device_type,
+                                                           certificate, device):
+    """Owner's decision: the form's words, never its model. A plain
+    "Thermometer" is an infrared one."""
+    records, _ = calist.extract_records([_thermometer(tmp_path, device_type, certificate)])
+    assert records[0]["Device"] == device
+    assert "_device" not in records[0]
+
+
+def test_the_export_keeps_one_name_for_a_thermometer(tmp_path):
+    """The app labels a code's folder from its records, so AN keeps one name
+    there; the per-form kind is the register's alone."""
+    record, _ = calist.read_best(_thermometer(tmp_path, "Digital thermometer"),
+                                 DEVICE_CONFIGS["AN"])
+    assert record["_device"] == "Digital Thermometer"
+    assert DEVICE_CONFIGS["AN"]["device_name"] == "Infrared Thermometer"
+    assert calist.classify_file("H62-AN004-0326.xlsx").device_name == "Infrared Thermometer"
 
 
 def test_a_whole_number_loses_the_point_zero_an_xls_gives_it():
@@ -1967,11 +2014,9 @@ def test_a_rescue_from_a_data_tab_takes_its_verdict_from_that_tab(tmp_path):
     assert record["Status"] == "Pass"
 
 
-def test_a_confirmed_map_keeps_its_verdict_when_a_cover_page_supplies_the_identity(tmp_path):
-    """An Infusion form whose serial was never entered: the map fits (its
-    captions agree), so the identity comes from the cover page — and the
-    verdict and date the map read on the form's own tab come with it.
-    Losing them cost 408 fields across the archive."""
+def _infusion_without_a_serial(tmp_path):
+    """An Infusion form whose serial was never entered on its own tab — only
+    on the cover page, as "0"."""
     wb = Workbook()
     data = wb.active
     data.title = "Data entry"
@@ -1983,10 +2028,31 @@ def test_a_confirmed_map_keeps_its_verdict_when_a_cover_page_supplies_the_identi
                        "Manufacturer": "Mindray", "Location": "NICU"})
     path = tmp_path / "H67-AI000-1125.xlsx"
     wb.save(path)
+    return path
+
+
+def test_a_confirmed_map_keeps_its_verdict_when_a_cover_page_supplies_the_identity(tmp_path):
+    """The map fits (its captions agree), so the identity comes from the
+    cover page — and the verdict and date the map read on the form's own tab
+    come with it. Losing them cost 408 fields across the archive."""
+    path = _infusion_without_a_serial(tmp_path)
     record, how = calist.read_best(str(path), DEVICE_CONFIGS["AI"])
     assert how == "labels on 'cover page'"
     assert record["Status"] == "Pass"
     assert record["Date"] == "27-11-2025"
+
+
+def test_a_confirmed_map_says_which_box_was_empty_not_that_the_layout_is_new(tmp_path):
+    """The layout IS in the device table; an engineer left the serial out.
+    The register keeps the same amber cells, with a note that says so."""
+    path = _infusion_without_a_serial(tmp_path)
+    record, _ = calist.read_best(str(path), DEVICE_CONFIGS["AI"])
+    flags = record["_flags"]
+    assert set(flags) >= {"Manufacturer", "Model", "S.N", "Location", "Date"}
+    assert flags["S.N"]["reason"] == ("The Serial No. box is empty on the 'Data entry' "
+                                      "tab, so this was read from the 'cover page' tab.")
+    assert flags["Date"]["reason"].startswith("Read from the 'Data entry' tab.")
+    assert not any("not in the device table" in f["reason"] for f in flags.values())
 
 
 # ── Files not named for a device ──────────────────────────────────────────────
