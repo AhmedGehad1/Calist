@@ -51,7 +51,11 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import coordinate_to_tuple
+
 from calist import read_best as calist_read_best
+from calist import _CERTIFICATE_TAB, _open_workbook
 from calist import (
     DATE_CHECK,
     DATE_FORM,
@@ -997,7 +1001,7 @@ _HEADER_BLOCK = {
 #: merged span — Calist resolves merges, so the cells beside "Client Name:"
 #: report that same text, and the first non-empty neighbour is not the answer.
 _ANY_LABEL = re.compile(
-    r"^\s*(client\s*(name|address)|contact\s*person\s*name|phone\s*(no|number)?)"
+    r"^\s*(client\s*(name|address)|contact\s*person(\s*name)?|phone\s*(no|number)?)"
     r"[\s:.]*$",
     re.I,
 )
@@ -1008,9 +1012,45 @@ _LABELS = {
     # one-character class silently fails to match.
     "client_name": re.compile(r"^\s*client\s*name[\s:.]*$", re.I),
     "client_address": re.compile(r"^\s*client\s*address[\s:.]*$", re.I),
-    "contact_name": re.compile(r"^\s*contact\s*person\s*name[\s:.]*$", re.I),
-    "contact_phone": re.compile(r"^\s*phone\s*(no|number)?[\s:.]*$", re.I),
+    # "Contact Person Name:" on data tabs and certificates, "Contact Person" on
+    # cover pages. Either may carry the answer in the same cell, after a colon:
+    # "Contact Person Name: Eng. …" — the `value` group.
+    "contact_name": re.compile(
+        r"^\s*contact\s*person(?:\s*name)?\s*(?::\s*(?P<value>\S.*?))?[\s:.]*$", re.I),
+    # Only "Phone", "Phone No.", "Phone Number" — never "Tel…" or "Mobile":
+    # those open addresses ("Television St", "Tell El-Kebir") and X-ray model
+    # names ("Mobile", "MobileArt Eco") on these forms. A number typed into the
+    # caption cell itself ("Phone No.:01…") is the `value` group.
+    "contact_phone": re.compile(
+        r"^\s*phone\s*(?:no|number)?\.?\s*(?::\s*(?P<value>\d[\d\s+\-/().]*?))?[\s:.]*$",
+        re.I),
 }
+
+_CONTACT_KEYS = ("contact_name", "contact_phone")
+
+
+def contact_name_value(text: str) -> str:
+    """A contact name as the form gives it; "" for a placeholder ("N.A", "-")."""
+    text = " ".join((text or "").split())
+    return "" if not text or classify_serial(text) == "placeholder" else text
+
+
+def contact_phone_value(text: str) -> str:
+    """A phone number as the form gives it, with two slips undone.
+
+    Excel stores a number typed into an unformatted cell as a float, so it
+    comes back as ``1012345678.0``: the ``.0`` goes, and a mobile that lost its
+    leading zero to the conversion — exactly ten digits starting ``1`` — gets it
+    back (owner's decision, 2026-10-02; 265 forms in 2025–26). Anything without
+    seven digits is not a number at all: the "0" an empty box copies, "N.A", a
+    name typed in the wrong box. Every other number stays exactly as typed.
+    """
+    text = re.sub(r"\.0+$", "", " ".join((text or "").split()))
+    if len(re.sub(r"\D", "", text)) < 7:
+        return ""
+    if re.fullmatch(r"1\d{9}", text):
+        return "0" + text
+    return text
 
 
 def header_from_grid(grid: dict) -> dict:
@@ -1019,25 +1059,32 @@ def header_from_grid(grid: dict) -> dict:
     Returns a dict of the four fields, each empty when its label is absent —
     some device types (`CE` among them) put their test data on the sheet the
     reader picks and the header on another, so nothing is found and the caller
-    falls back to the code list.
+    falls back to the code list (and, for the contact, to [contact_from_workbook]).
 
-    Phone numbers keep their leading zero: they are read as text and never
-    coerced to a number, which is the same reason the Excel writer uses
-    ``TextCellValue`` for them.
+    The value is the first non-label text to the right of the label, on its
+    row, as far as the grid reaches. Phone numbers keep their leading zero:
+    they are read as text and never coerced to a number — see
+    [contact_phone_value].
     """
     text = {
         ref: (str(value).strip() if value is not None else "")
         for ref, value in grid.items()
     }
+    rows: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    for ref in text:
+        try:
+            row, column = coordinate_to_tuple(ref)
+        except ValueError:
+            continue
+        rows[row].append((column, ref))
+    for cells in rows.values():
+        cells.sort()
 
     def value_beside(ref: str) -> str:
-        match = re.match(r"([A-Z]+)(\d+)", ref)
-        if not match:
-            return ""
-        column, row = match.group(1), match.group(2)
-        for candidate in _HEADER_COLS[_HEADER_COLS.index(column) + 1:]:
-            found = text.get(f"{candidate}{row}", "")
-            if found and not _ANY_LABEL.match(found):
+        row, column = coordinate_to_tuple(ref)
+        for other, candidate in rows[row]:
+            found = text[candidate]
+            if other > column and found and not _ANY_LABEL.match(found):
                 return found
         return ""
 
@@ -1046,10 +1093,114 @@ def header_from_grid(grid: dict) -> dict:
         if not value:
             continue
         for key, pattern in _LABELS.items():
-            if not found[key] and pattern.match(value):
-                found[key] = value_beside(ref)
+            match = pattern.match(value)
+            if found[key] or not match:
+                continue
+            inline = match.groupdict().get("value") or ""
+            found[key] = inline or value_beside(ref)
 
+    found["contact_name"] = contact_name_value(found["contact_name"])
+    found["contact_phone"] = contact_phone_value(found["contact_phone"])
     return found
+
+
+def _saw_contact_caption(grid: dict) -> bool:
+    return any(_LABELS["contact_name"].match(str(value).strip())
+               for value in grid.values() if value)
+
+
+#: Where a certificate or a cover page prints its contact: "Contact Person
+#: Name:" in B/C and "Phone No.:" in G of one row between 10 and 25, or
+#: "Contact Person" in A–C of a cover page. Measured over all 43,133 forms of
+#: 2025–26: every one of them inside this band.
+_CONTACT_BAND = {f"{c}{r}" for r in range(1, 26) for c in "ABCDEFGHIJKL"}
+
+#: The data tab's own box has no fixed place: row 64 on the Sphygmomanometer,
+#: 80 on the Baby Incubator, column K on the OR Light with its answer in M. The
+#: whole of A1:T100 is read — but only on a workbook that is known to carry a
+#: contact somewhere, so a form from before the contact boxes existed never
+#: pays for it.
+_CONTACT_WIDE = {f"{get_column_letter(c)}{r}" for r in range(1, 101) for c in range(1, 21)}
+
+#: The devices whose data tab keeps its contact out of the header block's
+#: reach — measured over 2025–26, the share of their data-tab contact boxes
+#: below row 55 or answered beyond column L: CE 14,056 of 14,512 (row 63–64),
+#: AI 3,592 of 3,688 (caption in L), AK 1,368 of 1,368 (row 80), CF 828 of 828,
+#: DV 748 of 1,182 (caption in K), AJ 380 of 3,752, BN 216 of 216 (row 72).
+#: Their data tab is searched whenever the contact is still missing, caption
+#: seen or not: 8 Sphygmomanometers print it nowhere else.
+CONTACT_BELOW_HEADER = frozenset({"CE", "AI", "AK", "CF", "DV", "AJ", "BN"})
+
+#: Contact boxes arrived with the 2025 templates. Of a 4,000-form sample of
+#: 2023–24, one carries a contact, and the header block finds it; searching
+#: the rest cost each form ~13 ms for nothing. Earlier visits get the header
+#: block only.
+CONTACTS_FROM_YEAR = 2025
+
+
+def contact_from_workbook(path: str, name: str = "", phone: str = "",
+                          saw_caption: bool = False) -> tuple[str, str]:
+    """The contact a form records, wherever it sits; fills only what is missing.
+
+    The header block that [read_best] reads in its own pass — A1:L55 of the tab
+    the device came from — finds most contacts, and what it finds is kept: on
+    every 2025–26 form where it found a name, the name was right. This is for
+    the rest (6,334 names in 2025–26 alone), searched in this order:
+
+    1. the **certificate**, a copy of the engineer's entry: it agrees with the
+       data tab on 29,028 names of 29,058;
+    2. the **data tab** in full — only when a "Contact Person" caption has been
+       seen with nothing usable beside it (``saw_caption`` says the first pass
+       saw one: the OR Light prints it in K and its answer in M, out of reach);
+    3. the **cover page**, last: it disagrees with the data tab on 416 names.
+
+    Name and phone are filled independently. Never raises: a workbook that
+    cannot be opened again leaves both as they were.
+    """
+    if name and phone:
+        return name, phone
+    try:
+        source = _open_workbook(path)
+    except Exception:  # noqa: BLE001 - the first pass already read it, or reported why not
+        return name, phone
+    try:
+        tabs = list(getattr(source, "sheet_names", []) or [])
+        opening = getattr(source, "sheet_name", None)
+        certificates = [tab for tab in tabs if _CERTIFICATE_TAB.search(tab)]
+        covers = [tab for tab in tabs
+                  if re.search(r"cover", tab, re.I) and tab not in certificates]
+
+        def read(tab: str, cells: set[str]) -> dict:
+            if not source.select_sheet(tab):
+                return {}
+            # Top to bottom, left to right: the first caption wins, so the
+            # order must not depend on how the reader returned the cells.
+            return dict(sorted(source.values(cells).items(),
+                               key=lambda item: coordinate_to_tuple(item[0])))
+
+        def take(grid: dict) -> None:
+            nonlocal name, phone
+            found = header_from_grid(grid)
+            name = name or found["contact_name"]
+            phone = phone or found["contact_phone"]
+
+        for tab in certificates:
+            if not (name and phone):
+                grid = read(tab, _CONTACT_BAND)
+                saw_caption = saw_caption or _saw_contact_caption(grid)
+                take(grid)
+        cover_grids = [read(tab, _CONTACT_BAND) for tab in covers] if not (name and phone) else []
+        saw_caption = saw_caption or any(_saw_contact_caption(grid) for grid in cover_grids)
+        if not (name and phone) and saw_caption and opening:
+            take(read(opening, _CONTACT_WIDE))
+        for grid in cover_grids:
+            if not (name and phone):
+                take(grid)
+    except Exception:  # noqa: BLE001 - a contact is never worth failing a form over
+        pass
+    finally:
+        source.close()
+    return name, phone
 
 
 #: The monitor template's per-module labels: "Ecg Status:", "Spo2 Status:",
@@ -1225,6 +1376,15 @@ def _fill(form: ParsedForm, record: dict, layout: int) -> None:
     form.client_address = header["client_address"]
     form.contact_name = header["contact_name"]
     form.contact_phone = header["contact_phone"]
+    if (not form.excluded and visit_year(form) >= CONTACTS_FROM_YEAR
+            and not (form.contact_name and form.contact_phone)):
+        # Not in the header block: the certificate, the whole data tab, the
+        # cover page — see contact_from_workbook. A left-out form is never
+        # exported, so it is never searched.
+        form.contact_name, form.contact_phone = contact_from_workbook(
+            form.path, form.contact_name, form.contact_phone,
+            saw_caption=(_saw_contact_caption(record)
+                         or form.device_code in CONTACT_BELOW_HEADER))
     form.layout = layout
     if form.repair is not None and form.repair.date_source == DATE_CHECK:
         form.repair = settle_name_date(form.repair, form.form_date)
@@ -1466,13 +1626,15 @@ def push_firestore(
         if code not in named and (form.client_name or form.client_address):
             named[code] = (form.client_name, form.client_address)
 
+    contacts = customer_contacts(chosen)
     customer_count = 0
     batch = db.batch()
     pending = 0
     for code, category in sorted(seen.items()):
         batch.set(
             db.collection(CUSTOMERS).document(code),
-            build_customer(code, codes.get(code), category, named.get(code)),
+            build_customer(code, codes.get(code), category, named.get(code),
+                           contacts.get(code)),
             merge=True,
         )
         pending += 1
@@ -2336,15 +2498,19 @@ def build_customer(
     info: dict | None,
     category: str,
     from_form: tuple[str, str] | None = None,
+    contacts: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     """One customer document, in the shape ``Customer.fromJson`` reads.
 
-    ``contactsByYear`` is left empty: the archive records a contact per *visit*
-    inside individual forms, not per customer per year, and inventing one from a
-    single form would attach one hospital's contact to every visit it ever had.
-    The app fills this in properly the next time an engineer confirms the site.
+    ``contactsByYear`` carries one entry per year the forms name a contact —
+    the contact on most of that year's forms, see [customer_contacts] (owner's
+    decision, 2026-10-02). **It is omitted, never sent empty.** Every write is a
+    merge, and under a merge an empty map enters the field mask as a leaf and
+    *replaces* what the server holds: the ``{}`` this used to send wiped every
+    contact an engineer had confirmed in the app, on every push. The years
+    sent replace those years; any other year stays as it is.
     """
-    return {
+    document = {
         "code": code,
         "category": (info or {}).get("category", category) or CATEGORY_OTHER,
         # The code list wins on the name — it carries the official spelling —
@@ -2352,12 +2518,14 @@ def build_customer(
         # the form's own header fills both gaps.
         "name": (info or {}).get("name", "") or (from_form or ("", ""))[0],
         "address": (info or {}).get("address", "") or (from_form or ("", ""))[1],
-        "contactsByYear": {},
         "imported": True,
         # The spreadsheet's own wording, kept so collapsing ten categories into
         # five loses nothing recoverable.
         "sourceCategory": (info or {}).get("sourceCategory", ""),
     }
+    if contacts:
+        document["contactsByYear"] = contacts
+    return document
 
 
 def _short(path: str, root: Path) -> str:
@@ -2887,6 +3055,25 @@ def push_statuses(
 
     Returns counts: ``updated``, ``missing``, ``mismatched``, ``deleted``.
     """
+    return push_record_fields(
+        {doc_id: (serial, {"statuses": statuses}, *rest)
+         for doc_id, (serial, statuses, *rest) in found.items()},
+        db, progress=progress)
+
+
+def push_record_fields(
+    found: dict[str, tuple],
+    db,
+    *,
+    progress=None,
+) -> dict[str, int]:
+    """Write ``fields`` onto records that already exist, and nothing else.
+
+    ``found`` is ``{doc_id: (serial, fields, source paths)}`` — the paths are
+    optional. The rules are [push_statuses]'s, which is this with one field:
+    update only, never create; identity checked by serial or source file
+    first; a tombstoned record neither read nor written.
+    """
     tombstones = load_tombstones(db)
     items = []
     for doc_id, entry in sorted(found.items()):
@@ -2925,7 +3112,7 @@ def push_statuses(
             if not (same_serial or same_file):
                 counts["mismatched"] += 1
                 continue
-            batch.update(ref, {"statuses": statuses})
+            batch.update(ref, statuses)
             pending += 1
 
         if pending:
@@ -3021,6 +3208,212 @@ def _run_statuses_only(args, root: Path) -> int:
         print(f"  {counts['missing']:,} left alone — no such record on the server")
     if counts["deleted"]:
         print(f"  {counts['deleted']:,} skipped — deleted by an engineer")
+    print()
+    print("Done. Re-run any time — it writes the same answer again.")
+    return 0
+
+
+# ── Contacts backfill ────────────────────────────────────────────────────────
+#
+# The engineer's contact at the site: `contactName` / `contactPhone` on each
+# record, and the customer's `contactsByYear`, which the app uses to pre-fill a
+# new form (and without which it blocks data entry for that year). By the
+# owner's decision (2026-10-02) both are written from the forms, and both
+# overwrite what the server holds — the forms are the record.
+
+
+def contacts_by_source(forms: list[ParsedForm]) -> dict[str, dict[str, str]]:
+    """``{source file: fields}`` for every form that names a contact.
+
+    Only the fields the form actually gives are carried — a form with no phone
+    never blanks the phone a record already has.
+    """
+    found: dict[str, dict[str, str]] = {}
+    for form in forms:
+        fields = {}
+        if form.contact_name:
+            fields["contactName"] = form.contact_name
+        if form.contact_phone:
+            fields["contactPhone"] = form.contact_phone
+        if fields:
+            found[_same_path(form.path)] = fields
+    return found
+
+
+def push_fields_by_source(fields_by_path: dict[str, dict[str, str]], db, *,
+                          progress=None) -> dict[str, int]:
+    """Write ``fields`` onto each archive record built from one of these files.
+
+    The record is found by the ``sourcePath`` it stores — the exact file it was
+    built from — not by the id a scan would give it. Ids depend on numbering
+    the whole archive at once: a ``--year`` scan renumbers devices that shared
+    a file name differently, and the first contacts backfill, keyed by id,
+    missed 439 such records (2026-10-02). A file is the strongest identity
+    there is, so nothing can land on the wrong device.
+
+    Update only, never create; app-made records (no ``imported``) and
+    tombstoned ones are never touched. Returns ``updated`` and ``no_record``
+    (files read whose record the server does not hold).
+    """
+    tombstones = load_tombstones(db)
+    collection = db.collection(CALIBRATIONS)
+    targets: list[tuple[str, dict[str, str]]] = []
+    reached: set[str] = set()
+    for snap in collection.select(["imported", "sourcePath"]).stream():
+        record = snap.to_dict() or {}
+        if not record.get("imported") or snap.id in tombstones:
+            continue
+        path = _same_path(record.get("sourcePath", ""))
+        fields = fields_by_path.get(path)
+        if fields:
+            targets.append((snap.id, fields))
+            reached.add(path)
+    counts = {"updated": 0, "no_record": len(set(fields_by_path) - reached)}
+    for start in range(0, len(targets), BATCH_SIZE):
+        chunk = targets[start:start + BATCH_SIZE]
+        batch = db.batch()
+        for doc_id, fields in chunk:
+            batch.update(collection.document(doc_id), fields)
+        batch.commit()
+        counts["updated"] += len(chunk)
+        if progress:
+            progress(min(start + BATCH_SIZE, len(targets)), len(targets))
+    return counts
+
+
+def visit_year(form: ParsedForm) -> int:
+    """The year of the visit: the name's MMYY, else the folder it is filed in."""
+    return 2000 + form.filed_yy if form.filed_yy else form.year
+
+
+def customer_contacts(forms: list[ParsedForm]) -> dict[str, dict[str, dict[str, str]]]:
+    """``{customer: {"2026": {"name": …, "phone": …}}}`` — per customer, per
+    year, the contact named on most of that year's forms.
+
+    A site's forms usually all name one person; where they name several, the
+    most frequent wins, and a tie goes to the later visit. The phone is the one
+    written most often beside that name.
+    """
+    names: dict[tuple[str, int], Counter] = defaultdict(Counter)
+    latest: dict[tuple[str, int, str], tuple[int, int]] = {}
+    phones: dict[tuple[str, int, str], Counter] = defaultdict(Counter)
+    spelt: dict[tuple[str, int, str], str] = {}
+    for form in forms:
+        if not (form.customer_code and form.contact_name):
+            continue
+        year = visit_year(form)
+        if year < CONTACTS_FROM_YEAR:
+            # The few earlier visits that print a contact are filed with later
+            # rounds; a customer's earlier years are left as the app has them.
+            continue
+        key = " ".join(form.contact_name.casefold().split())
+        names[(form.customer_code, year)][key] += 1
+        when = (year, form.month)
+        slot = (form.customer_code, year, key)
+        if when >= latest.get(slot, (0, 0)):
+            latest[slot] = when
+            spelt[slot] = form.contact_name
+        if form.contact_phone:
+            phones[slot][form.contact_phone] += 1
+    contacts: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
+    for (code, year), counts in names.items():
+        key = max(counts, key=lambda k: (counts[k], latest[(code, year, k)]))
+        slot = (code, year, key)
+        phone = phones[slot].most_common(1)[0][0] if phones[slot] else ""
+        contacts[code][str(year)] = {"name": spelt[slot], "phone": phone}
+    return dict(contacts)
+
+
+def push_customer_contacts(contacts: dict[str, dict[str, dict[str, str]]], db) -> dict[str, int]:
+    """Write each customer's ``contactsByYear`` entries for the years given.
+
+    Only customers the server already has; each year written replaces that
+    year's entry whole, and every other year is left exactly as it is (a merge
+    on the nested map, never the map itself).
+    """
+    counts = {"updated": 0, "missing": 0}
+    collection = db.collection(CUSTOMERS)
+    codes = sorted(contacts)
+    for start in range(0, len(codes), BATCH_SIZE):
+        chunk = codes[start:start + BATCH_SIZE]
+        refs = [collection.document(code) for code in chunk]
+        stored = {snap.id: snap for snap in db.get_all(refs, field_paths=["code"])}
+        batch = db.batch()
+        pending = 0
+        for code, ref in zip(chunk, refs):
+            snap = stored.get(code)
+            if snap is None or not snap.exists:
+                counts["missing"] += 1
+                continue
+            batch.set(ref, {"contactsByYear": contacts[code]}, merge=True)
+            pending += 1
+        if pending:
+            batch.commit()
+            counts["updated"] += pending
+    return counts
+
+
+def _run_contacts_only(args, root: Path) -> int:
+    """The contacts backfill. Says what it will do and refuses without --yes."""
+    print("scanning…")
+    forms = scan(root, only_year=args.year, limit=args.limit)
+    print(f"  {len(forms):,} forms")
+    print("reading workbooks (all of them — this is the slow part)…")
+
+    def tick(done: int, total: int) -> None:
+        if done % 200 == 0 or done == total:
+            print(f"\r  {done:,}/{total:,}", end="", flush=True)
+
+    deepen(forms, sample=0, progress=tick)
+    print()
+    # No ids are needed: records are found by the file they were built from
+    # (see push_fields_by_source), so a --year scan reaches renumbered devices
+    # too. Copies and left-out files are still not written.
+    settle_copies(forms)
+    forms = exported(forms)
+
+    found = contacts_by_source(forms)
+    contacts = customer_contacts(forms)
+    with_name = sum(1 for fields in found.values() if "contactName" in fields)
+    with_phone = sum(1 for fields in found.values() if "contactPhone" in fields)
+    years = Counter(year for per in contacts.values() for year in per)
+    print()
+    print(f"  {len(forms):,} forms: {with_name:,} with a contact name, "
+          f"{with_phone:,} with a phone")
+    print(f"  {len(contacts):,} customers get a contact for "
+          + ", ".join(f"{year} ({n:,})" for year, n in sorted(years.items())))
+    if not found and not contacts:
+        print("Nothing to write.")
+        return 0
+
+    emulator = using_emulator()
+    print()
+    if emulator:
+        print(f"ABOUT TO WRITE — EMULATOR ({os.environ['FIRESTORE_EMULATOR_HOST']})")
+    else:
+        print(f"ABOUT TO WRITE — LIVE PROJECT '{args.project}'  ** THIS COSTS MONEY **")
+    print(f"  records    built from these {len(found):,} files — contactName / contactPhone")
+    print("             only, replacing what is stored (the form is the record)")
+    print(f"  customers  up to {len(contacts):,} — contactsByYear for the years above,")
+    print("             replacing those years; every other year is left alone")
+    print("  No other field is written, no record is created, no device is renumbered.")
+    print()
+    if not args.yes:
+        print("Refusing to write without --yes. Re-run with --yes when ready.")
+        return 3
+
+    db, _storage = connect(args.project)
+    print("finding each file's record and writing its contact…")
+    counts = push_fields_by_source(found, db, progress=tick)
+    print()
+    print(f"  {counts['updated']:,} records updated")
+    if counts["no_record"]:
+        print(f"  {counts['no_record']:,} files have no record on the server "
+              f"(never imported, or deleted by an engineer)")
+    customer_counts = push_customer_contacts(contacts, db)
+    print(f"  {customer_counts['updated']:,} customers updated"
+          + (f", {customer_counts['missing']:,} not on the server"
+             if customer_counts["missing"] else ""))
     print()
     print("Done. Re-run any time — it writes the same answer again.")
     return 0
@@ -3162,6 +3555,11 @@ def main(argv: list[str] | None = None) -> int:
                              "nothing else: never creates a record, never "
                              "renumbers, and skips any record whose stored serial "
                              "does not match. Needs --yes to write")
+    parser.add_argument("--contacts-only", action="store_true",
+                        help="backfill each record's contactName / contactPhone and "
+                             "each customer's contactsByYear from the forms, "
+                             "replacing what is stored; never creates or renumbers "
+                             "anything. Use with --year. Needs --yes to write")
     args = parser.parse_args(argv)
 
     # The report carries Arabic folder names and box-drawing rules, and the
@@ -3296,6 +3694,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.statuses_only:
         return _run_statuses_only(args, root)
+
+    if args.contacts_only:
+        return _run_contacts_only(args, root)
 
     if args.push:
         return _run_push(args, root)

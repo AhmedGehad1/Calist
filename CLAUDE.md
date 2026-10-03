@@ -5,7 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 **Calist** — a single-window Tkinter desktop app that harvests fixed cells out of many medical-device
-inspection Excel forms and compiles them into one flat equipment register.
+inspection Excel forms and compiles them into one flat equipment register. The same extraction also
+feeds `firebase_export.py`, which publishes the whole archive (four years of rounds, 80,000+ forms) to the
+Firestore backend of the MedCal Pro / Calystra phone app.
 
 ## Commands
 
@@ -26,7 +28,24 @@ python docs/make_icon.py                         # redraw the app icon and its i
 python tools/snap_ui.py --theme dark             # every screen to docs/review/, for design review
 python tools/snap_ui.py --theme light --win10    #   … as a Windows 10 machine draws it
 python docs/make_readme_art.py                   # the README's illustrations and charts (docs/readme/)
+
+# Archive-scale tools (the archive root is "D:\MedCal Pro" on the owner's machine)
+python tools/audit.py "D:\MedCal Pro"                          # ~17 min, every form, read-only
+python tools/audit.py --diff <before>.json.gz <after>.json.gz  # the proof a reader change needs
+python firebase_export.py --dry-run "D:\MedCal Pro"            # no network, writes a dry-run report
+python firebase_export.py --verify-maps "D:\MedCal Pro"        # every cell map against real files
+python firebase_export.py --push --yes "D:\MedCal Pro"         # the full write
+python firebase_export.py --contacts-only --year 2026 "D:\MedCal Pro"  # contacts backfill (+ --yes)
 ```
+
+`firebase_export.py` with no mode prints "Nothing to do" and exits; every writing mode (`--push`,
+`--statuses-only`, `--contacts-only`) without `--yes` prints the plan and its estimated cost and
+refuses to write. To try a write for free, point it at the
+emulator first (`firebase emulators:start --only firestore,auth,storage`, then
+`set FIRESTORE_EMULATOR_HOST=localhost:8080`). The service-account key is a *path* in
+`CALIST_FIREBASE_KEY`, never a file in this public repository. Dry-run reports
+(`dry-run-*.json/.txt`) name real hospitals and serials and are git-ignored. Neither tool is needed
+for ordinary work on the app.
 
 Seven test files, all runnable without a display: `test_calist.py` (the pipeline),
 `test_firebase_export.py` (the archive export), `test_access.py` (the PIN gate),
@@ -69,6 +88,22 @@ the save-folder rule, the Turbo threshold — so they are tested like the pipeli
 `access.py` imports nothing from the rest of the app, so the gate is testable without a display and
 cannot be broken by a pipeline change.
 
+The pipeline has two more consumers outside the app, and a change to `calist.py` or
+`device_config.py` reaches both:
+
+```
+firebase_export.py ──imports──> calist.py (read_best, classify_file, repair_name …),
+                                device_config.py, device_names.py (the master code list)
+tools/audit.py     ──imports──> calist.py, device_config.py
+```
+
+`firebase_export.py` wraps `calist.read_best` and reads only named fields from the record, so the
+register-only side channels (`_flags`, `_device`, `_drop_float_zero`) never reach Firestore. Keep
+it that way: several register behaviours are deliberately *not* exported (see *Value
+normalisation* and *In the Firebase export*). `device_names.py` is the site's master code list,
+wording and typos included; it is not the Device column (see the comment at the top of
+`DEVICE_CONFIGS`).
+
 **`calist.py` must never import a GUI toolkit.** `main()` imports `ui` lazily inside the function
 body, so `python calist.py` still launches the app while `import calist` stays GUI-free — which is
 what lets the test suite run without a display. There is a test-adjacent check for this:
@@ -82,22 +117,22 @@ The two meet in two places, and nowhere else:
   renders. Neither channel replaces the other; keep both fed.
 
 The pipeline is a chain of small functions orchestrated by
-[`process_files()`](calist.py#L1165), which does no work itself:
+[`process_files()`](calist.py), which does no work itself:
 
-1. [`extract_device_code()`](calist.py#L305) — filename stem, split on the first `-`, leading letters
+1. [`extract_device_code()`](calist.py) — filename stem, split on the first `-`, leading letters
    of the right-hand part. `"Clinic-AGH001.xlsx"` → `"AGH"`. The register's Code is the stem with
    its typing slips undone — see *Filenames are repaired, never renamed*.
 2. `DEVICE_CONFIGS[code]["cells"]` — maps field names to A1 refs.
-3. [`read_best()`](calist.py#L998) — asks [`_XlsxSource`](calist.py#L491) (or
-   [`_XlsSource`](calist.py#L751) for `.xls`) for the whole cell map at once, falling through to
+3. [`read_best()`](calist.py) — asks [`_XlsxSource`](calist.py) (or
+   [`_XlsSource`](calist.py) for `.xls`) for the whole cell map at once, falling through to
    `alt_cells` and then to the form's own printed labels when the map no longer fits — see *When
    the map no longer fits the form* below. Reads the **first non-empty worksheet** to begin with;
    see *Which sheet gets read*.
-4. [`clean()`](calist.py#L203) — renders raw cell values as output strings.
-5. [`build_second_row()`](calist.py#L861) — for configs with a `second_row` block, emits a sub-module
+4. [`clean()`](calist.py) — renders raw cell values as output strings.
+5. [`build_second_row()`](calist.py) — for configs with a `second_row` block, emits a sub-module
    row of the same physical unit.
-6. [`sort_records()`](calist.py#L1022) → optional [`deduplicate_records()`](calist.py#L1038) →
-   [`write_output()`](calist.py#L1112).
+6. [`sort_records()`](calist.py) → optional [`deduplicate_records()`](calist.py) →
+   [`write_output()`](calist.py).
 
 ### Reading a form (the hot path — do not undo these)
 
@@ -105,7 +140,7 @@ Reading one `.xlsx` used to cost **~500 ms** (median 382 ms, worst 2.2 s): `load
 every worksheet, the whole `styles.xml`, the drawings and the calc chain in order to reach seven
 cells. A 300-form round spent two and a half minutes doing it.
 
-[`_XlsxSource`](calist.py#L491) goes at the package directly and costs **~2 ms** (mean 4.5 ms).
+[`_XlsxSource`](calist.py) goes at the package directly and costs **~2 ms** (mean 4.5 ms).
 Measured against the old reader over every readable sample workbook: **82 workbooks, 171,200 cells
 (15,518 carrying values), 0 differences**, with 9,843 of those reads going through a merged
 non-anchor cell — 5,180 of them returning real text.
@@ -281,6 +316,50 @@ unnamed file plus a control sample): 0 regressions, 1,665 Codes repaired, 76 fil
 device their certificate names that used to be skipped (97, less the 21 Carestations above). On the 116 folders where a cleaned name
 collides: 87 copies dropped, 9 kept for a different serial, 55 kept with their text.
 
+### Contacts in the export (`contactName`, `contactPhone`, `contactsByYear`)
+
+Forms carry the engineer's contact at the site from mid-2025 on (almost none before June 2025,
+nearly every form after). The header block that `read_best` reads in its own pass (A1:L55 of the
+device's tab) finds most of them, and **what it finds is kept**: on every 2025–26 form where it
+found a name, the name was right. `contact_from_workbook` finds the rest, by caption, in this
+order: the **certificate** (rows ≤ 25, "Contact Person Name:" in B/C, "Phone No.:" in G; it agrees
+with the data tab on 29,028 names of 29,058), the **whole data tab** A1:T100, the **cover page**
+("Contact Person", last: it disagrees with the data tab on 416 names). Load-bearing:
+
+- **The data tab is searched in full only when a contact caption was seen empty, or the device is in
+  `CONTACT_BELOW_HEADER`** (CE row 63–64, AK row 80, BN row 72, AI and DV answering in column M, CF,
+  AJ) — measured per device, not guessed. **Visits before `CONTACTS_FROM_YEAR` (2025) get the header
+  block only**: a 4,000-form 2023–24 sample held one contact, which the header block finds, and the
+  search cost every other form ~13 ms.
+- **A phone caption is `Phone`/`Phone No.`/`Phone Number` only.** "Tel…" opens addresses on these
+  forms ("Television St", "Tell El-Kebir") and "Mobile" names X-ray units; a looser rule read 322
+  addresses as phones. `contact_phone_value` keeps numbers as typed, drops a float's `.0`, puts the
+  0 back on a ten-digit `1…` mobile (owner's decision, 265 forms), and treats anything without seven
+  digits as no number.
+- **`contactsByYear` is never sent empty.** Under a merge an empty map replaces what the server
+  holds; the `{}` `build_customer` used to send wiped every contact engineers had confirmed in the
+  app, on every full push. Each year sent replaces that year; other years are untouched. The year's
+  contact is the one on most of that customer's forms (tie: the later visit) — `customer_contacts`,
+  2025 on. Note the app **blocks data entry for a customer until the year has a contact**, so a
+  filled year means engineers are not asked again.
+- **`--contacts-only --year Y` is the backfill** (owner: "overwrite all"): `contactName` /
+  `contactPhone` only, replacing what is stored; a form that gives no phone never blanks one.
+  **Records are found by the `sourcePath` they store, not by id** (`push_fields_by_source`). Ids
+  come from numbering the whole archive at once, so a `--year` scan numbers renumbered devices
+  differently: the first run, keyed by id, missed 439 records (149 in 2026, 290 in 2025, mostly
+  CE/AK/AI). The file a record was built from is the strongest identity there is. Only
+  `imported` records, never a tombstoned one, never a create. Customers: only those the server has.
+- **Done on 2026-10-03, live:** every 2025–26 record whose form names a contact carries it (2026:
+  13,884 of 14,828 records; the rest are 208 forms naming none and 736 records of files now left
+  out of the export, which the next full push's sweep removes). 353 customers hold a 2026 contact,
+  327 a 2025 one.
+
+Proof, old export vs new through the real `scan` + `deepen` path: 2026 names 12,202 → 14,980 of
+15,222 exported forms (the 241 left have no contact on the form), 2025 11,819 → 15,169; **0 names
+lost or changed**; phones changed only where the old value held no digits (8, now the certificate's
+number), 215 tidied (leading 0, `.0`), 100 placeholders (`0`) now empty. Of 6,312 newly found names,
+6,311 match a caption value on the form and the last is a name typed into the caption cell itself.
+
 ### Threading rules (both of these have already caused bugs)
 
 Two things run on worker threads: the build (`App._start`) and the folder scan
@@ -366,7 +445,7 @@ of them. The rest are not broken files: the form was re-laid-out between visits 
 the inserted row moved. Nothing announced it, because a shifted map reads blank and a blank field is
 indistinguishable from one an engineer left empty.
 
-[`read_best()`](calist.py#L998) tries, in order, and **stops at the first plausible record**:
+[`read_best()`](calist.py) tries, in order, and **stops at the first plausible record**:
 
 1. the configured `cells` — where 94.7% stop, at no extra cost;
 2. each `alt_cells` entry, the layouts already written down;
@@ -754,7 +833,7 @@ output files always show ~81 numbered-but-empty trailing rows.
 
 ### `device_config.py`
 
-51 of 57 forms share one layout, so cell maps are built by [`form()`](device_config.py#L19) rather than
+Most forms share one layout at different row offsets, so cell maps are built by [`form()`](device_config.py) rather than
 written out: `form(row, status)` where `row` is the Model row and the rest sit at fixed offsets
 (Manufacturer `row+2`, S.N `val{row}`, Location `val{row+2}`, Date `row-date_gap`). `col`/`val` switch
 the column pair (E/K default, D/J and F/L exist); `date_gap=4` covers forms with an extra line above the
@@ -770,7 +849,7 @@ model makes the type useless for finding the form to open. `source_name()` reads
 set in `extract_records` and survives into a generated sub-module row; `Code` cannot serve because
 `build_second_row` rewrites its device token, so a sub-module's Code names no file on disk.
 
-`ALLOWED_SHARED_SN_PAIRS` ([calist.py:71](calist.py#L71)) holds `device_name` strings verbatim from
+`ALLOWED_SHARED_SN_PAIRS` (in [calist.py](calist.py)) holds `device_name` strings verbatim from
 `device_config.py`; renaming a device there breaks the exemption that lets a Patient Monitor and its
 NIBP row share a serial. `test_second_row_names_are_covered_by_the_dedup_exemptions` guards this — run
 the tests after renaming anything.
@@ -778,7 +857,7 @@ the tests after renaming anything.
 ## Behaviour worth knowing
 
 - An unknown device code **skips the file** with an error rather than emitting a junk row. Set
-  `SKIP_UNKNOWN_CODES = False` ([calist.py:59](calist.py#L59)) to restore the old A1:A6 fallback.
+  `SKIP_UNKNOWN_CODES = False` (in [calist.py](calist.py)) to restore the old A1:A6 fallback.
 - Output is `device list.xlsx` beside the first source file. `resolve_output_path()` refuses to run if
   that would overwrite the template (Windows paths are case-insensitive, so it would otherwise clobber
   `Device List.xlsx`).
@@ -1112,7 +1191,7 @@ back:
 Also load-bearing: **`upx=False`**. UPX-packing an unsigned binary is one of the strongest heuristic
 signals there is, and it only saves a few MB.
 
-`__version__` in [calist.py](calist.py#L86) is the single source of the version number. The spec
+`__version__` in [calist.py](calist.py) is the single source of the version number. The spec
 reads it with a regex rather than importing the module, so a build never depends on the app's
 runtime imports resolving; `CALIST_VERSION` overrides it for CI. The release workflow **refuses to
 build a tag that disagrees with it**, so the Properties tab can't claim a different version from the

@@ -1302,3 +1302,293 @@ def test_deepen_leaves_out_a_form_that_turns_out_not_to_be_one(tmp_path, monkeyp
     form = forms["G302-AGH001-0426.xlsx"]
     assert "blank form" in form.excluded
     assert firebase_export.exported([form]) == []
+
+
+# ── Contacts ─────────────────────────────────────────────────────────────────
+#
+# The engineer's contact at the site, per record and per customer per year.
+# The header block (A1:L55 of the device's own tab) finds most of them; the
+# rest sit lower (row 64 on the Sphygmomanometer, 80 on the Baby Incubator),
+# further right (the OR Light answers in M), or only on the certificate or the
+# cover page. Every name and number below is invented.
+
+from openpyxl import Workbook
+
+from firebase_export import (
+    contact_from_workbook,
+    contact_phone_value,
+    contacts_by_source,
+    customer_contacts,
+    push_customer_contacts,
+    push_fields_by_source,
+)
+
+
+@pytest.mark.parametrize("typed, written", [
+    ("01001234567", "01001234567"),
+    ("1001234567", "01001234567"),       # a mobile that lost its zero to Excel
+    ("1001234567.0", "01001234567"),     # ...and came back as a float
+    ("0223456789", "0223456789"),        # a landline: ten digits, kept as typed
+    ("010 0123 4567", "010 0123 4567"),  # spaced: kept as typed
+    ("0", ""),                           # an empty box, copied
+    ("N.A", ""),
+    ("Eng. Someone", ""),                # a name in the phone box is no number
+])
+def test_a_phone_number_is_written_as_typed_with_two_slips_undone(typed, written):
+    assert contact_phone_value(typed) == written
+
+
+def test_a_cover_page_says_contact_person_without_name():
+    out = firebase_export.header_from_grid({"A11": "Contact Person", "D11": "Hala Ibrahim"})
+    assert out["contact_name"] == "Hala Ibrahim"
+
+
+def test_a_value_typed_into_the_caption_cell_is_the_value():
+    out = firebase_export.header_from_grid({
+        "B16": "Contact Person Name: Eng. Hala Ibrahim",
+        "G16": "Phone No.:01001234567",
+    })
+    assert out["contact_name"] == "Eng. Hala Ibrahim"
+    assert out["contact_phone"] == "01001234567"
+
+
+def test_an_address_or_a_model_is_never_read_as_a_phone():
+    # "Tel..." opens addresses on these forms and "Mobile" names X-ray units.
+    out = firebase_export.header_from_grid({
+        "C8": "Client Address:", "E8": "Television St, Cairo",
+        "A20": "Mobile", "C20": "MobileArt Eco",
+        "A30": "Tel", "C30": "01001234567",
+    })
+    assert out["contact_phone"] == ""
+
+
+def test_a_placeholder_contact_is_no_contact():
+    out = firebase_export.header_from_grid({
+        "A30": "Contact Person Name:", "C30": "N.A",
+        "A31": "Phone No.:", "C31": "0",
+    })
+    assert out["contact_name"] == "" and out["contact_phone"] == ""
+
+
+def _contact_workbook(tmp_path, *, data=None, certificate=None, cover=None):
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Data entry"
+    sheet["A1"] = "Device data"
+    for ref, value in (data or {}).items():
+        sheet[ref] = value
+    for title, cells in (("Certificate", certificate), ("Cover page", cover)):
+        if cells is not None:
+            tab = wb.create_sheet(title)
+            for ref, value in cells.items():
+                tab[ref] = value
+    path = tmp_path / "W01-CE001-0326.xlsx"
+    wb.save(path)
+    return str(path)
+
+
+def test_the_certificate_gives_the_contact_the_header_block_missed(tmp_path):
+    path = _contact_workbook(
+        tmp_path,
+        certificate={"B16": "Contact Person Name:", "D16": "Hala Ibrahim",
+                     "G16": "Phone No.:", "H16": "01001234567"})
+    assert contact_from_workbook(path) == ("Hala Ibrahim", "01001234567")
+
+
+def test_what_the_header_block_found_is_kept(tmp_path):
+    path = _contact_workbook(
+        tmp_path,
+        certificate={"B16": "Contact Person Name:", "D16": "Somebody Else",
+                     "G16": "Phone No.:", "H16": "01001234567"})
+    # The name came from the device's own tab; only the missing phone is filled.
+    assert contact_from_workbook(path, "Hala Ibrahim", "") == ("Hala Ibrahim", "01001234567")
+
+
+def test_the_data_tab_is_searched_in_full_when_a_caption_was_seen_empty(tmp_path):
+    # The Baby Incubator's own box sits at row 80; its cover page prints the
+    # caption with nothing beside it.
+    path = _contact_workbook(
+        tmp_path,
+        data={"B80": "Contact Person Name:", "E80": "Hala Ibrahim",
+              "G80": "Phone No.:", "J80": "01001234567"},
+        cover={"A11": "Contact Person"})
+    assert contact_from_workbook(path) == ("Hala Ibrahim", "01001234567")
+
+
+def test_a_caption_out_of_the_header_blocks_reach_triggers_the_search(tmp_path):
+    # The OR Light: caption in K, answer in M -- the first pass saw the caption.
+    path = _contact_workbook(
+        tmp_path, data={"K32": "Contact Person Name:", "M32": "Hala Ibrahim"})
+    assert contact_from_workbook(path) == ("", "")
+    assert contact_from_workbook(path, saw_caption=True) == ("Hala Ibrahim", "")
+
+
+def test_the_cover_page_is_the_last_resort(tmp_path):
+    path = _contact_workbook(
+        tmp_path,
+        data={"B64": "Contact Person Name:", "E64": "Hala Ibrahim"},
+        cover={"A11": "Contact Person", "D11": "Older Name"})
+    # The cover's caption opens the data tab's search, and the data tab wins.
+    assert contact_from_workbook(path)[0] == "Hala Ibrahim"
+
+
+def test_a_form_without_contact_boxes_gives_nothing(tmp_path):
+    assert contact_from_workbook(_contact_workbook(tmp_path)) == ("", "")
+
+
+def _visit(doc_id, name="", phone="", *, site="W01", yy=26, month=3, serial="SN-1"):
+    form = _form(path=f"D:/x/{doc_id}.xlsx", filename=f"{doc_id}.xlsx", site=site,
+                 serial=serial, contact_name=name, contact_phone=phone,
+                 filed_yy=yy, month=month)
+    form.doc_id = doc_id
+    return form
+
+
+def test_a_file_carries_only_the_contact_fields_its_form_gives():
+    found = contacts_by_source([
+        _visit("A", "Hala Ibrahim", "01001234567"),
+        _visit("B", "Hala Ibrahim"),
+        _visit("C"),
+    ])
+    key = firebase_export._same_path
+    assert found[key("D:/x/A.xlsx")] == {"contactName": "Hala Ibrahim",
+                                         "contactPhone": "01001234567"}
+    assert found[key("D:/x/B.xlsx")] == {"contactName": "Hala Ibrahim"}
+    assert key("D:/x/C.xlsx") not in found
+
+
+def test_a_customer_gets_the_contact_on_most_of_that_years_forms():
+    contacts = customer_contacts([
+        _visit("A", "Hala Ibrahim", "01001234567", month=1),
+        _visit("B", "hala  ibrahim", "01001234567", month=2),
+        _visit("C", "Omar Fathy", "01117654321", month=3),
+        _visit("D", "Omar Fathy", "01117654321", yy=25, month=11),
+    ])
+    assert contacts["W01"]["2026"] == {"name": "hala  ibrahim", "phone": "01001234567"}
+    assert contacts["W01"]["2025"] == {"name": "Omar Fathy", "phone": "01117654321"}
+
+
+def test_a_customer_contact_is_only_written_from_2025_on():
+    contacts = customer_contacts([_visit("A", "Hala Ibrahim", yy=24, month=12),
+                                  _visit("B", "Omar Fathy", yy=25, month=1)])
+    assert set(contacts["W01"]) == {"2025"}
+
+
+def test_a_tie_goes_to_the_later_visit():
+    contacts = customer_contacts([
+        _visit("A", "Hala Ibrahim", month=1),
+        _visit("B", "Omar Fathy", month=6),
+    ])
+    assert contacts["W01"]["2026"]["name"] == "Omar Fathy"
+
+
+def test_a_customer_with_no_contact_never_sends_an_empty_map():
+    # Under a merge an empty map replaces what the server holds: the {} this
+    # used to send wiped every contact an engineer had confirmed in the app.
+    customer = firebase_export.build_customer("W01", None, "hospital")
+    assert "contactsByYear" not in customer
+    with_contact = firebase_export.build_customer(
+        "W01", None, "hospital", contacts={"2026": {"name": "Hala Ibrahim", "phone": ""}})
+    assert with_contact["contactsByYear"] == {"2026": {"name": "Hala Ibrahim", "phone": ""}}
+
+
+class _SelectingCollection(_StoreCollection):
+    def select(self, fields):
+        return self
+
+    def stream(self):
+        if self._name == "deletions":
+            return super().stream()
+        return [_StoredSnap(doc_id, data) for doc_id, data in self._db.docs.items()]
+
+
+class _SourceDb(_StoreDb):
+    def collection(self, name):
+        return _SelectingCollection(self, name)
+
+
+def test_a_contact_lands_on_the_record_built_from_its_own_file():
+    # A renumbered device: its id is not the one a one-year scan would give
+    # it, but its record names the file — and the file is the identity.
+    db = _SourceDb({
+        "G181-AGH007-0825": {"imported": True, "sourcePath": "D:\\x\\G181-AGH002-0825.xlsx"},
+        "G181-AGH002-0825": {"imported": True, "sourcePath": "D:\\x\\G181-AGH003-0825.xlsx"},
+        "app-made": {"sourcePath": "D:\\x\\G181-AGH002-0825.xlsx"},
+    })
+    counts = push_fields_by_source({
+        firebase_export._same_path("D:/x/G181-AGH002-0825.xlsx"): {"contactName": "Hala Ibrahim"},
+        firebase_export._same_path("D:/x/G181-AGH009-0825.xlsx"): {"contactName": "Omar Fathy"},
+    }, db)
+    assert db.written == {"G181-AGH007-0825": {"contactName": "Hala Ibrahim"}}
+    assert counts == {"updated": 1, "no_record": 1}
+
+
+def test_a_deleted_record_gets_no_contact():
+    db = _SourceDb({"A": {"imported": True, "sourcePath": "D:/x/A.xlsx"}}, deleted=["A"])
+    counts = push_fields_by_source(
+        {firebase_export._same_path("D:/x/A.xlsx"): {"contactName": "Hala Ibrahim"}}, db)
+    assert db.written == {} and counts["updated"] == 0
+
+
+class _MergingBatch(_Batch):
+    def set(self, ref, data, merge=False):
+        assert merge, "a customer is only ever merged into"
+        self._ops.append((ref.id, data))
+
+
+class _CustomerDb(_StoreDb):
+    def batch(self):
+        return _MergingBatch(self)
+
+
+def test_a_customer_contact_is_merged_into_customers_the_server_has():
+    db = _CustomerDb({"W01": {"code": "W01"}})
+    counts = push_customer_contacts({
+        "W01": {"2026": {"name": "Hala Ibrahim", "phone": "01001234567"}},
+        "W99": {"2026": {"name": "Omar Fathy", "phone": ""}},
+    }, db)
+    assert db.written == {
+        "W01": {"contactsByYear": {"2026": {"name": "Hala Ibrahim", "phone": "01001234567"}}}}
+    assert counts == {"updated": 1, "missing": 1}
+
+
+def _fill_watching_the_search(monkeypatch, **fields):
+    calls = []
+
+    def search(path, name="", phone="", saw_caption=False):
+        calls.append(saw_caption)
+        return name, phone
+
+    monkeypatch.setattr(firebase_export, "contact_from_workbook", search)
+    form = _form(**fields)
+    firebase_export._fill(form, {}, 0)
+    return calls
+
+
+def test_a_visit_from_before_the_contact_boxes_is_not_searched(monkeypatch):
+    assert _fill_watching_the_search(monkeypatch, filed_yy=24, month=6) == []
+    assert _fill_watching_the_search(monkeypatch, filed_yy=25, month=6) == [False]
+
+
+def test_a_device_whose_contact_sits_low_always_has_its_data_tab_searched(monkeypatch):
+    # The Sphygmomanometer prints it at row 63, out of the header block's
+    # reach, and on eight forms nowhere else.
+    assert _fill_watching_the_search(monkeypatch, filed_yy=26, device_code="CE") == [True]
+
+
+def test_contacts_only_refuses_without_yes_before_connecting(tmp_path, monkeypatch, capsys):
+    form = _visit("G181-AGH002-0825", "Hala Ibrahim", "01001234567")
+    monkeypatch.setattr(firebase_export, "scan",
+                        lambda root, only_year=None, limit=0: [form])
+    monkeypatch.setattr(firebase_export, "deepen",
+                        lambda forms, sample=0, progress=None: len(forms))
+    monkeypatch.setattr(firebase_export, "assign_ids_stable", lambda forms: (0, 0, 0))
+
+    def no_connection(project):
+        raise AssertionError("connected without --yes")
+
+    monkeypatch.setattr(firebase_export, "connect", no_connection)
+    assert firebase_export.main([str(tmp_path), "--contacts-only"]) == 3
+    out = capsys.readouterr().out
+    assert "contactName / contactPhone" in out and "only, replacing" in out
+    assert "Refusing to write" in out
