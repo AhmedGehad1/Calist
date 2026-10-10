@@ -16,7 +16,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (469 tests)
+python -m pytest                            # the whole suite (548 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -34,25 +34,30 @@ python tools/audit.py "D:\MedCal Pro"                          # ~17 min, every 
 python tools/audit.py --diff <before>.json.gz <after>.json.gz  # the proof a reader change needs
 python firebase_export.py --dry-run "D:\MedCal Pro"            # no network, writes a dry-run report
 python firebase_export.py --verify-maps "D:\MedCal Pro"        # every cell map against real files
+python firebase_export.py --discover XY "D:\MedCal Pro"        # propose XY's cell map from its forms' labels
 python firebase_export.py --push --yes "D:\MedCal Pro"         # the full write
 python firebase_export.py --contacts-only --year 2026 "D:\MedCal Pro"  # contacts backfill (+ --yes)
 ```
 
 `firebase_export.py` with no mode prints "Nothing to do" and exits; every writing mode (`--push`,
 `--statuses-only`, `--contacts-only`) without `--yes` prints the plan and its estimated cost and
-refuses to write. To try a write for free, point it at the
+refuses to write, and `--upload-only` (finishing the Storage upload from the records already in
+Firestore) refuses the same way. To try a write for free, point it at the
 emulator first (`firebase emulators:start --only firestore,auth,storage`, then
 `set FIRESTORE_EMULATOR_HOST=localhost:8080`). The service-account key is a *path* in
 `CALIST_FIREBASE_KEY`, never a file in this public repository. Dry-run reports
 (`dry-run-*.json/.txt`) name real hospitals and serials and are git-ignored. Neither tool is needed
 for ordinary work on the app.
 
-Seven test files, all runnable without a display: `test_calist.py` (the pipeline),
-`test_firebase_export.py` (the archive export), `test_access.py` (the PIN gate),
-`test_settings.py`, `test_device_config.py` (the cell maps the Calystra app also writes),
-`test_theme.py` (every colour pairing against WCAG AA in both themes, font fallbacks, every icon
-checked against the font via GDI) and `test_ui_state.py` (what the window shows).
-There is no linter configured; `python -m pyflakes ui.py` is the useful quick check.
+Eight test files, all runnable without a display: `test_calist.py` (the pipeline, and the
+register's table on the shipped template), `test_firebase_export.py` (the archive export),
+`test_access.py` (the PIN gate), `test_settings.py`, `test_device_config.py` (the cell maps the
+Calystra app also writes), `test_theme.py` (every colour pairing against WCAG AA in both themes,
+font fallbacks, every icon checked against the font via GDI), `test_ui_state.py` (what the window
+shows) and `test_ui_layout.py` (the window's layout passes, on a stand-in that applies sizes the
+way Tk does).
+There is no linter configured; `python -m pyflakes ui.py` is the useful quick check. The two
+`docs/` scripts need Pillow, a dev-only dependency that is deliberately not in `requirements.txt`.
 
 **Releases are built by CI, not locally.** Bump `__version__` in `calist.py`, then
 `git tag vX.Y.Z && git push origin vX.Y.Z` — [release.yml](.github/workflows/release.yml) runs the
@@ -106,8 +111,9 @@ wording and typos included; it is not the Device column (see the comment at the 
 
 **`calist.py` must never import a GUI toolkit.** `main()` imports `ui` lazily inside the function
 body, so `python calist.py` still launches the app while `import calist` stays GUI-free — which is
-what lets the test suite run without a display. There is a test-adjacent check for this:
-`python -c "import calist, sys; assert 'tkinter' not in sys.modules"`.
+what lets the test suite run without a display. `test_importing_ui_state_pulls_in_no_gui_toolkit`
+pins it (`ui_state` imports `calist`), beside the same subprocess check for `theme` and `access`;
+the one-liner under *Commands* runs it by hand.
 
 The two meet in two places, and nowhere else:
 
@@ -163,7 +169,8 @@ Five things there are load-bearing:
 - **No thread or process pool.** Measured twice: threads gave 1.2× against the old reader and
   **nothing** against the new one (1000 forms: 2.05 s at one thread, 2.11 s at two, 2.34 s at
   eight). After decompression the work is pure Python and GIL-bound, and at 2 ms a form the pool
-  overhead exceeds the parse.
+  overhead exceeds the parse. That is the app's rule: `tools/audit.py` reads the archive through a
+  `multiprocessing.Pool` (`--workers`, default all cores but two).
 
 `.xls` goes through xlrd with `on_demand=True`, walking sheets one at a time — `workbook.sheets()`
 would load every sheet and cancel the benefit. 58 ms → 21 ms median.
@@ -177,6 +184,11 @@ had twice (the Ultrasound serial, the X-ray tab). `_open_source` is kept as a pe
 compatibility seam for exactly this; `read_record` batches instead.
 
 Where the time goes now, on 20,000 forms: **28 s read, 0.5 s sort, 0.2 s dedup, 9.6 s write.**
+2.0.3 made the write draw every row itself (see *Template contract*), which costs **about 50 µs a
+row**, measured old vs new on the same records, alternating, after a warm-up: the whole 2026
+year (17,671 rows) 2.20 → 3.14 s over 5 runs each, a 420-row round 66 → 94 ms over 7 — real
+(Welch p < 10⁻⁸), and almost all of it the formatting itself (the 753 *Missing* notes were
+~0.05 s of it). Against the reading it is small: that 2026 run spent 397 s reading.
 `write_output` is the long tail and there is no cheap fix — the stalls are inside
 `workbook.save()`, so yielding the GIL around the fill loop does nothing (tried: worst stall
 483 ms → 416 ms, and it cost a second on the write). `process_files` logs `Writing N row(s)…` and
@@ -541,8 +553,9 @@ become `tools/audit.py` — see *The archive audit* below.
 
 **A status of `0` is an empty verdict, not a wrong one.** On Patient Monitor forms the status boxes
 are formulas copying a test sheet (`='NIBP Test sheet'!I70`), and a copy of an empty cell shows `0`.
-The owner has confirmed it: `0` means the module was not tested. It is never flagged, and the audit
-counts it as missing, not wrong. (A lowercase `pass` beside the ECG box, identical on every form, is
+The owner has confirmed it: `0` means the module was not tested. Reading never flags it, and the audit
+counts it as missing, not wrong. **The register marks it Missing** (owner's decision, 2.0.3 — see
+*Missing values* under `_flags`). (A lowercase `pass` beside the ECG box, identical on every form, is
 template text — not a verdict to recover.)
 
 ### The caption check: a layout must be verified, not just plausible
@@ -728,6 +741,17 @@ The *fixes* do reach it, by the owner's decision — a corrected map, a repaired
 was a caption or a reading, a skipped file — which is why the audit proves every one of them.
 `build_second_row` hands a module row its own Status2 mark, never the parent's Status mark.
 
+**Missing values are marked too** (owner's decision, 2.0.3). `write_output` marks every register
+cell that is empty or a bare zero (`0`, `00`, `0.0` — `is_missing`) with the same amber and the
+note *Calist: Missing.* That includes a Status of `0` on the monitors and their NIBP rows (a module
+not tested), and the always-empty Status of the devices with no Status box (CT, MRI, Dexa,
+Mammography, the air mattress). `N.A`, `NA`, `N/A` and dashes are an engineer's own answer and
+stay plain; a cell that already carries a doubt keeps its own, more specific note. It is decided at
+write time from the value written, not in `_flags`, so the export — which never calls
+`write_output` — is untouched. On four real 2026 rounds (790 rows) every value and every earlier
+note came out identical; what the rule adds is visible where a hospital's NIBP modules were not
+tested — 113 of 420 rows at one site turned amber, every one an NIBP Module reading `0`.
+
 ### The archive audit (`tools/audit.py`)
 
 The only thing that finds a field going quietly blank or wrong is reading the real forms, so the
@@ -828,8 +852,29 @@ The `_`-prefixed keys never reach the template because the writer iterates `FIEL
 [template/Device List.xlsx](template/Device%20List.xlsx): sheet `list`, headers row 3, data from row 4,
 column A = index,
 columns B–I = `FIELDS`. The writer uses `workbook.active`, so the template's active sheet must be the
-data sheet. Note the template ships with column A pre-numbered down to row 84; nothing clears those, so
-output files always show ~81 numbered-but-empty trailing rows.
+data sheet.
+
+**The template is a style reference, not a grid** (2.0.3). It pre-draws rows 4–84 — borders, and
+the numbers 1–81 typed into column A — and the writer used to lean on that: rows past 84 came out
+with no borders at all (339 of 420 rows on a real round), and a short register kept the empty
+numbered rows under its last device, its signature among them. Now `_table_look` takes each
+column's *most common* style over the pre-drawn rows (so a cell someone once made bold by hand is
+not copied), plus the row-level style, and `write_output` paints it onto exactly the rows it writes
+— there is no row limit — then `_clear_rows` takes the unused pre-drawn rows back to plain cells.
+Styles are copied as `cell._style = copy(StyleArray)`, the idiom openpyxl's own `copy_worksheet`
+uses, so a long register adds no style records.
+
+- **Rows are 21.75 pt; a row with two serials is 30 pt** with its S.N cell wrapped — otherwise Excel
+  shows the second serial only after a double-click. `has_two_serials` decides it from the record
+  (an `S.N2`), never from the text: across the archive the only serial cells with a line break are
+  the 4,704 Ultrasound / X-ray / Dental X-ray / C-Arm forms that have one.
+- **The filter and print area follow the register** (`_follow_the_table`): the template fixed them
+  at A3:I84 and A1:I43, so the filter took in the signature on a short register (a sort could pull
+  it into the data) and printing stopped at device 40. The print area runs through the signature.
+- **The template file itself** lost two leftovers in 2.0.3 — a ward dropdown on H13:I13 (device
+  10's Date and Status) and empty coloured, merged boxes at M12:T15 — and prints fitted to one
+  landscape page wide instead of at a fixed 16%. The edit was made to the sheet XML alone; every
+  other part of the file is byte-identical, which is how the change was proven.
 
 ### `device_config.py`
 
@@ -988,11 +1033,14 @@ count towards until it has finished walking.
 
 ### The look: direction A, "Clinical precision"
 
-Version 2.0 is a redesign, done as a design project with the owner. The record lives in three
+Version 2.0 is a redesign, done as a design project with the owner. The record lives in four
 places:
 - [PRODUCT.md](PRODUCT.md): who uses it, and the product's principles;
 - [.impeccable/surfaces/ui-py.md](.impeccable/surfaces/ui-py.md): the direction contract;
-- `theme.py`: the one palette, `CLINICAL`.
+- [DESIGN.md](DESIGN.md) (generated sidecar `.impeccable/design.json`): the design system as
+  shipped — named colours, type, layout and every component, each with its rules. It restates the
+  palette as hex, so a change to `theme.py` leaves it stale;
+- `theme.py`: the one palette, `CLINICAL` — what the app actually runs.
 
 The owner chose graphite and theatre-scrub teal over two other directions from real screenshots of
 all three, and the others were deleted. Keep to it:
@@ -1124,6 +1172,14 @@ block at a usable size and scrolls when the total exceeds the window:
   A small *overflow* costs a row rather than bringing out the page's scrollbar, and
   `_show_page_scrollbar` hides that bar whenever nothing scrolls. It is capped by `MAX_FIT_PASSES`.
   Call `_on_resize()` (debounced) after anything that changes the page's shape.
+- **One layout pass at a time** (`_schedule_fit`). Every pass is queued there — `_on_resize`, the
+  startup pass in `_build`, the unlock — and it cancels any pass still pending. 2.0.2 queued the
+  startup and unlock passes on their own beside it: two passes in the same tick both measured the
+  page before Tk had applied the other's change, so both grew the empty card by the whole gap, then
+  both shrank it, until the pass budget ran out with the page 219 px too tall — the window scrolled
+  on first open until it was resized (8 of 10 starts, 10 of 10 through the lock; 0 of 20 since).
+  `_fit_to_window` also measures after `update_idletasks()`, and matches the scrollbar to the page
+  even on a pass that is out of budget. `test_ui_layout.py` pins all three.
 - **Two unit systems meet in the hero branch.** `CTkFrame.configure(height=)` and `cget("height")`
   speak CustomTkinter's *logical* units; `slack` and every `winfo_*` measurement are *device*
   pixels, 1.25x apart on this display. Convert with `ctk.ScalingTracker.get_widget_scaling(widget)`.

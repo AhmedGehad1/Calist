@@ -18,7 +18,7 @@ open three hundred files to do it.
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![469 tests](https://img.shields.io/badge/tests-469%20passing-brightgreen)
+![548 tests](https://img.shields.io/badge/tests-548%20passing-brightgreen)
 ![111 device types](https://img.shields.io/badge/device%20types-111-0b7a6e)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-lightgrey)
 ![No install](https://img.shields.io/badge/install-none-success)
@@ -34,22 +34,23 @@ open three hundred files to do it.
 
 <br>
 
-## What's new in 2.0.2
+## What's new in 2.0.3
 
-- **Tidier device names.** `Protein Analyzer` and `Tourniquet` are finally spelt right. Every name
-  is in Title Case. `SPO2` is now `Pulse Oximeter`, `Holter machines` is `Holter Machine`, and
-  `Thermometer, patient` reads `Patient Thermometer`. The patient monitor's second row is now
-  `NIBP Module`.
-- **Thermometers say what kind they are.** Forms filed under `AN` are named from their own
-  *Device Type* box. "Infrared" becomes `Infrared Thermometer`, "Digital thermometer" becomes
-  `Digital Thermometer`, and a certificate that says *Portable Data Logger* is taken at its word.
-  A form that only says "Thermometer", or has no box at all, is an infrared one.
-- **Amber notes that say what actually happened.** When an engineer leaves the serial box empty
-  and Calist finds the serial on the Cover Report instead, the note now says exactly that. The old
-  note blamed the device table, which was right all along.
+- **The table runs all the way to the last device.** The template drew its table for 81 rows, so a
+  bigger round's register lost its borders from row 85 on, and a smaller one ended in empty
+  numbered rows with the signature among them. Now every row is drawn in the template's own style,
+  however many there are; numbering, filter and print area end at the last device; every row is
+  21.75 pt; and the register prints one page wide.
+- **Two serial numbers, no double-click.** Ultrasound, X-ray, Dental X-ray and C-Arm rows carry the
+  probe or tube serial on a second line. Those rows are now 30 pt tall and wrap it, so both serials
+  show at once.
+- **Missing values are marked.** Any empty cell, or a bare `0`, is filled amber with the note
+  *Calist: Missing.* That includes a Status of `0` (a monitor module that wasn't tested). `N.A`
+  stays as the engineer wrote it.
+- **The window opens at the right size.** It no longer scrolls on first open until it's resized.
 
-Every change was checked against the whole four-year archive before it went in: same values, same
-amber cells, only the wording different. The full list is on the
+Checked on real rounds before it went in: every value and every earlier note identical; only the
+formatting and the new *Missing* notes differ. The full list is on the
 [releases page](https://github.com/AhmedGehad1/Calist/releases).
 
 ---
@@ -538,10 +539,11 @@ What gets marked, and what the note says:
 | *Does not look like a serial number (a date, or no digits).* | Exactly that. |
 | *Same as the Model — one of the two is probably misread.* | Manufacturer and Model came back identical. |
 | *'(2)' after the date left out. The file is '…'.* | On the Code column: the register uses the repaired name, and the note names the real file so you can find it. |
+| *Missing.* | The form left the box empty, or put a bare `0` in it. `N.A` is an answer, so it isn't marked. |
 
-A status of `0` is **not** marked. On patient-monitor forms the status box copies a test sheet,
-and a copy of an empty test is `0`: the module wasn't tested. That's an empty verdict, not a
-wrong one.
+A status of `0` is marked *Missing.* On patient-monitor forms the status box copies a test sheet,
+and a copy of an empty test is `0`: the module wasn't tested. So at a site where the NIBP modules
+weren't tested, nearly every *NIBP Module* row turns amber; that's the finding, not an error.
 
 ---
 
@@ -760,6 +762,12 @@ There is deliberately **no thread pool**. It was measured twice: after decompres
 pure Python and holds the GIL, and at 2 ms a form the pool's overhead costs more than the
 parsing. Eight threads were slower than one.
 
+Since 2.0.3 the writer draws every row of the register itself: borders, heights, the works. That
+costs about **50 µs a row**, measured against the old writer on the same records. A 420-row round
+went from 66 to 94 ms, and the whole 2026 year (17,671 rows) from 2.2 to 3.1 seconds. The
+difference is real, not noise, but it's under 1% of a run: reading those 2026 forms took 397
+seconds.
+
 ---
 
 ## How a change gets proven
@@ -836,7 +844,7 @@ classify_file("W01-BZ000-0326.xlsx", real_forms_only=True).detail
 ```powershell
 pip install -r requirements.txt
 pip install pytest
-python -m pytest                       # 469 tests, no display needed
+python -m pytest                       # 548 tests, no display needed
 python -m pytest -k merged             # one topic
 python -m pyflakes ui.py               # the quick lint
 python tools/snap_ui.py --theme dark   # every screen, rendered to docs/review/

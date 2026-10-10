@@ -24,7 +24,9 @@ import threading
 import time
 import unicodedata
 import zipfile
+from collections import Counter
 from contextlib import contextmanager
+from copy import copy as copy_of
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,7 @@ import xlrd
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
+from openpyxl.styles.cell_style import StyleArray
 from openpyxl.styles.numbers import BUILTIN_FORMATS, is_date_format
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import coordinate_to_tuple
@@ -85,7 +88,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -3241,8 +3244,90 @@ def resolve_output_path(source_files: list[str], template_file: str,
     return output_path
 
 
+#: Height of a device row in the register, in points (the owner's measure).
+NORMAL_ROW_HEIGHT = 21.75
+#: A row whose S.N cell carries two serial numbers, one under the other.
+TWO_SERIAL_ROW_HEIGHT = 30.0
+#: The note on a cell the form left empty or filled with a bare 0 (owner's
+#: rule, 2.0.3). The register only: the Firebase export never sees a mark.
+MISSING_REASON = "Missing."
+_ZERO_RE = re.compile(r"^0+(\.0+)?$")
+
+
+def table_columns() -> range:
+    """The register's columns: the № column, then one per field (A to I)."""
+    return range(TEMPLATE_START_COL - 1, TEMPLATE_START_COL + len(FIELDS))
+
+
+def has_two_serials(record: Record) -> bool:
+    """Whether a register row shows two serial numbers in its S.N cell.
+
+    Decided by the data, not by the text's length: extract_records writes
+    "SN1\\n(SN2)" for exactly the records whose form has a second serial — an
+    ultrasound probe, an X-ray tube. Measured over the archive, those are the
+    only serial cells with a line break in them.
+    """
+    return bool(str(record.get("S.N2") or "").strip())
+
+
+def is_missing(value: object) -> bool:
+    """A cell the form left empty, or filled with a bare zero.
+
+    "N.A" and dashes are an engineer's own answer and do not count (owner's
+    decision). Nor does a Status of "0" escape any more: on the monitors' test
+    sheets it means the module was not tested, which the register now shows.
+    """
+    text = "" if value is None else str(value).strip()
+    return not text or _ZERO_RE.match(text) is not None
+
+
+@dataclass
+class _TableLook:
+    """How the template draws a device row, and how far its own grid runs."""
+
+    cells: dict[int, StyleArray]        # column → the style its cells take
+    row: StyleArray | None              # the row's own style, right of the table
+    drawn_last: int                     # last pre-drawn row; START_ROW - 1 if none
+
+
+def _table_look(sheet) -> _TableLook:
+    """Read the device-row look off the template's pre-drawn rows.
+
+    The template draws its table once, for a fixed number of rows, numbered by
+    hand — 81 in the shipped one. A register is as long as its round, so that
+    grid is only a style reference: each column takes the style most of its
+    pre-drawn rows carry, which also leaves behind a cell someone once made
+    bold by hand. The same goes for the row's own style (the shipped template
+    paints some rows white past column I and not others). A template with no
+    pre-drawn rows gives the default style and nothing to clear.
+    """
+    columns = table_columns()
+    seen: dict[int, Counter] = {column: Counter() for column in columns}
+    rows_seen: Counter = Counter()
+    drawn_last = TEMPLATE_START_ROW - 1
+    for row in sheet.iter_rows(min_row=TEMPLATE_START_ROW, max_row=sheet.max_row,
+                               min_col=columns.start, max_col=columns.stop - 1):
+        if not any(cell.has_style or cell.value is not None for cell in row):
+            break
+        drawn_last = row[0].row
+        for cell in row:
+            seen[cell.column][tuple(cell._style)] += 1
+        rows_seen[tuple(sheet.row_dimensions[drawn_last]._style or StyleArray())] += 1
+    cells = {column: StyleArray(counts.most_common(1)[0][0]) if counts else StyleArray()
+             for column, counts in seen.items()}
+    row_style = StyleArray(rows_seen.most_common(1)[0][0]) if rows_seen else None
+    return _TableLook(cells, row_style if row_style and any(row_style) else None,
+                      drawn_last)
+
+
 def write_output(records: list[Record], template_file: str, output_path: Path) -> None:
     """Fill a copy of the template with the records and save it.
+
+    Every row written is drawn in the template's own style (see
+    [_table_look]) — however long the register — and is 21.75 pt tall, or 30
+    pt when its S.N cell holds two serials, which then wraps onto two lines.
+    The template's unused pre-drawn rows are cleared, so the table and its
+    numbering end at the last device, and its filter and print area follow.
 
     On a Turbo-scale run this is the long tail: ~2.5s to fill 38,000 rows and
     ~7s for openpyxl to serialise them. A GUI caller sees stalls of up to half
@@ -3255,9 +3340,15 @@ def write_output(records: list[Record], template_file: str, output_path: Path) -
     workbook = load_workbook(template_file)
     try:
         sheet = workbook.active
+        look = _table_look(sheet)
         for index, record in enumerate(records):
             row = TEMPLATE_START_ROW + index
-            sheet.cell(row=row, column=1, value=index + 1)
+            for column, style in look.cells.items():
+                sheet.cell(row=row, column=column)._style = copy_of(style)
+            sheet.row_dimensions[row]._style = (
+                copy_of(look.row) if look.row is not None else None)
+            sheet.cell(row=row, column=TEMPLATE_START_COL - 1, value=index + 1)
+            two_serials = has_two_serials(record)
             flags = record.get("_flags") or {}
             for offset, name in enumerate(FIELDS):
                 mark = flags.get(name)
@@ -3270,13 +3361,62 @@ def write_output(records: list[Record], template_file: str, output_path: Path) -
                     # Text, so a serial someone types over later keeps its
                     # leading zero rather than turning into a number.
                     cell.number_format = "@"
+                    if two_serials:
+                        # Without wrap, Excel shows the second serial only
+                        # once somebody double-clicks the cell.
+                        wrapped = copy_of(cell.alignment)
+                        wrapped.wrap_text = True
+                        cell.alignment = wrapped
                 if mark:
                     _mark_for_checking(cell, mark["reason"])
+                elif is_missing(value):
+                    _mark_for_checking(cell, MISSING_REASON)
+            sheet.row_dimensions[row].height = (
+                TWO_SERIAL_ROW_HEIGHT if two_serials else NORMAL_ROW_HEIGHT)
 
-        stamp_attribution(sheet, workbook, len(records))
+        last_row = TEMPLATE_START_ROW + len(records) - 1
+        _clear_rows(sheet, last_row + 1, look.drawn_last)
+        signature_row = stamp_attribution(sheet, workbook, len(records))
+        _follow_the_table(sheet, last_row, signature_row)
         workbook.save(output_path)
     finally:
         workbook.close()
+
+
+def _clear_rows(sheet, first: int, last: int) -> None:
+    """Take the template's unused pre-drawn rows back to plain, empty cells —
+    their hand-typed numbers, borders and heights with them."""
+    for row in range(first, last + 1):
+        for column in table_columns():
+            cell = sheet.cell(row=row, column=column)
+            cell.value = None
+            cell._style = StyleArray()
+        sheet.row_dimensions[row].height = None
+        sheet.row_dimensions[row]._style = None
+
+
+_PLAIN_RANGE_RE = re.compile(r"^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$")
+
+
+def _follow_the_table(sheet, last_row: int, signature_row: int) -> None:
+    """Point the template's filter and print area at the rows actually written.
+
+    The shipped template fixes both: its filter spans the 81 pre-drawn rows —
+    so on a short register it took in the signature, which a sort could then
+    pull into the data — and its print area stopped at row 43. Each keeps the
+    template's own columns and first row; only where it ends moves. A template
+    without one is not given one.
+    """
+    if sheet.auto_filter.ref:
+        match = _PLAIN_RANGE_RE.match(sheet.auto_filter.ref)
+        if match:
+            left, top, right, _ = match.groups()
+            sheet.auto_filter.ref = f"{left}{top}:{right}{max(last_row, int(top))}"
+    if sheet.print_area and "," not in sheet.print_area:
+        match = _PLAIN_RANGE_RE.match(sheet.print_area.split("!")[-1])
+        if match:                       # one plain range; anything else is left alone
+            left, top, right, _ = match.groups()
+            sheet.print_area = f"{left}{top}:{right}{signature_row}"
 
 
 #: The colour of a value kept in the register but not trusted. Amber rather
@@ -3297,13 +3437,13 @@ def _mark_for_checking(cell, reason: str) -> None:
     cell.comment = note
 
 
-def stamp_attribution(sheet, workbook, record_count: int) -> None:
+def stamp_attribution(sheet, workbook, record_count: int) -> int:
     """Sign the register, visibly and in the file's own properties.
 
     A register gets emailed, printed and filed long after the app that made it
     is out of sight, so the credit belongs in the document rather than only in
     the tool. One line, a blank row clear of the data, plus the Excel document
-    properties that show under File → Properties.
+    properties that show under File → Properties. Returns the signature's row.
     """
     row = TEMPLATE_START_ROW + record_count + 1
     made_on = datetime.now().strftime("%d/%m/%Y")
@@ -3317,6 +3457,7 @@ def stamp_attribution(sheet, workbook, record_count: int) -> None:
     workbook.properties.title = "Equipment register"
     workbook.properties.description = (
         f"Compiled from {record_count} row(s) by Calist — {ATTRIBUTION}")
+    return row
 
 
 # ──────────────────────────────────────────────────────────────────────────────

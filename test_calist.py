@@ -2540,3 +2540,336 @@ def test_a_ventilator_filed_as_one_is_still_read_as_one(tmp_path):
     with pytest.raises(calist.ReadAsOther) as found:
         calist.read_best(path, DEVICE_CONFIGS["GE"])
     assert found.value.code == "AM"
+
+
+# ── The register's table: every row drawn, however long (2.0.3) ───────────────
+#
+# The template draws its table once — 81 rows, numbered by hand — and the writer
+# used to lean on that grid: from row 85 on, a register came out with no borders
+# at all, and a short one kept the empty numbered rows under its last device,
+# signature and all. The template is now only a style reference. These run on
+# the template the app ships, with invented records.
+
+REAL_TEMPLATE = calist.bundled_template()
+LAST_PREDRAWN = 84                       # the shipped template's grid ends here
+
+
+def _row(i, **fields):
+    record = {"Device": "ECG", "Manufacturer": "GE", "Model": "MAC 2000",
+              "S.N": f"SN{i:04d}", "Location": "ICU",
+              "Code": f"G302-AF{i:03d}-0425", "Date": "06-04-2025", "Status": "Pass"}
+    record.update(fields)
+    return record
+
+
+def _two_serials(i):
+    """An X-ray row as extract_records leaves it: tube serial on its own line."""
+    return _row(i, Device="X-ray", **{"S.N": f"XR{i}\n(TUBE{i})", "S.N2": f"TUBE{i}"})
+
+
+def _register(tmp_path, records, template=None):
+    out = tmp_path / "device list.xlsx"
+    calist.write_output(records, str(template or REAL_TEMPLATE), out)
+    return load_workbook(out).active
+
+
+def _colour(color):
+    return None if color is None else (color.type, getattr(color, color.type),
+                                       round(color.tint or 0, 3))
+
+
+def _look(cell):
+    """How a cell looks, as plain properties — never style ids, which a saved
+    workbook renumbers."""
+    border = cell.border
+    return (cell.font.name, cell.font.sz, bool(cell.font.b), _colour(cell.font.color),
+            cell.fill.fill_type, _colour(cell.fill.fgColor) if cell.fill.fill_type else None,
+            cell.alignment.horizontal, cell.alignment.vertical,
+            bool(cell.alignment.wrap_text),
+            *((getattr(border, side).style, _colour(getattr(border, side).color))
+              for side in ("left", "right", "top", "bottom")))
+
+
+def _template_look():
+    """Each column's look on an ordinary pre-drawn row of the shipped template
+    (row 40 carries none of its stray bold cells or thick edges)."""
+    sheet = load_workbook(REAL_TEMPLATE).active
+    return {column: _look(sheet.cell(row=40, column=column)) for column in range(1, 10)}
+
+
+def _last_row(count):
+    return calist.TEMPLATE_START_ROW + count - 1
+
+
+def test_the_shipped_template_still_stops_drawing_at_row_84():
+    """The premise of the tests below: past row 84 the template draws nothing."""
+    sheet = load_workbook(REAL_TEMPLATE).active
+    assert sheet.cell(row=LAST_PREDRAWN, column=2).has_style
+    assert not sheet.cell(row=LAST_PREDRAWN + 1, column=2).has_style
+
+
+def test_every_device_row_is_21_75_points(tmp_path):
+    """Rows 4 and 10 were 20.25 and 21 pt in the template; every row is 21.75."""
+    sheet = _register(tmp_path, [_row(i) for i in range(1, 11)])
+    heights = [sheet.row_dimensions[r].height for r in range(4, _last_row(10) + 1)]
+    assert heights == [21.75] * 10
+
+
+def test_a_row_with_two_serials_is_30_points_and_shows_both(tmp_path):
+    """Before, the second serial only appeared once somebody double-clicked."""
+    sheet = _register(tmp_path, [_row(1), _two_serials(2), _row(3)])
+    serial = sheet.cell(row=5, column=5)
+    assert serial.value == "XR2\n(TUBE2)"
+    assert serial.alignment.wrap_text is True
+    assert sheet.row_dimensions[5].height == 30
+    assert [sheet.row_dimensions[r].height for r in (4, 6)] == [21.75, 21.75]
+    # Only that cell wraps: the row's other cells, and other rows' serials, do not.
+    assert not any(sheet.cell(row=5, column=c).alignment.wrap_text
+                   for c in range(1, 10) if c != 5)
+    assert not sheet.cell(row=4, column=5).alignment.wrap_text
+
+
+def test_each_row_takes_its_height_from_its_own_data(tmp_path):
+    """Two serials make a 30 pt row; a module row, a long model or a line break
+    in another field does not."""
+    monitor = _row(3, Device="Patient Monitor", Code="G302-AGH003-0425",
+                   Status2="Faulty")
+    module = calist.build_second_row(monitor, DEVICE_CONFIGS["AGH"]["second_row"])
+    records = [_row(1), _two_serials(2), monitor, module,
+               _row(5, Model="A model name far too long for its column to hold"),
+               _row(6, Location="ICU\nBed 3"), _two_serials(7)]
+    sheet = _register(tmp_path, records)
+    heights = [sheet.row_dimensions[r].height for r in range(4, _last_row(7) + 1)]
+    assert heights == [21.75, 30, 21.75, 21.75, 21.75, 21.75, 30]
+    assert sheet.cell(row=7, column=2).value == "NIBP Module"
+
+
+def test_rows_past_the_templates_grid_look_like_its_own(tmp_path):
+    """120 rows run 39 past the template's last pre-drawn row: every cell of
+    every row matches the template's own design, including the last."""
+    count = 120
+    sheet = _register(tmp_path, [_row(i) for i in range(1, count + 1)])
+    expected = _template_look()
+    assert _last_row(count) > LAST_PREDRAWN
+    for row in range(4, _last_row(count) + 1):
+        for column in range(1, 10):
+            assert _look(sheet.cell(row=row, column=column)) == expected[column], (row, column)
+        assert sheet.row_dimensions[row].height == 21.75, row
+
+
+def test_borders_run_to_the_last_row_and_close_it(tmp_path):
+    """Today's look, kept: thick left edge on No., thin everywhere else —
+    including the line under the last device."""
+    count = 120
+    sheet = _register(tmp_path, [_row(i) for i in range(1, count + 1)])
+    for row in (4, LAST_PREDRAWN, LAST_PREDRAWN + 1, _last_row(count)):
+        a = sheet.cell(row=row, column=1).border
+        assert (a.left.style, a.right.style, a.top.style, a.bottom.style) == (
+            "medium", "thin", "thin", "thin"), row
+        for column in range(2, 10):
+            b = sheet.cell(row=row, column=column).border
+            assert (b.left.style, b.right.style, b.top.style, b.bottom.style) == (
+                "thin", "thin", "thin", "thin"), (row, column)
+
+
+def test_stray_formatting_in_the_template_is_not_copied(tmp_path):
+    """The template's Status cells in rows 16/37/58/63/67 are bold, and rows
+    11-14 and 22-32 have a thick right edge — hand edits, not the design."""
+    sheet = _register(tmp_path, [_row(i) for i in range(1, 70)])
+    status = [sheet.cell(row=r, column=9) for r in (11, 16, 22, 37, 58, 63, 67)]
+    assert not any(cell.font.b for cell in status)
+    assert {cell.border.right.style for cell in status} == {"thin"}
+
+
+@pytest.mark.parametrize("count", [1, 30, 120])
+def test_numbering_runs_from_one_to_the_last_row_and_stops(tmp_path, count):
+    """Column A numbers the rows written — not the template's 81 typed ones."""
+    sheet = _register(tmp_path, [_row(i) for i in range(1, count + 1)])
+    numbers = [sheet.cell(row=r, column=1).value for r in range(4, _last_row(count) + 1)]
+    assert numbers == list(range(1, count + 1))
+    below = [sheet.cell(row=r, column=1).value
+             for r in range(_last_row(count) + 1, max(LAST_PREDRAWN, _last_row(count)) + 3)]
+    assert not any(below)
+
+
+def test_a_module_row_is_numbered_like_any_other_row(tmp_path):
+    monitor = _row(2, Device="Patient Monitor", Code="G302-AGH002-0425", Status2="Pass")
+    module = calist.build_second_row(monitor, DEVICE_CONFIGS["AGH"]["second_row"])
+    sheet = _register(tmp_path, [_row(1), monitor, module, _row(4)])
+    assert [sheet.cell(row=r, column=1).value for r in range(4, 8)] == [1, 2, 3, 4]
+
+
+def test_a_short_register_ends_at_its_last_device(tmp_path):
+    """30 devices: the template's empty rows 31-81 go, and the signature sits
+    one blank row under the last device rather than inside the empty grid."""
+    count = 30
+    sheet = _register(tmp_path, [_row(i) for i in range(1, count + 1)])
+    last = _last_row(count)
+    gap, signature = last + 1, last + 2
+    assert all(sheet.cell(row=gap, column=c).value is None for c in range(1, 10))
+    assert "Generated by Calist" in sheet.cell(row=signature, column=2).value
+    for row in range(gap, LAST_PREDRAWN + 1):
+        for column in range(1, 10):
+            cell = sheet.cell(row=row, column=column)
+            borders = [getattr(cell.border, s).style for s in ("left", "right", "top", "bottom")]
+            assert not any(borders), (row, column)
+            if row != signature:
+                assert cell.value is None and not cell.has_style, (row, column)
+        assert sheet.row_dimensions[row].height is None, row
+
+
+def test_a_long_register_is_signed_under_its_last_device(tmp_path):
+    count = 120
+    sheet = _register(tmp_path, [_row(i) for i in range(1, count + 1)])
+    assert sheet.cell(row=_last_row(count) + 1, column=2).value is None
+    assert "Generated by Calist" in sheet.cell(row=_last_row(count) + 2, column=2).value
+
+
+def test_formatting_changes_no_value_and_no_mark(tmp_path):
+    flagged = _row(2, **{"S.N": "04-01-2022",
+                         "_flags": {"S.N": {"show": None, "reason": "Not a serial."},
+                                    "Status": {"show": "Small", "reason": "Not a verdict."}},
+                         "Status": ""})
+    records = [_row(1), flagged, _two_serials(3)]
+    sheet = _register(tmp_path, records)
+    for row, record in zip(range(4, 7), records):
+        written = [sheet.cell(row=row, column=c).value for c in range(2, 10)]
+        expected = [record.get(f, "") or None for f in calist.FIELDS]
+        if row == 5:
+            expected[calist.FIELDS.index("Status")] = "Small"      # the mark's "show"
+        assert written == expected, row
+        assert sheet.cell(row=row, column=5).number_format == "@"   # S.N stays text
+    serial, status = sheet.cell(row=5, column=5), sheet.cell(row=5, column=9)
+    assert serial.fill.fgColor.rgb.endswith("FFE699") and "Not a serial" in serial.comment.text
+    assert status.fill.fgColor.rgb.endswith("FFE699") and "Not a verdict" in status.comment.text
+    assert sheet.cell(row=4, column=5).comment is None
+
+
+# ── Missing values are marked (owner's rule, 2.0.3) ───────────────────────────
+
+@pytest.mark.parametrize("value, missing", [
+    ("", True), ("   ", True), (None, True), ("0", True), ("00", True),
+    ("0.0", True), (" 0 ", True),
+    ("N.A", False), ("NA", False), ("N/A", False), ("-", False), ("--", False),
+    ("0.5", False), ("10", False), ("O", False), ("0A", False), ("Pass", False)])
+def test_what_counts_as_missing(value, missing):
+    assert calist.is_missing(value) is missing
+
+
+@pytest.mark.parametrize("record, two", [
+    ({"S.N": "A\n(B)", "S.N2": "B"}, True), ({"S.N": "A", "S.N2": ""}, False),
+    ({"S.N": "A", "S.N2": "  "}, False), ({"S.N": "A"}, False)])
+def test_two_serials_are_decided_by_the_second_serial(record, two):
+    assert calist.has_two_serials(record) is two
+
+
+def test_an_empty_or_zero_cell_is_marked_missing(tmp_path):
+    record = _row(1, Manufacturer="", Location="0", Date="0.0", Status="0",
+                  Model="N.A")
+    sheet = _register(tmp_path, [record])
+    for field in ("Manufacturer", "Location", "Date", "Status"):
+        cell = sheet.cell(row=4, column=calist.TEMPLATE_START_COL + calist.FIELDS.index(field))
+        assert cell.fill.fgColor.rgb.endswith("FFE699"), field
+        assert cell.comment.text == "Calist: Missing.", field
+    for field in ("Model", "S.N", "Device", "Code"):             # N.A is an answer
+        cell = sheet.cell(row=4, column=calist.TEMPLATE_START_COL + calist.FIELDS.index(field))
+        assert cell.comment is None, field
+    # A zero stays as written: the mark is the finding, not a blank.
+    assert sheet.cell(row=4, column=9).value == "0"
+
+
+def test_a_doubt_mark_is_not_replaced_by_missing(tmp_path):
+    record = _row(1, Status="",
+                  _flags={"Status": {"show": None, "reason": "Not a recognised verdict."}})
+    sheet = _register(tmp_path, [record])
+    assert "Not a recognised verdict" in sheet.cell(row=4, column=9).comment.text
+
+
+def test_a_module_row_with_status_zero_is_marked_missing(tmp_path):
+    """On a monitor's test sheet 0 means the module was not tested; the
+    register now says so rather than leaving it plain."""
+    monitor = _row(1, Device="Patient Monitor", Code="G302-AGH001-0425", Status2="0")
+    module = calist.build_second_row(monitor, DEVICE_CONFIGS["AGH"]["second_row"])
+    sheet = _register(tmp_path, [monitor, module])
+    assert sheet.cell(row=4, column=9).comment is None              # its own Pass
+    assert sheet.cell(row=5, column=9).comment.text == "Calist: Missing."
+
+
+def test_a_device_with_no_status_box_shows_its_status_as_missing(tmp_path):
+    """CT, MRI, Dexa, Mammography and the air mattress have no Status box;
+    by the owner's decision their empty Status is marked like any other."""
+    assert not DEVICE_CONFIGS["BW"]["cells"].get("Status")
+    sheet = _register(tmp_path, [_row(1, Device="CT", Status="")])
+    assert sheet.cell(row=4, column=9).comment.text == "Calist: Missing."
+
+
+# ── The template's fixed ranges and leftovers ──────────────────────────────────
+
+@pytest.mark.parametrize("count", [30, 120])
+def test_the_filter_and_print_area_follow_the_register(tmp_path, count):
+    """The template fixed them at A3:I84 and A1:I43 (40 devices printed)."""
+    sheet = _register(tmp_path, [_row(i) for i in range(1, count + 1)])
+    assert sheet.auto_filter.ref == f"A3:I{_last_row(count)}"
+    assert sheet.print_area.split("!")[-1] == f"$A$1:$I${_last_row(count) + 2}"
+
+
+def test_a_print_area_of_several_ranges_is_left_alone(tmp_path):
+    """Only a single plain range can be followed; anything else is the
+    template author's own and is not guessed at."""
+    template = tmp_path / "tpl.xlsx"
+    wb = load_workbook(REAL_TEMPLATE)
+    wb.active.print_area = ["A1:I43", "K1:L5"]
+    wb.save(template)
+    sheet = _register(tmp_path, [_row(i) for i in range(1, 6)], template=template)
+    assert sheet.print_area.split("!")[-1] != "$A$1:$I$10"
+    assert "K" in sheet.print_area and "$43" in sheet.print_area
+
+
+def test_a_template_without_a_filter_or_print_area_is_not_given_one(tmp_path):
+    sheet = _register(tmp_path, [_row(1), _row(2)], template=_template(tmp_path))
+    assert not sheet.auto_filter.ref
+    assert not sheet.print_area
+    assert [sheet.row_dimensions[r].height for r in (4, 5)] == [21.75, 21.75]
+    assert sheet.cell(row=4, column=2).value == "ECG"
+
+
+def test_the_template_leftovers_are_gone_and_it_prints_to_page_width(tmp_path):
+    """A ward dropdown sat on device 10's Date and Status, and empty coloured
+    boxes beside the table; the page setup printed at a fixed 16%."""
+    sheet = _register(tmp_path, [_row(i) for i in range(1, 12)])
+    assert not sheet.data_validations.dataValidation
+    assert [str(r) for r in sheet.merged_cells.ranges] == ["D1:E1"]
+    assert not [c.coordinate for row in sheet.iter_rows(min_row=1, max_row=20,
+                                                         min_col=10, max_col=20)
+                for c in row if c.has_style or c.value is not None]
+    assert sheet.sheet_properties.pageSetUpPr.fitToPage is True
+    assert sheet.page_setup.fitToHeight == 0
+
+
+def test_an_xray_with_a_tube_serial_runs_end_to_end(tmp_path):
+    """A real BF form through process_files and the shipped template."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    wb.create_sheet("Waveform Dialog")
+    ws = wb.create_sheet("Data entry")
+    for ref, value in {"E16": "10-05-2026", "E18": "Multix Impact",
+                       "E20": "Siemens", "K18": "XR-77341",
+                       "K20": "TUBE-99812", "K22": "Radiology",
+                       "J27": "Pass"}.items():
+        ws[ref] = value
+    src = tmp_path / "src"
+    src.mkdir()
+    path = src / "G302-BF001-0526.xlsx"
+    wb.save(path)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    result = calist.process_files([str(path)], str(REAL_TEMPLATE), output_dir=out)
+    assert result.succeeded
+    sheet = load_workbook(result.output_path).active
+    serial = sheet.cell(row=4, column=5)
+    assert serial.value == "XR-77341\n(TUBE-99812)"
+    assert serial.alignment.wrap_text is True
+    assert sheet.row_dimensions[4].height == 30
+    assert sheet.cell(row=4, column=1).value == 1
+    assert sheet.cell(row=5, column=1).value is None

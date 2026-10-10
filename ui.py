@@ -1035,9 +1035,10 @@ class App(_Root):
         self._enable_drop()
 
         # Reflow when the window is resized, and once at startup after the
-        # first real geometry is known.
+        # first real geometry is known — through the same queue, so the two
+        # can never run as rival passes (see _schedule_fit).
         self.bind("<Configure>", self._on_resize)
-        self.after(120, self._fit_to_window)
+        self._schedule_fit(120, fresh=True)
 
     def _build_header(self) -> None:
         bar = ctk.CTkFrame(self._page, fg_color="transparent")
@@ -2057,10 +2058,23 @@ class App(_Root):
         # fires it again; coalesce into one pass once the drag settles.
         if event is not None and event.widget is not self:
             return
-        self._fit_passes = 0
+        self._schedule_fit(70, fresh=True)
+
+    def _schedule_fit(self, delay_ms: int, *, fresh: bool) -> None:
+        """The one way a layout pass is queued: never two pending at once.
+
+        Startup and the unlock each used to queue a pass of their own beside
+        this one. Two passes in the same tick both measure the page before
+        Tk has applied either's change, so both grew the empty card by the
+        whole gap — 300 → 475 → 650 — then both shrank it, until the pass
+        budget ran out with the page 219 px taller than the window and
+        scrolling. A resize fixed it only because it started a single chain.
+        """
+        if fresh:
+            self._fit_passes = 0
         if self._fit_job is not None:
             self.after_cancel(self._fit_job)
-        self._fit_job = self.after(70, self._fit_to_window)
+        self._fit_job = self.after(delay_ms, self._fit_to_window)
 
     def _show_page_scrollbar(self, needed: bool) -> None:
         """The page's scrollbar only when the page actually scrolls: beside the
@@ -2077,18 +2091,25 @@ class App(_Root):
         self._fit_job = None
         if self._lock is not None or not self._page.winfo_ismapped():
             return
+        # Measure the page as it now is: a size set by the last pass is only
+        # applied when Tk next runs its idle work.
+        self.update_idletasks()
         try:
             viewport = self._page._parent_canvas.winfo_height()
         except Exception:                                # pragma: no cover
             return
-        if viewport < 120 or self._fit_passes >= self.MAX_FIT_PASSES:
+        if viewport < 120:
             return
-        self._fit_passes += 1
 
         # Positive slack means unused window; negative means we overflow and
-        # the scrollbar is carrying the difference.
+        # the scrollbar is carrying the difference. The bar is matched to it
+        # even on a pass that is out of budget, so it never shows the state
+        # of an earlier pass.
         slack = viewport - self._page.winfo_reqheight()
         self._show_page_scrollbar(slack < 0)
+        if self._fit_passes >= self.MAX_FIT_PASSES:
+            return
+        self._fit_passes += 1
 
         if self._files:
             # A small surplus is left alone, but a small overflow costs a row:
@@ -2100,7 +2121,7 @@ class App(_Root):
                          min(self.MAX_ROWS, current + slack // self.ROW_PX))
             if wanted != current:
                 self._tree.configure(height=wanted)
-                self._fit_job = self.after(30, self._fit_to_window)
+                self._schedule_fit(30, fresh=False)
         else:
             if abs(slack) < 10:
                 return
@@ -2115,7 +2136,7 @@ class App(_Root):
                          max(self.MIN_HERO_H, current + slack / scale))
             if abs(wanted - current) >= 4:
                 self._hero.configure(height=wanted)
-                self._fit_job = self.after(30, self._fit_to_window)
+                self._schedule_fit(30, fresh=False)
 
     def _refresh_intake(self) -> None:
         """Hand the vertical space to whichever of hero/table matters now."""
@@ -2729,7 +2750,7 @@ class App(_Root):
         self._footer.grid()
 
         self._refresh_all()
-        self.after(80, self._fit_to_window)
+        self._on_resize()
         calist.log.info("Unlocked for %s", date.today().isoformat())
 
     def _watch_for_new_day(self) -> None:
