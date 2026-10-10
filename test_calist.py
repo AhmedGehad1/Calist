@@ -2873,3 +2873,162 @@ def test_an_xray_with_a_tube_serial_runs_end_to_end(tmp_path):
     assert sheet.row_dimensions[4].height == 30
     assert sheet.cell(row=4, column=1).value == 1
     assert sheet.cell(row=5, column=1).value is None
+
+
+# ── 2.0.4: serials as the form writes them, X-ray names, verdict spelling ─────
+
+def _imaging_form(path, cells):
+    """An X-ray workbook: the empty macro tab first, then its data tab."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    wb.create_sheet("Waveform Dialog")
+    ws = wb.create_sheet("Data entry")
+    for ref, value in cells.items():
+        ws[ref] = value
+    wb.save(path)
+    return str(path)
+
+
+def _mobile(serial, tube):
+    return {"E14": "08-02-2026", "E18": "PXP-60HF", "E20": "Poskom",
+            "K18": serial, "K20": tube, "K22": "Radiology", "J27": "Pass"}
+
+
+def test_a_mobile_xray_reads_its_tube_serial(tmp_path):
+    """BE's map had no tube box: 176 of 233 mobile X-ray forms fill one in."""
+    path = _imaging_form(tmp_path / "G393-BE001-0226.xlsx", _mobile("PX-1001", "0J6454"))
+    record, layout = calist.read_best(path, DEVICE_CONFIGS["BE"])
+    assert layout == "primary"
+    assert record["S.N"] == "PX-1001" and record["S.N2"] == "0J6454"
+
+
+def test_the_serial_cell_follows_the_form(tmp_path):
+    """Owner's rule: each box as the form writes it, N.A included; an empty
+    serial box leaves the tube serial alone, one line."""
+    src = tmp_path / "src"
+    src.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    cases = [("PX-1001", "0J6454"), ("N.A", "0J6455"), ("PX-1003", "N.A"),
+             ("", "0J6457"), ("PX-1005", "")]
+    files = [_imaging_form(src / f"G393-BE00{i}-0226.xlsx", _mobile(serial, tube))
+             for i, (serial, tube) in enumerate(cases, start=1)]
+    result = calist.process_files(files, str(REAL_TEMPLATE), output_dir=out)
+    sheet = load_workbook(result.output_path).active
+    serials = [sheet.cell(row=r, column=5).value for r in range(4, 9)]
+    assert serials == ["PX-1001\n(0J6454)", "N.A\n(0J6455)", "PX-1003\n(N.A)",
+                       "(0J6457)", "PX-1005"]
+    assert [sheet.row_dimensions[r].height for r in range(4, 9)] == [30, 30, 30, 21.75, 21.75]
+    assert [bool(sheet.cell(row=r, column=5).alignment.wrap_text)
+            for r in range(4, 9)] == [True, True, True, False, False]
+
+
+def test_a_conventional_xray_is_named_so(tmp_path):
+    """Every BF form's own Type box says Conventional (owner's decision)."""
+    assert DEVICE_CONFIGS["BF"]["device_name"] == "X-ray (Conventional)"
+    assert DEVICE_CONFIGS["BE"]["device_name"] == "X-ray (Mobile)"
+
+
+@pytest.mark.parametrize("raw, written", [
+    ("Pass", "Pass"), ("PASS", "Pass"), ("pass", "Pass"), ("pASS", "Pass"),
+    ("Passs", "Pass"), ("Psss", "Pass"), ("PASSS", "Pass"), ("Pass.", "Pass"),
+    ("Fail", "Fail"), ("FAIL", "Fail"), ("FaiL", "Fail"), ("Failed", "Fail"),
+    ("limited non", "Limited non"), ("LIMITED NON", "Limited non"),
+    ("Limited Non", "Limited non"), ("LIMITEDNON", "Limited non"),
+    ("Limitednon", "Limited non"), ("limeted non", "Limited non"),
+    ("limited fail", "Limited Fail"), ("LIMITED FAIL", "Limited Fail"),
+    ("LimitedFail", "Limited Fail"), ("calibrated", "Calibrated"),
+    ("CALIBRATED", "Calibrated"), ("Caibrated", "Calibrated"),
+    # Not one of the five: exactly as the form wrote it.
+    ("Limited", "Limited"), ("limited", "limited"), ("LIMITED", "LIMITED"),
+    ("Limited Calibrated", "Limited Calibrated"), ("limited non safety", "limited non safety"),
+    ("Limited Fail Static NIBP", "Limited Fail Static NIBP"), ("Passed", "Passed"),
+    ("OK", "OK"), ("0", "0"), ("", ""), ("pass'", "pass'")])
+def test_the_register_spells_a_verdict_one_way(raw, written):
+    assert calist.register_status(raw) == written
+
+
+def test_fail_and_limited_fail_are_bold(tmp_path):
+    monitor = _row(3, Device="Patient Monitor", Code="G302-AGH003-0425",
+                   Status="PASS", Status2="limited fail")
+    module = calist.build_second_row(monitor, DEVICE_CONFIGS["AGH"]["second_row"])
+    records = [_row(1, Status="FAIL"), _row(2, Status="Limited Non"), monitor, module,
+               _row(5, Status="limited")]
+    sheet = _register(tmp_path, records)
+    status = [sheet.cell(row=r, column=9) for r in range(4, 9)]
+    assert [c.value for c in status] == ["Fail", "Limited non", "Pass", "Limited Fail", "limited"]
+    assert [bool(c.font.b) for c in status] == [True, False, False, True, False]
+    # Bold changes nothing else about the template's font.
+    assert {(c.font.name, c.font.sz) for c in status} == {("Calibri", 11)}
+
+
+@pytest.mark.parametrize("raw, outcome", [
+    ("Pass / Fail /Limited non / Limited fail / calibrated", None),
+    ("Pass/Fail", None), ("N/A", None), ("Issue/Rev: 1/1", None),
+    ("Limited fail", "limited fail"), ("Pass", "pass")])
+def test_a_printed_legend_is_not_a_verdict(raw, outcome):
+    assert calist.normalise_status(raw) == outcome
+
+
+def test_an_empty_status_box_is_not_read_from_the_legend_beside_it(tmp_path):
+    """The 2026 Pipette forms print the legend right of an empty Status box;
+    18 of them were read as 'limited fail'."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data entry"
+    _block(ws, 18, {"Model": "Research plus", "S.N": "2412345",
+                    "Manufacturer": "Eppendorf", "Location": "Lab"})
+    ws["E16"] = "09-04-2026"
+    # As on the real form: the caption spans F29:G29, so the search right of
+    # it starts at G as well and reaches the legend at K.
+    ws["F29"] = "Status:"
+    ws.merge_cells("F29:G29")
+    ws["K29"] = "Pass / Fail /Limited non / Limited fail / calibrated"
+    ws.merge_cells("K29:L29")
+    path = tmp_path / "F45-EO001-0326.xlsx"
+    wb.save(path)
+    record, _ = calist.read_best(str(path), DEVICE_CONFIGS["EO"])
+    assert record["Status"] == ""
+
+
+def _dental_saying_na(path, captions=True):
+    cells = {"E16": "25-03-2026", "E18": "N.A", "E20": "CASTELINI", "K18": "N.A",
+             "K20": "93438", "K22": "Radiology", "J27": "Pass"}
+    if captions:
+        cells.update({"C18": "Model:", "I18": "Serial No.:", "C20": "Manufacturer:",
+                      "I20": "Tube serial NO.:", "I22": "Location"})
+    return _imaging_form(path, cells)
+
+
+def test_a_form_that_says_na_is_not_blamed_on_the_layout(tmp_path):
+    """Its captions confirm the boxes; Model and Serial No. simply say N.A."""
+    path = _dental_saying_na(tmp_path / "G401-CA001-0326.xlsx")
+    record, layout = calist.read_best(path, DEVICE_CONFIGS["CA"])
+    assert layout == "none"                      # plausible() still refuses it
+    assert record["Manufacturer"] == "CASTELINI" and record["S.N2"] == "93438"
+    assert not any("No known layout" in mark["reason"]
+                   for mark in record["_flags"].values())
+
+
+def test_a_layout_that_is_not_confirmed_keeps_its_note(tmp_path):
+    path = _dental_saying_na(tmp_path / "G401-CA002-0326.xlsx", captions=False)
+    record, layout = calist.read_best(path, DEVICE_CONFIGS["CA"])
+    assert layout == "none"
+    assert "No known layout" in record["_flags"]["Manufacturer"]["reason"]
+
+
+def test_the_credit_is_written_at_the_top_too(tmp_path):
+    sheet = _register(tmp_path, [_row(1), _row(2)])
+    top = sheet.cell(row=1, column=2)
+    assert top.value == "Generated by Calist — Ahmed Gehad · ahmedgehad2112@gmail.com"
+    assert top.font.i and top.font.sz == 9
+    assert "Generated by Calist" in sheet.cell(row=_last_row(2) + 2, column=2).value
+
+
+def test_a_templates_own_b1_is_kept(tmp_path):
+    template = tmp_path / "tpl.xlsx"
+    wb = load_workbook(REAL_TEMPLATE)
+    wb.active["B1"] = "Hospital equipment list"
+    wb.save(template)
+    sheet = _register(tmp_path, [_row(1)], template=template)
+    assert sheet.cell(row=1, column=2).value == "Hospital equipment list"

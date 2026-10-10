@@ -18,7 +18,7 @@ open three hundred files to do it.
 
 [![Tests](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/tests.yml)
 [![Release](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml/badge.svg)](https://github.com/AhmedGehad1/Calist/actions/workflows/release.yml)
-![548 tests](https://img.shields.io/badge/tests-548%20passing-brightgreen)
+![598 tests](https://img.shields.io/badge/tests-598%20passing-brightgreen)
 ![111 device types](https://img.shields.io/badge/device%20types-111-0b7a6e)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-lightgrey)
 ![No install](https://img.shields.io/badge/install-none-success)
@@ -34,23 +34,27 @@ open three hundred files to do it.
 
 <br>
 
-## What's new in 2.0.3
+## What's new in 2.0.4
 
-- **The table runs all the way to the last device.** The template drew its table for 81 rows, so a
-  bigger round's register lost its borders from row 85 on, and a smaller one ended in empty
-  numbered rows with the signature among them. Now every row is drawn in the template's own style,
-  however many there are; numbering, filter and print area end at the last device; every row is
-  21.75 pt; and the register prints one page wide.
-- **Two serial numbers, no double-click.** Ultrasound, X-ray, Dental X-ray and C-Arm rows carry the
-  probe or tube serial on a second line. Those rows are now 30 pt tall and wrap it, so both serials
-  show at once.
-- **Missing values are marked.** Any empty cell, or a bare `0`, is filled amber with the note
-  *Calist: Missing.* That includes a Status of `0` (a monitor module that wasn't tested). `N.A`
-  stays as the engineer wrote it.
-- **The window opens at the right size.** It no longer scrolls on first open until it's resized.
+- **Mobile X-rays show their tube serial.** Calist never read the mobile X-ray's tube box; now it
+  does, like the other X-rays. The serial cell shows each box exactly as the form writes it, `N.A`
+  included: the serial, then the tube serial in brackets underneath.
+- **Conventional X-rays say so.** `BF` is now `X-ray (Conventional)`, which is what every one of its
+  forms says in its own *Type* box.
+- **One spelling for each verdict.** `PASS`, `pass` and `Passs` are all written `Pass`; likewise
+  `Fail`, `Limited non`, `Limited Fail` and `Calibrated`, and **Fail** and **Limited Fail** are bold.
+  Anything else stays exactly as typed.
+- **A printed legend is no longer read as a verdict.** Some Pipette forms print "Pass / Fail /
+  Limited non / Limited fail / calibrated" beside an empty Status box, and it was being read as
+  *Limited fail*. Those boxes now show as empty, marked *Missing*.
+- **No "no known layout" note on a form that says N.A.** When a form's own captions confirm its
+  boxes and it says `N.A` for both Model and Serial No., that's the engineer's answer, not a layout
+  problem.
+- **The credit sits at the top too**, in cell B1.
 
-Checked on real rounds before it went in: every value and every earlier note identical; only the
-formatting and the new *Missing* notes differ. The full list is on the
+Checked on the whole four-year archive before it went in, old code against new over 81,273 forms:
+**0 regressions**. The only readings that changed are the 181 mobile X-ray tube serials, now read,
+and the 18 Pipette legends, no longer taken for a verdict. The full list is on the
 [releases page](https://github.com/AhmedGehad1/Calist/releases).
 
 ---
@@ -709,7 +713,7 @@ ranges, and exits non-zero if anything read blank.
 | `BC` Ultrasound (Eye) | `EE` Flowmeter | `GR` Laser Therapy |
 | `BD` Mammography ² | `EN` Catheter Lab | `GT` Spinal Traction |
 | `BE` X-ray (Mobile) | `EO` Pipet | `GU` Shockwave Therapy |
-| `BF` X-ray | `EP` Refrigerator | `GV` Electrotherapy Machine |
+| `BF` X-ray (Conventional) | `EP` Refrigerator | `GV` Electrotherapy Machine |
 | `BJ` Auto Refractometer | `EQ` Urine Analyzer | `GX` PRF Generator |
 | `BL` Autoclave | `EU` Lab Oven | `GY` Infrared Sterilizer |
 | `BM` Hemodialysis Machine | `EV` Blood Mixer | `HA` HPLC Analyzer |
@@ -844,7 +848,7 @@ classify_file("W01-BZ000-0326.xlsx", real_forms_only=True).detail
 ```powershell
 pip install -r requirements.txt
 pip install pytest
-python -m pytest                       # 548 tests, no display needed
+python -m pytest                       # 598 tests, no display needed
 python -m pytest -k merged             # one topic
 python -m pyflakes ui.py               # the quick lint
 python tools/snap_ui.py --theme dark   # every screen, rendered to docs/review/

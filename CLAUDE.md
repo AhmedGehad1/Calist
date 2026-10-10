@@ -16,7 +16,7 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (548 tests)
+python -m pytest                            # the whole suite (598 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -189,6 +189,11 @@ row**, measured old vs new on the same records, alternating, after a warm-up: th
 year (17,671 rows) 2.20 → 3.14 s over 5 runs each, a 420-row round 66 → 94 ms over 7 — real
 (Welch p < 10⁻⁸), and almost all of it the formatting itself (the 753 *Missing* notes were
 ~0.05 s of it). Against the reading it is small: that 2026 run spent 397 s reading.
+2.0.4 measured no slowdown a run can show: the writer +3.8% on a 420-row round (Welch p = 0.69,
+noise) and the reader +1.6% at the median over 2,000 seeded forms (paired t = +0.5, noise). Timed
+on their own, the added paths cost 0.24 µs per `normalise_status` call (the legend check: 334 →
+574 ns over the archive's 87,967 status texts, about 0.1% of a form's read) and 0.32 µs per row
+for `register_status`.
 `write_output` is the long tail and there is no cheap fix — the stalls are inside
 `workbook.save()`, so yielding the GIL around the fill loop does nothing (tried: worst stall
 483 ms → 416 ms, and it cost a second on the write). `process_files` logs `Writing N row(s)…` and
@@ -558,6 +563,14 @@ counts it as missing, not wrong. **The register marks it Missing** (owner's deci
 *Missing values* under `_flags`). (A lowercase `pass` beside the ECG box, identical on every form, is
 template text — not a verdict to recover.)
 
+**A printed legend is not a verdict** (2.0.4). The 2026 Pipette forms print `Pass / Fail /Limited
+non / Limited fail / calibrated` right of an empty Status box; the caption `Status:` spans F29:G29,
+so the label search from G reached it, and `normalise_status` read it as "limited fail" because it
+contains those words — 18 forms, and the phone app showed them as Limited fail. Text naming two or
+more outcomes split by `/` now classifies as nothing, so those boxes come out empty (and the
+register marks them Missing). A normal push never clears a stored status (empty ones are omitted),
+so the 18 records already in the app keep "Limited fail" until corrected there.
+
 ### The caption check: a layout must be verified, not just plausible
 
 `plausible()` asks whether values *look* right, and a shifted layout can pass it. On an older Baby
@@ -733,6 +746,14 @@ found, the cell filled amber, with an Excel note saying why (`_mark_for_checking
 is untouched. The one exception is a printed **caption** in the Status box (`Safety:`), which since
 2.0.1 is left out plainly — see *The Status box moves on its own*.
 
+**"No known layout" is only said when it is true** (2.0.4). `plausible()` refuses a record whose
+Model and Serial No. are both placeholders, so a form that simply says `N.A` for both fell through
+every layout to `"none"` and was told its layout did not fit — on the 2 Dental X-ray forms where the
+owner saw it, the map read every box right. When the opening tab's captions confirm the map
+(`_best_layout` sets `_map_confirmed`) and both say N.A (`_SAYS_NA`), `_flags_for` marks nothing:
+N.A is the engineer's answer here as everywhere. The read itself is unchanged (`"none"`, and the
+export's `layoutUsed` with it); real misses and blank forms keep their note.
+
 This lives in an underscore side-channel, `record["_flags"]` — the same pattern as `_group` and
 `_source`, which never reaches `FIELDS`. **The marks never reach the Firebase export**: it reads
 only named fields (`record.get("S.N")` …), and `_settle_status` still blanks a non-verdict in the
@@ -866,8 +887,20 @@ uses, so a long register adds no style records.
 
 - **Rows are 21.75 pt; a row with two serials is 30 pt** with its S.N cell wrapped — otherwise Excel
   shows the second serial only after a double-click. `has_two_serials` decides it from the record
-  (an `S.N2`), never from the text: across the archive the only serial cells with a line break are
-  the 4,704 Ultrasound / X-ray / Dental X-ray / C-Arm forms that have one.
+  (an `S.N2`, and a serial above it), never from the text: across the archive the only serial cells
+  with a line break are the Ultrasound / X-ray / Dental X-ray / C-Arm / Mobile X-ray forms that
+  have one.
+- **The S.N cell follows the form** (owner's rule, 2.0.4): each box as written, `N.A` included —
+  `SN` / `(tube)`, `N.A` / `(tube)`, `SN` / `(N.A)` — and an empty serial box leaves `(tube)` alone
+  on one line rather than under a blank one. Nothing is substituted: a tube serial is never moved
+  up into the device's place.
+- **Status is written one way** (`register_status`, owner's decision, 2.0.4): in any capitals, or
+  with one of the archive's slips (`Passs`, `Caibrated`, `LIMITEDNON`, `Pass.`, `Failed` …), the
+  five verdicts are written `Pass`, `Fail`, `Limited non`, `Limited Fail`, `Calibrated`, and `Fail`
+  and `Limited Fail` are bold. Anything else — `Limited`, `limited non safety`, `0` — is exactly as
+  typed. Register only: the export already sends the normalised outcomes.
+- **B1 carries the credit** too (`Generated by Calist — Ahmed Gehad · email`, small grey italic),
+  beside the signature line under the data — only where the template leaves B1 free.
 - **The filter and print area follow the register** (`_follow_the_table`): the template fixed them
   at A3:I84 and A1:I43, so the filter took in the signature on a short register (a sort could pull
   it into the data) and printing stopped at device 40. The print area runs through the signature.
@@ -951,7 +984,12 @@ owner renamed a batch on 2026-10-02**: `Protein Analyzer`, `Tourniquet`, Title C
 that lacked it, `Holter Machine`, `Patient Thermometer`, `Pulse Oximeter` (was `SPO2`), and the
 monitor's second row `NIBP Module` (`ALLOWED_SHARED_SN_PAIRS` follows it). Proven on the 700 archive
 files not named for a device — the only ones where a name is compared with the form's stated type
-(`names_device`): every record identical apart from the new wording.
+(`names_device`): every record identical apart from the new wording. **On 2026-10-10** `BF` became
+`X-ray (Conventional)` (every BF form's own Type box says Conventional, and the master code list
+agrees); the same 700 files: no file matches a different device, one X-ray row's wording changes.
+`BE` (Mobile X-ray) now reads its tube serial at K20 like the other X-rays — its hand-written map
+never had it, on the 181 of 233 forms that fill it in (the archive audit: 181 MISSING -> OK, 0
+regressions).
 
 **`AN` is named per form** (`named_by_device_type`, `name_from_device_type`). It was `Thermo`, and
 its 655 forms are infrared, digital, room and fridge thermometers alike. By the owner's decision the

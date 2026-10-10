@@ -119,7 +119,10 @@ DEVICE_CONFIGS: dict[str, dict] = {
            # the issue date at F14 and F15 empty. Only read when F15 holds no
            # date — see _pick_field_cells.
            "field_alternates": {"Date": ["F16", "F14"]}},
-    "BF": {"device_name": "X-ray",      "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
+    # Every BF form's own Type box says Conventional, and the site's master code
+    # list calls it "X-Ray, Conventional" (owner's decision, 2.0.4).
+    "BF": {"device_name": "X-ray (Conventional)",
+           "cells": form(18, "J27", extra={"S.N2": "K20", "Location": "K22"})},
     # Was "X-ray ()" — an unfinished edit this file carried a TODO about. The
     # site's master code list settles it: CA is the dental x-ray. It shares BF's
     # layout, which is why it was copied from it in the first place.
@@ -290,13 +293,16 @@ DEVICE_CONFIGS: dict[str, dict] = {
             "Status": "K26",
         },
     },
-    # Location two rows lower than standard, and the status is over in J.
+    # Location two rows lower than standard, and the status is over in J. The
+    # tube serial sits at K20, as on the other X-rays (2.0.4: it was never read,
+    # on the 181 of 233 forms that fill it in).
     "BE": {
         "device_name": "X-ray (Mobile)",
         "cells": {
             "Manufacturer": "E20",
             "Model": "E18",
             "S.N": "K18",
+            "S.N2": "K20",
             "Location": "K22",
             "Date": "E14",
             "Status": "J27",

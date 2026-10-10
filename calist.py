@@ -88,7 +88,7 @@ TEMPLATE_NAME = "Device List.xlsx"
 #: The single source of the version number. calist.spec reads it straight out
 #: of this file to stamp the executable's Windows version resource, so the
 #: About box and the file's Properties tab cannot drift apart.
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 
 #: Authorship. Written into every register and into the workbook's document
 #: properties, so the credit travels with the file rather than living only in
@@ -1416,6 +1416,13 @@ def normalise_status(raw: str | None) -> str | None:
     text = _TYPOS.get(text, text)
     if not text:
         return None
+    # A printed legend lists the outcomes — "Pass / Fail /Limited non / Limited
+    # fail / calibrated" sits beside the Status box on 2026 Pipette forms — and
+    # names several verdicts, so it is none of them. Read as "limited fail" (it
+    # contains those words), it stood in for 18 empty boxes.
+    parts = [part for part in text.split("/") if part.strip()]
+    if len(parts) > 1 and sum(1 for part in parts if normalise_status(part)) > 1:
+        return None
     if text in _PASS_VALUES:
         return STATUS_PASS
     if text in _CALIBRATED_VALUES:
@@ -2138,6 +2145,10 @@ def _looks_like_date(text: str) -> bool:
                 or _EXCEL_DATE_NUMBER.match(text))
 
 
+#: How the forms write "not available" (N.A, NA, N/A, any case).
+_SAYS_NA = {"n.a", "na", "n/a"}
+
+
 def _flags_for(record: Record, how: str, cells: dict[str, str],
                config: dict | None = None) -> dict:
     flags: dict[str, dict] = {}
@@ -2147,7 +2158,16 @@ def _flags_for(record: Record, how: str, cells: dict[str, str],
             flags[field] = {"show": None, "reason": reason}
 
     identity = ("Manufacturer", "Model", "S.N", "Location", "Date")
-    if how == "none":
+    says_na = (record.get("_map_confirmed")
+               and clean(record.get("Model")).lower() in _SAYS_NA
+               and clean(record.get("S.N")).lower() in _SAYS_NA)
+    if how == "none" and says_na:
+        # The form's captions confirm the boxes; it simply says N.A for both
+        # Model and Serial No. — an engineer's answer, not a layout that failed
+        # to fit (owner's decision, 2.0.4). plausible() still refuses the
+        # record, which is what keeps a cover sheet of N.A from "rescuing".
+        pass
+    elif how == "none":
         for field in identity:
             if clean(record.get(field)):
                 flag(field, "No known layout fits this form — this is whatever "
@@ -2817,6 +2837,10 @@ def _best_layout(source, cells: dict[str, str], config: dict,
         return found, f"labels on {name!r}"
     if opening_sheet is not None:
         source.select_sheet(opening_sheet)
+    if map_confirmed:
+        # The form's own captions place these boxes: the map fits, and only
+        # its values let it down. _flags_for tells the two apart.
+        record["_map_confirmed"] = True
     return record, "none"
 
 
@@ -3061,9 +3085,13 @@ def extract_records(
             record["Code"] = repair.name
             record["Device"] = record.pop("_device", "") or config["device_name"]
 
-            # Devices with a probe or tube carry a second serial; show both.
+            # Devices with a probe or tube carry a second serial; show both,
+            # each exactly as the form writes it ("N.A" included). An empty
+            # serial box leaves the tube serial alone on the line (owner's
+            # rule, 2.0.4) rather than under a blank one.
             if record.get("S.N2", "").strip():
-                record["S.N"] = f"{record['S.N']}\n({record['S.N2']})"
+                serial, tube = record.get("S.N", ""), f"({record['S.N2']})"
+                record["S.N"] = f"{serial}\n{tube}" if serial.strip() else tube
 
             # Sort keys, so ordering never has to re-derive the code tokens.
             record["_group"] = record["Code"]
@@ -3263,11 +3291,35 @@ def has_two_serials(record: Record) -> bool:
     """Whether a register row shows two serial numbers in its S.N cell.
 
     Decided by the data, not by the text's length: extract_records writes
-    "SN1\\n(SN2)" for exactly the records whose form has a second serial — an
-    ultrasound probe, an X-ray tube. Measured over the archive, those are the
-    only serial cells with a line break in them.
+    "SN1\\n(SN2)" for exactly the records whose form has both a serial and a
+    second serial — an ultrasound probe, an X-ray tube — and "(SN2)" alone,
+    one line, when the serial box is empty. Measured over the archive, those
+    are the only serial cells with a line break in them.
     """
-    return bool(str(record.get("S.N2") or "").strip())
+    return (bool(str(record.get("S.N2") or "").strip())
+            and "\n" in str(record.get("S.N") or ""))
+
+
+#: How the register spells a verdict (owner's decision, 2.0.4): in any
+#: capitals, or with one of the slips the archive holds, it is written the one
+#: way. Anything else — "Limited", "limited non safety", "0" — stays exactly
+#: as the form wrote it.
+_REGISTER_STATUS = {"pass": "Pass", "fail": "Fail", "calibrated": "Calibrated",
+                    "limited non": "Limited non", "limited fail": "Limited Fail"}
+_REGISTER_SLIPS = {"passs": "pass", "psss": "pass", "failed": "fail",
+                   "caibrated": "calibrated", "limeted non": "limited non",
+                   "limitednon": "limited non", "limitedfail": "limited fail"}
+#: Verdicts written in bold, so a failure stands out in a long register.
+BOLD_STATUSES = frozenset({"Fail", "Limited Fail"})
+
+
+def register_status(text: object) -> str:
+    """The Status as the register writes it: "PASS", "pass" and "Passs" are
+    all "Pass"; anything that is not one of the five verdicts is untouched."""
+    raw = "" if text is None else str(text)
+    key = " ".join(raw.lower().split()).rstrip(" .")
+    key = _REGISTER_SLIPS.get(key, key)
+    return _REGISTER_STATUS.get(key, raw)
 
 
 def is_missing(value: object) -> bool:
@@ -3355,8 +3407,14 @@ def write_output(records: list[Record], template_file: str, output_path: Path) -
                 value = record.get(name, "")
                 if mark and mark.get("show") is not None:
                     value = mark["show"]
+                if name == "Status":
+                    value = register_status(value)
                 cell = sheet.cell(row=row, column=TEMPLATE_START_COL + offset,
                                   value=value)
+                if name == "Status" and value in BOLD_STATUSES:
+                    bold = copy_of(cell.font)
+                    bold.bold = True
+                    cell.font = bold
                 if name == "S.N":
                     # Text, so a serial someone types over later keeps its
                     # leading zero rather than turning into a number.
@@ -3447,10 +3505,18 @@ def stamp_attribution(sheet, workbook, record_count: int) -> int:
     """
     row = TEMPLATE_START_ROW + record_count + 1
     made_on = datetime.now().strftime("%d/%m/%Y")
+    quiet = Font(italic=True, size=9, color="FF808080")
 
     cell = sheet.cell(row=row, column=TEMPLATE_START_COL)
     cell.value = f"Generated by Calist — {ATTRIBUTION} — {made_on}"
-    cell.font = Font(italic=True, size=9, color="FF808080")
+    cell.font = quiet
+
+    # The same credit at the top, above the table (owner's request, 2.0.4) —
+    # only where the template leaves B1 free, so its own text is never lost.
+    top = sheet.cell(row=1, column=TEMPLATE_START_COL)
+    if top.value in (None, ""):
+        top.value = f"Generated by Calist — {ATTRIBUTION}"
+        top.font = quiet
 
     workbook.properties.creator = ATTRIBUTION
     workbook.properties.lastModifiedBy = ATTRIBUTION
