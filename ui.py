@@ -31,6 +31,7 @@ import customtkinter as ctk
 
 import access
 import calist
+import runlog
 import theme
 import ui_state
 from calist import (ATTRIBUTION, AUTHOR_EMAIL, AUTHOR_NAME, CANCELLED, COPY,
@@ -197,6 +198,10 @@ SETTINGS_FILE = (Path(os.environ.get("APPDATA") or Path.home())
 
 #: How often an open window re-checks whether the calendar date has moved on.
 NEW_DAY_CHECK_MS = 30_000
+
+#: When the run log first looks for work: well after the first paint, and
+#: whether or not the lock is up. It only starts a thread; see runlog.py.
+RUNLOG_START_MS = 15_000
 
 
 #: The mark's renditions, drawn by docs/make_icon.py: the lock screen's 48
@@ -840,6 +845,8 @@ class LockPanel(ctk.CTkFrame):
 
         wait = access.cooldown_remaining(self.state_dict)
         if wait:
+            # One run-log row per cooldown started. Never the digits.
+            runlog.record_lockout(access.failure_count(self.state_dict), wait)
             self._tick_cooldown()
         else:
             left = access.attempts_left(self.state_dict)
@@ -951,6 +958,17 @@ class App(_Root):
         # Scheduled, not called: the initial unlock belongs to run(), and
         # checking here as well would raise a second prompt behind the first.
         self.after(NEW_DAY_CHECK_MS, self._watch_for_new_day)
+        self.after(RUNLOG_START_MS, runlog.start)
+
+    def report_callback_exception(self, exc, val, tb) -> None:
+        """Tk's own report, and a row in the run log's Crashes tab.
+
+        Every after(), bind and command callback that raises ends up here. In
+        the windowed exe Tk prints it to a stderr that does not exist, so until
+        now nobody saw these at all. The run log only queues it on this thread.
+        """
+        runlog.record_crash("tk", exc, val, tb)
+        super().report_callback_exception(exc, val, tb)
 
     def _apply_icon(self) -> None:
         """Put the Calist mark on the window and the taskbar.
@@ -1441,8 +1459,8 @@ class App(_Root):
                      anchor="w", font=body_font(12)).grid(row=1, column=0, sticky="w")
         ctk.CTkLabel(about, text=AUTHOR_EMAIL, text_color=MUTED, anchor="w",
                      font=body_font(12)).grid(row=2, column=0, sticky="w")
-        ctk.CTkLabel(about, text="Every register Calist builds is signed with "
-                     "this credit.", text_color=FAINT, anchor="w", justify="left",
+        ctk.CTkLabel(about, text="Every register is signed with this credit; "
+                     "usage is reported.", text_color=FAINT, anchor="w", justify="left",
                      wraplength=self.PANEL_W - 2 * pad, font=body_font(12)
                      ).grid(row=3, column=0, sticky="w", pady=(6, 0))
 
@@ -1704,6 +1722,7 @@ class App(_Root):
 
         def worker() -> None:
             batch: list[FileOutcome] = []
+            runlog.hold()                 # a network walk: no sending meanwhile
             try:
                 for folder in folders:
                     for filepath in calist.find_source_files(folder, cancel):
@@ -1717,6 +1736,9 @@ class App(_Root):
                         break
             except Exception as exc:               # never die silently
                 calist.log.error("Could not finish scanning: %s", exc)
+                runlog.record_crash("scan", type(exc), exc, exc.__traceback__)
+            finally:
+                runlog.release()
             if batch:
                 self._events.put(("scan", batch, 0, 0))
             self._events.put(("scanned", cancel.is_set(), 0, 0))
@@ -2508,6 +2530,10 @@ class App(_Root):
         output_dir = self._save_folder() or None
         turbo = ui_state.is_turbo(len(files))
         self._turbo_mode = turbo
+        # The run log's "Saved to" when the save fails: resolve_output_path's
+        # own rule, worked out here so the worker needs nothing from Tk.
+        target = str((Path(output_dir) if output_dir else Path(files[0]).parent)
+                     / calist.OUTPUT_NAME) if files else ""
 
         total = len(files)
         cancel = threading.Event()
@@ -2535,16 +2561,27 @@ class App(_Root):
                 self._events.put(("file", outcome, index, total))
 
         def worker() -> None:
+            runlog.hold()                 # the run log sends nothing meanwhile
             try:
-                result = calist.process_files(
-                    files, template, deduplicate=deduplicate,
-                    real_forms_only=forms_only, output_dir=output_dir,
-                    on_file=on_file, cancel=cancel, quiet=turbo,
-                )
-            except Exception as exc:                   # never die silently
-                calist.log.exception("Unexpected failure: %s", exc)
-                result = RunResult(error=str(exc))
-            self._events.put(("done", result, 0, 0))
+                started = time.perf_counter()
+                try:
+                    result = calist.process_files(
+                        files, template, deduplicate=deduplicate,
+                        real_forms_only=forms_only, output_dir=output_dir,
+                        on_file=on_file, cancel=cancel, quiet=turbo,
+                    )
+                except Exception as exc:               # never die silently
+                    calist.log.exception("Unexpected failure: %s", exc)
+                    runlog.record_crash("build", type(exc), exc, exc.__traceback__)
+                    result = RunResult(error=str(exc))
+                took = time.perf_counter() - started
+                self._events.put(("done", result, 0, 0))
+                # Only after the put: the result is on screen whatever this
+                # costs. The window never changes result, so reading it here
+                # races with nothing.
+                runlog.record_build(result, target, took)
+            finally:
+                runlog.release()
 
         threading.Thread(target=worker, daemon=True).start()
         self._drain()
@@ -2816,10 +2853,16 @@ def run() -> None:
 
     # One window, shown once, never withdrawn — see LockPanel for why that
     # matters with CustomTkinter.
-    app = App()
-    if not access.is_unlocked_today(app._settings):
-        app.show_lock()
-    app.mainloop()
+    try:
+        app = App()
+        if not access.is_unlocked_today(app._settings):
+            app.show_lock()
+        app.mainloop()
+    except Exception as exc:
+        # Kept for the next launch to send; the error still reaches the
+        # bootloader's dialog exactly as before.
+        runlog.record_crash("startup", type(exc), exc, exc.__traceback__)
+        raise
 
 
 if __name__ == "__main__":

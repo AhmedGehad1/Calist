@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import sys
 import tempfile
 import time
@@ -357,6 +358,11 @@ def main() -> int:
 
     import customtkinter as ctk
     from PIL import ImageGrab
+
+    # The screenshots run a real App: an owner's CALIST_RUNLOG_URL left in the
+    # shell must not turn invented rounds into run-log rows.
+    for name in ("CALIST_RUNLOG_URL", "CALIST_RUNLOG_TOKEN"):
+        os.environ.pop(name, None)
 
     import access
     import calist
