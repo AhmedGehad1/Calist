@@ -746,8 +746,9 @@ def is_ack(reply, sent_id: str) -> bool:
 
 
 def is_rejection(reply, sent_id: str) -> bool:
-    """The script will never take this record (bad token, unknown kind): keep
-    it and it would block every record behind it."""
+    """The script refused this record. For a malformed one (an unknown kind,
+    a bad id) that is final, and keeping it would block every record behind
+    it; a refused token is a setting to fix instead (see _send)."""
     return (isinstance(reply, dict) and reply.get("ok") is False
             and reply.get("reject") is True and reply.get("id") in (sent_id, None))
 
@@ -945,10 +946,11 @@ def _failed_count() -> int:
 
 
 def _send(transport: _Transport, folder: str, name: str) -> str:
-    """One record, start to finish. "failed" means try again later; anything
-    else means it is settled: "sent", "duplicate" (sent before, the receipt
-    was lost), or gone for good: "gone" (another Calist sent it), "damaged",
-    "refused" (the script will never take it)."""
+    """One record, start to finish. "failed" means try again later (a wrong
+    token included); anything else means it is settled: "sent", "duplicate"
+    (sent before, the receipt was lost), or gone for good: "gone" (another
+    Calist sent it), "damaged", "refused (why)" (the script will never take
+    this record)."""
     path = os.path.join(folder, name)
     kind = _kind_of(name)
     try:
@@ -981,11 +983,16 @@ def _send(transport: _Transport, folder: str, name: str) -> str:
         _remove(path)
         _acked(health)
         return "duplicate" if reply.get("dup") else "sent"
-    if is_rejection(reply, record["id"]):
+    if is_rejection(reply, record["id"]) and reply.get("why") != "token":
         if _remove(path):
             _count_dropped({kind: 1})
-        return "refused"
-    if not why and isinstance(reply, dict):        # the script's own reason
+        return f"refused ({reply.get('why') or 'no reason given'})"
+    if is_rejection(reply, record["id"]):
+        # A token the script does not know is a setting to fix (TOKENS in
+        # Script Properties, or the build's secret), not a bad record: keep
+        # it, and everything behind it, until the token is right.
+        why = "the script refused the token"
+    elif not why and isinstance(reply, dict):      # the script's own reason
         why = f"script: {reply.get('why') or 'no receipt'}"
     _failed(why or "not a receipt")
     return "failed"
@@ -1033,10 +1040,26 @@ def masked(url: str) -> str:
     return url.replace(ident, f"{ident[:6]}...{ident[-4:]}")
 
 
+def token_test(transport: _Transport) -> str:
+    """Whether the script knows this token, without writing a row: a record
+    whose install id is not one is refused either way, and the script checks
+    the token first, so its reason says which. "accepted", or what went wrong.
+    Code.gs keeps that order for this; see its doPost."""
+    probe = {"v": SCHEMA, "kind": "launch", "id": os.urandom(16).hex(),
+             "token": transport.token, "at": _iso(time.time()),
+             "pc": {"install": "not-an-install"}, "data": {}}
+    reply, why = transport.post(json.dumps(probe).encode("ascii"))
+    if isinstance(reply, dict) and reply.get("reject") is True:
+        return {"install": "accepted", "token": "REFUSED by the script"}.get(
+            reply.get("why"), f"unclear: the script said {reply.get('why')!r}")
+    return f"could not be tested: {why or 'an unexpected answer'}"
+
+
 def check() -> int:
-    """Where this PC sends, whether the web app answers, and what happens to
-    each record waiting, sent now in the foreground. For the owner, when the
-    sheet stays empty. Prints no token. 0 when everything waiting arrived."""
+    """Where this PC sends, whether the web app answers, whether it knows
+    this token, and what happens to each record waiting, sent now in the
+    foreground. For the owner, when the sheet stays empty. Prints no token.
+    0 when the setup works and everything waiting arrived."""
     target = endpoint()
     if target is None:
         missing = ("CALIST_RUNLOG_TOKEN is not set (the TOKENS value from Script\n"
@@ -1056,7 +1079,6 @@ def check() -> int:
     if ident and not ident.startswith("AKfy"):
         print("          This does not look like a deployment id (they start AKfy):\n"
               "          the Script ID from the Settings page is a different thing.")
-    print("token     set")
     print(f"waiting   {len(names)} record(s) in {folder}")
     if state:
         print(f"state     {json.dumps(state)}")
@@ -1074,14 +1096,37 @@ def check() -> int:
               "          it again from Deploy > Manage deployments. A sign-in page means\n"
               "          'Who has access' is not 'Anyone'.")
         return 1
+    verdict = token_test(transport)
+    if verdict != "accepted":
+        print(f"token     {verdict}")
+        if "PASTE" in token.upper():
+            print("          It is still the placeholder text from the instructions.")
+        print("          Set CALIST_RUNLOG_TOKEN to the TOKENS value in Script Properties\n"
+              "          (Apps Script > Project Settings), exactly. Nothing was sent.")
+        return 1
+    print("token     accepted by the script")
+    arrived = dropped = 0
     for name in names:
         outcome = _send(transport, folder, name)
-        detail = f": {(_state or {}).get('last_error', '')}" if outcome == "failed" else ""
-        print(f"{name}  {outcome}{detail}")
         if outcome == "failed":
+            error = (_state or {}).get("last_error", "")
+            print(f"{name}  not sent: {error}")
+            if error == "the script refused the token":
+                print("          CALIST_RUNLOG_TOKEN does not match TOKENS in Script Properties\n"
+                      "          (Project Settings). The records are kept until it does.")
             return 1
-    print("all sent" if names else
-          "nothing waiting: start Calist or build a register, then run this again")
+        print(f"{name}  {outcome}")
+        if outcome in ("sent", "duplicate"):
+            arrived += 1
+        elif outcome != "gone":
+            dropped += 1
+    if not names:
+        print("nothing waiting: start Calist or build a register, then run this again")
+    elif dropped:
+        print(f"{arrived} sent, {dropped} dropped (the script will never take them)")
+        return 1
+    else:
+        print("all sent")
     return 0
 
 

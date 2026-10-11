@@ -104,6 +104,9 @@ function doPost(e) {
     if (rec.v !== SCHEMA) return reject_(id, 'schema');
     const tabName = TAB_OF_KIND[rec.kind];
     if (!tabName) return reject_(id, 'kind');
+    // The token before the install id, always: `python runlog.py --check`
+    // sends a bad install id to learn whether the token is known (refused
+    // for 'install' means it is), and that way never writes a row.
     if (!tokenOk_(rec.token)) return reject_(id, 'token');
     const pc = rec.pc || {};
     if (typeof pc.install !== 'string' || !INSTALL_ID.test(pc.install)) {

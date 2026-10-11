@@ -503,9 +503,17 @@ class FakeWebApp:
         if self.mode == "retry":
             return {"ok": False, "retry": True, "id": rid, "why": "busy",
                     "cfg": self.settings}
-        if self.reject_next or record.get("token") != TOKEN:
-            self.reject_next = max(0, self.reject_next - 1)
-            return {"ok": False, "reject": True, "id": rid, "cfg": self.settings}
+        if record.get("token") != TOKEN:          # Code.gs: the token first ...
+            return {"ok": False, "reject": True, "id": rid, "why": "token",
+                    "cfg": self.settings}
+        install = (record.get("pc") or {}).get("install", "")
+        if not re.fullmatch(r"[0-9a-f]{16}", str(install)):       # ... then this
+            return {"ok": False, "reject": True, "id": rid, "why": "install",
+                    "cfg": self.settings}
+        if self.reject_next:                      # a record the script can't take
+            self.reject_next -= 1
+            return {"ok": False, "reject": True, "id": rid, "why": "kind",
+                    "cfg": self.settings}
         if rid in self.rows:
             return {"ok": True, "id": rid, "dup": True, "pc": 1, "cfg": self.settings}
         self.rows[rid] = record
@@ -609,6 +617,38 @@ def test_the_check_sends_what_is_waiting_and_says_so(webapp, capsys):
     assert TOKEN not in out                       # the token is never printed
 
 
+def test_the_check_tests_the_token_before_sending_anything(webapp, monkeypatch,
+                                                          capsys):
+    """The owner's second try: the token was the instructions' placeholder."""
+    monkeypatch.setenv("CALIST_RUNLOG_TOKEN", "PASTE-YOUR-TOKENS-VALUE-HERE")
+    runlog.record_build(saved_result(), "", 1.0)
+
+    assert runlog.check() == 1
+    out = capsys.readouterr().out
+    assert "token     REFUSED by the script" in out
+    assert "still the placeholder" in out and "Nothing was sent" in out
+    assert len(runlog.outbox_names()) == 1 and webapp.rows == {}
+
+
+def test_the_check_proves_the_token_with_nothing_waiting_and_writes_no_row(
+        webapp, capsys):
+    assert runlog.check() == 0
+    out = capsys.readouterr().out
+    assert "token     accepted by the script" in out and "nothing waiting" in out
+    assert webapp.rows == {}
+
+
+def test_the_check_never_calls_a_refusal_sent(webapp, capsys):
+    """It once printed 'all sent' after two refusals."""
+    webapp.reject_next = 1
+    runlog.record_build(saved_result(), "", 1.0)
+
+    assert runlog.check() == 1
+    out = capsys.readouterr().out
+    assert "refused (kind)" in out and "0 sent, 1 dropped" in out
+    assert "all sent" not in out
+
+
 def test_the_check_names_an_address_that_is_no_deployment(webapp, capsys):
     """What the owner's first try hit: a 404 means the address is not a live
     Web app deployment, and the records stay for the right one."""
@@ -661,6 +701,26 @@ def test_a_refused_record_is_dropped_and_counted_then_reported(webapp):
     record = next(iter(webapp.rows.values()))
     assert record["health"]["dropped"] == {"build": 1}
     assert runlog._load_state()["dropped"] == {}
+
+
+def test_a_wrong_token_keeps_the_records_until_it_is_right(webapp, monkeypatch):
+    """What the owner's first real check hit: refused for the token, both
+    records deleted. A token is a setting to fix, not a bad record."""
+    monkeypatch.setenv("CALIST_RUNLOG_TOKEN", "not-the-token")
+    runlog.record_build(saved_result(), "", 1.0)
+    runlog.kick()
+
+    assert wait_for(lambda: (runlog._state or {}).get("last_error")
+                    == "the script refused the token")
+    assert len(runlog.outbox_names()) == 1 and webapp.rows == {}
+
+    runlog._reset()                                    # the next start, token fixed
+    monkeypatch.setenv("CALIST_RUNLOG_TOKEN", TOKEN)
+    runlog.kick()
+    assert wait_for(settled)
+    record = next(iter(webapp.rows.values()))
+    assert record["health"]["dropped"] == {}           # nothing was lost
+    assert record["health"]["last_error"].startswith("the script refused the token ×")
 
 
 def test_the_sheet_can_stop_every_copy_and_it_lasts_a_restart(webapp, tmp_path):

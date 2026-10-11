@@ -17,7 +17,7 @@ python calist.py --inspect FORM # dump what each mapped cell of one form reads
 python runlog.py --check        # usage log: which address, does it answer; sends what waits
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (676 tests)
+python -m pytest                            # the whole suite (680 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
@@ -448,6 +448,11 @@ noticed. Load-bearing:
   Sheets' text marker (no formula injection), and a `STOP` switch that every copy obeys for
   `STOP_HOURS`. Edit the **same** deployment when changing the script; a new deployment strands
   every shipped exe on the old URL.
+- **A refused token keeps the records; any other refusal drops them.** A token the script
+  does not know is a setting to fix (TOKENS empty or mistyped — the owner's first real run
+  lost two records that way before this rule), not a bad record. `--check` tests the token
+  without writing a row by sending an invalid install id: Code.gs checks the token **before**
+  the install id, so the refusal's reason says which. Keep that order.
 - **No registry read.** The PC's number comes from a random install id in
   `%LOCALAPPDATA%\Calist\install-id`; reading `MachineGuid` and sending it with user and PC names
   is the fingerprinting pattern antivirus models hunt for.
