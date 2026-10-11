@@ -14,9 +14,10 @@ Firestore backend of the MedCal Pro / Calystra phone app.
 ```powershell
 python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
+python runlog.py --check        # usage log: which address, does it answer; sends what waits
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (668 tests)
+python -m pytest                            # the whole suite (674 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor

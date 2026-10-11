@@ -792,20 +792,38 @@ class _Transport:
     def post(self, body: bytes) -> tuple[dict | None, str]:
         """(reply, why it is not one). urllib turns the POST into a GET when
         Google redirects it with a 302, which is exactly what is needed."""
-        request = self._request(self.url, data=body, headers={
+        return self._exchange(self._request(self.url, data=body, headers={
             "Content-Type": "application/json",
-            "User-Agent": f"Calist/{self.version}"})
+            "User-Agent": f"Calist/{self.version}"}))
+
+    def health(self) -> tuple[dict | None, str]:
+        """The web app's doGet: a GET that writes nothing (for --check)."""
+        return self._exchange(self._request(self.url, headers={
+            "User-Agent": f"Calist/{self.version}"}))
+
+    def _exchange(self, request) -> tuple[dict | None, str]:
         try:
             with self._opener.open(request, timeout=TIMEOUT_S) as response:
                 status = response.status
                 raw = response.read(MAX_REPLY + 1)
         except self._http_error as exc:
             exc.close()
-            return None, f"HTTP {exc.code}"
+            # Which host refused matters: a 404 from script.google.com is an
+            # address that is not a live deployment.
+            where = getattr(exc, "url", None) or getattr(exc, "filename", None)
+            return None, f"HTTP {exc.code} from {_host(where)}"
         except Exception as exc:
             return None, type(exc).__name__
         reply = read_reply(status, raw)
         return reply, "" if reply is not None else f"not a receipt (HTTP {status})"
+
+
+def _host(url) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(str(url)).hostname or "?"
+    except ValueError:
+        return "?"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -854,7 +872,7 @@ def _run() -> None:
                 _nap.wait(backoff(_failed_count()))
                 continue
             _wait_until_idle()               # the imports took a moment of the GIL
-        if _send(transport, folder, names[0]):
+        if _send(transport, folder, names[0]) != "failed":
             _nap.wait(max(MIN_INTERVAL_S, _interval))
         else:
             _nap.wait(backoff(_failed_count()))
@@ -924,9 +942,11 @@ def _failed_count() -> int:
         return 1
 
 
-def _send(transport: _Transport, folder: str, name: str) -> bool:
-    """One record, start to finish. True when it is settled: received, or
-    gone for good (another Calist sent it, damaged, refused by the script)."""
+def _send(transport: _Transport, folder: str, name: str) -> str:
+    """One record, start to finish. "failed" means try again later; anything
+    else means it is settled: "sent", "duplicate" (sent before, the receipt
+    was lost), or gone for good: "gone" (another Calist sent it), "damaged",
+    "refused" (the script will never take it)."""
     path = os.path.join(folder, name)
     kind = _kind_of(name)
     try:
@@ -936,14 +956,14 @@ def _send(transport: _Transport, folder: str, name: str) -> bool:
                 and _RECORD_ID.fullmatch(str(record.get("id", "")))):
             raise ValueError("not a record")
     except FileNotFoundError:
-        return True
+        return "gone"
     except ValueError:                             # damaged: it can never be sent
         if _remove(path):
             _count_dropped({kind: 1})
-        return True
+        return "damaged"
     except OSError as exc:                         # held for a moment (antivirus)
         _failed(type(exc).__name__)
-        return False
+        return "failed"
     health = _health()
     try:
         payload = dict(record, token=transport.token, health=health)
@@ -952,19 +972,21 @@ def _send(transport: _Transport, folder: str, name: str) -> bool:
     except (TypeError, ValueError):                # cannot be sent as it is
         if _remove(path):
             _count_dropped({kind: 1})
-        return True
+        return "damaged"
     reply, why = transport.post(body)
     _apply_settings(reply)
     if is_ack(reply, record["id"]):
         _remove(path)
         _acked(health)
-        return True
+        return "duplicate" if reply.get("dup") else "sent"
     if is_rejection(reply, record["id"]):
         if _remove(path):
             _count_dropped({kind: 1})
-        return True
+        return "refused"
+    if not why and isinstance(reply, dict):        # the script's own reason
+        why = f"script: {reply.get('why') or 'no receipt'}"
     _failed(why or "not a receipt")
-    return False
+    return "failed"
 
 
 def _reset() -> None:
@@ -993,3 +1015,72 @@ def _reset() -> None:
     _app = None
     _state = None
     _closing = False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# python runlog.py --check
+# ──────────────────────────────────────────────────────────────────────────────
+
+def masked(url: str) -> str:
+    """The address with most of its deployment id hidden: enough to compare
+    with the Web app URL, not enough to use."""
+    match = re.search(r"/s/([\w-]+)/exec$", url)
+    if not match or len(match.group(1)) <= 12:
+        return url
+    ident = match.group(1)
+    return url.replace(ident, f"{ident[:6]}...{ident[-4:]}")
+
+
+def check() -> int:
+    """Where this PC sends, whether the web app answers, and what happens to
+    each record waiting, sent now in the foreground. For the owner, when the
+    sheet stays empty. Prints no token. 0 when everything waiting arrived."""
+    target = endpoint()
+    if target is None:
+        print("No address. In this window, set CALIST_RUNLOG_URL to the web app's\n"
+              "Web app URL (Deploy > Manage deployments; it ends in /exec) and\n"
+              "CALIST_RUNLOG_TOKEN to the TOKENS value, then run this again.")
+        return 2
+    url, token = target
+    folder = _outbox_dir()
+    names = outbox_names(folder)
+    state = _load_state()
+    print(f"address   {masked(url)}")
+    ident = (re.search(r"/s/([\w-]+)/exec$", url) or [None, ""])[1]
+    if ident and not ident.startswith("AKfy"):
+        print("          This does not look like a deployment id (they start AKfy):\n"
+              "          the Script ID from the Settings page is a different thing.")
+    print(f"token     {'set' if token else 'NOT SET'}")
+    print(f"waiting   {len(names)} record(s) in {folder}")
+    if state:
+        print(f"state     {json.dumps(state)}")
+    try:
+        transport = _Transport(url, token)
+    except Exception as exc:
+        print(f"cannot connect at all: {type(exc).__name__}: {exc}")
+        return 1
+    reply, why = transport.health()
+    if isinstance(reply, dict) and reply.get("service") == "calist-runlog":
+        print("web app   answers: the address is right and open to anyone")
+    else:
+        print(f"web app   does not answer: {why or 'an answer that is not the script'}")
+        print("          A 404 means the address is not a live Web app deployment: copy\n"
+              "          it again from Deploy > Manage deployments. A sign-in page means\n"
+              "          'Who has access' is not 'Anyone'.")
+        return 1
+    for name in names:
+        outcome = _send(transport, folder, name)
+        detail = f": {(_state or {}).get('last_error', '')}" if outcome == "failed" else ""
+        print(f"{name}  {outcome}{detail}")
+        if outcome == "failed":
+            return 1
+    print("all sent" if names else
+          "nothing waiting: start Calist or build a register, then run this again")
+    return 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--check"]:
+        print("usage: python runlog.py --check")
+        raise SystemExit(2)
+    raise SystemExit(check())
