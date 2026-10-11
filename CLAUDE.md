@@ -192,6 +192,14 @@ row**, measured old vs new on the same records, alternating, after a warm-up: th
 year (17,671 rows) 2.20 → 3.14 s over 5 runs each, a 420-row round 66 → 94 ms over 7 — real
 (Welch p < 10⁻⁸), and almost all of it the formatting itself (the 753 *Missing* notes were
 ~0.05 s of it). Against the reading it is small: that 2026 run spent 397 s reading.
+2.0.5 (the usage log) measured no slowdown a run can show either, old vs new with the log sending
+live to a loopback fake: a 453-form round 3.223 → 3.207 s over 20 alternating builds each (−0.5%,
+Welch p = 0.67); the whole 2026 year in Turbo (16,330 forms) 418.9 → 426.1 s over 3 old and 2 new
+alternating runs (+1.7%, p = 0.65; in order 429/438/420/414/408 s, drifting down old and new
+alike); cold start in source 1,201 → 1,199 ms (20 each, p = 0.79), the frozen one-file exe 2,551
+→ 2,542 ms (10 each, p = 0.87). The log's own costs are off that path: `record_build` a median
+3.6 ms after the result is posted (11 ms at 16,330 outcomes), `import runlog` ≈1.4 ms, and ≈0.1 s
+of sender CPU for a session's first record (the ssl/urllib import), at least 5 s after the build.
 2.0.4 measured no slowdown a run can show: the writer +3.8% on a 420-row round (Welch p = 0.69,
 noise) and the reader +1.6% at the median over 2,000 seeded forms (paired t = +0.5, noise). Timed
 on their own, the added paths cost 0.24 µs per `normalise_status` call (the legend check: 334 →

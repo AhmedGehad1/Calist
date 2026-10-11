@@ -795,6 +795,22 @@ went from 66 to 94 ms, and the whole 2026 year (17,671 rows) from 2.2 to 3.1 sec
 difference is real, not noise, but it's under 1% of a run: reading those 2026 forms took 397
 seconds.
 
+The usage log added in 2.0.5 was measured the same way, old code against new, with the log
+sending live to a stand-in for the sheet. None of the differences is one a run can show:
+
+| | Before | With the usage log |
+|:---|---:|---:|
+| A 453-form round, 20 builds each | 3.22 s ± 0.15 | 3.21 s ± 0.08 (−0.5%, p = 0.67) |
+| The whole 2026 year in Turbo, 16,330 forms | 418.9 s (3 runs) | 426.1 s (2 runs; +1.7%, p = 0.65) |
+| Starting up from source, 20 each | 1,201 ms ± 21 | 1,199 ms ± 22 (p = 0.79) |
+| Starting the packaged exe, 10 each | 2,551 ms ± 111 | 2,542 ms ± 103 (p = 0.87) |
+
+The five year-long runs drifted downward over the session, old and new alike (429, 438, 420,
+414 and 408 seconds, in order). The log's own work happens after the result is on screen:
+writing a build's line takes a median 3.6 ms (11 ms for 16,330 forms). The first send of a
+session, which imports the HTTPS stack and costs about 0.1 s of processor time, waits five
+seconds after a build and never runs during one.
+
 ---
 
 ## How a change gets proven
