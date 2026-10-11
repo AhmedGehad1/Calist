@@ -35,6 +35,9 @@ medcalpro*.json
 /secrets/
 .env
 .env.*
+# The run log's address and token. calist.spec writes them under build/
+# (ignored above); this catches a copy dropped anywhere else in the tree.
+calist_endpoint.py
 
 # Dry-run reports name real hospitals and device serials.
 dry-run-*.txt

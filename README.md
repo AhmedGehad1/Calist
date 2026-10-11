@@ -34,28 +34,19 @@ open three hundred files to do it.
 
 <br>
 
-## What's new in 2.0.4
+## What's new in 2.0.5
 
-- **Mobile X-rays show their tube serial.** Calist never read the mobile X-ray's tube box; now it
-  does, like the other X-rays. The serial cell shows each box exactly as the form writes it, `N.A`
-  included: the serial, then the tube serial in brackets underneath.
-- **Conventional X-rays say so.** `BF` is now `X-ray (Conventional)`, which is what every one of its
-  forms says in its own *Type* box.
-- **One spelling for each verdict.** `PASS`, `pass` and `Passs` are all written `Pass`; likewise
-  `Fail`, `Limited non`, `Limited Fail` and `Calibrated`, and **Fail** and **Limited Fail** are bold.
-  Anything else stays exactly as typed.
-- **A printed legend is no longer read as a verdict.** Some Pipette forms print "Pass / Fail /
-  Limited non / Limited fail / calibrated" beside an empty Status box, and it was being read as
-  *Limited fail*. Those boxes now show as empty, marked *Missing*.
-- **No "no known layout" note on a form that says N.A.** When a form's own captions confirm its
-  boxes and it says `N.A` for both Model and Serial No., that's the engineer's answer, not a layout
-  problem.
-- **The credit sits at the top too**, in cell B1.
+- **A usage log, for diagnosis.** Each Build press, crash, launch and PIN lockout sends one line to
+  the developer's sheet, so a problem on someone else's PC can be seen without asking them to dig.
+  It never slows a build, waits while you're offline, and never sends anything from inside a form:
+  see [What Calist sends](#what-calist-sends).
+- **Errors inside the window are no longer lost.** One raised by a button or a timer used to be
+  printed to a console the app doesn't have; now it's logged.
+- **Delete and Ctrl+O wait for a build to finish.** Pressed mid-build, either one could leave the
+  window showing a stale result and let a second build start alongside the first.
 
-Checked on the whole four-year archive before it went in, old code against new over 81,273 forms:
-**0 regressions**. The only readings that changed are the 181 mobile X-ray tube serials, now read,
-and the 18 Pipette legends, no longer taken for a verdict. The full list is on the
-[releases page](https://github.com/AhmedGehad1/Calist/releases).
+No reading changed: the register a round produces is the same as in 2.0.4. The full list is on
+the [releases page](https://github.com/AhmedGehad1/Calist/releases).
 
 ---
 
@@ -222,7 +213,39 @@ backport is installed (`pip uninstall pathlib`), and after upgrading PyInstaller
 The version number lives in one place, `__version__` in [`calist.py`](calist.py). The release
 workflow refuses to build a tag that disagrees with it.
 
+A copy you build yourself sends no usage log: the address only exists in the official builds. To
+try the log, set `CALIST_RUNLOG_URL` and `CALIST_RUNLOG_TOKEN` before running `pyinstaller` (or
+before `python calist.py`).
+
 </details>
+
+---
+
+## What Calist sends
+
+The official downloads keep a small usage log for the developer: one line for each Build press,
+crash, launch and PIN lockout, sent to a private Google Sheet. It's there so a problem on someone
+else's PC can be seen and fixed without asking them to go digging.
+
+| Line | What it holds |
+|---|---|
+| **Build** | When it finished; whether the register was saved, failed (with the error, folder names removed), cancelled or had nothing to write; devices and rows; how long it took, split into reading the forms and writing the register; where the register was saved; how many forms needed a look, were left out, were copies or duplicates; device codes Calist didn't recognise, the code only (`GZ`); the Calist version; the PC's processor count and memory |
+| **Crash** | The error and where in Calist it happened, with folder names removed |
+| **Lockout** | How many wrong codes were entered in a row; never the digits |
+| **Launch** | The Calist version |
+| **Every line** | Your Windows user name and PC name, and a random number Calist makes for this PC |
+
+**Never sent:** anything from inside a form (no serials, models, sites or readings) and no file
+names.
+
+- **It never slows a build.** Nothing is sent while a build or a folder scan runs; it waits for the
+  results to show, then sends in the background, one line at a time.
+- **Offline, it waits.** Lines are kept in `%LOCALAPPDATA%\Calist\outbox` and each one is deleted
+  only when the sheet confirms it arrived. At most 1,000 build lines wait (about 1 MB), and none
+  older than 180 days.
+- **It talks to two addresses only**, both over HTTPS: `script.google.com` and
+  `script.googleusercontent.com`. Those are what an IT department needs to allow.
+- **A copy built from source sends nothing.**
 
 ---
 
@@ -848,7 +871,7 @@ classify_file("W01-BZ000-0326.xlsx", real_forms_only=True).detail
 ```powershell
 pip install -r requirements.txt
 pip install pytest
-python -m pytest                       # 598 tests, no display needed
+python -m pytest                       # 668 tests, no display needed
 python -m pytest -k merged             # one topic
 python -m pyflakes ui.py               # the quick lint
 python tools/snap_ui.py --theme dark   # every screen, rendered to docs/review/
@@ -861,9 +884,10 @@ shapes, checks the version resource and file size, writes the checksums and publ
 
 | Suite | Tests | What it holds down |
 |---|---:|---|
-| [`test_calist.py`](test_calist.py) | 259 | The pipeline: the reader, layouts and fallbacks, status settling, name repair, copies, sorting, de-duplication, notes, end-to-end runs on workbooks built in the test |
-| [`test_firebase_export.py`](test_firebase_export.py) | 127 | The archive export: stable record ids, repaired names, what gets left out and what gets deleted |
-| [`test_access.py`](test_access.py) | 35 | The daily code: known dates, midnight, rate limiting that survives a restart |
+| [`test_calist.py`](test_calist.py) | 357 | The pipeline: the reader, layouts and fallbacks, status settling, name repair, copies, sorting, de-duplication, notes, end-to-end runs on workbooks built in the test |
+| [`test_firebase_export.py`](test_firebase_export.py) | 156 | The archive export: stable record ids, repaired names, what gets left out and what gets deleted |
+| [`test_runlog.py`](test_runlog.py) | 66 | The usage log, against a fake of the sheet's web app: a line leaves only when its receipt comes back, a lost receipt never makes a second row, nothing is sent during a build, nothing from a form leaves |
+| [`test_access.py`](test_access.py) | 36 | The daily code: known dates, midnight, rate limiting that survives a restart |
 | [`test_settings.py`](test_settings.py) | 21 | Settings that read and write safely, even when the file is corrupt or the profile is read-only |
 | [`test_ui_state.py`](test_ui_state.py) | 14 | What the window shows: problem groups, search, the save-folder rule, the Turbo threshold |
 | [`test_theme.py`](test_theme.py) | 12 | Every colour pair against WCAG AA in both themes, font fallbacks, every icon checked against the font |
@@ -881,6 +905,7 @@ flowchart LR
     ui --> state["ui_state.py<br/>what the window shows"]
     ui --> theme["theme.py<br/>colours, type, icons"]
     ui --> access["access.py<br/>the daily code"]
+    ui --> runlog["runlog.py<br/>the usage log"]
     state --> calist
     calist --> config["device_config.py<br/>111 cell maps"]
 ```
@@ -902,7 +927,9 @@ firebase_export.py   publishes the archive to the inspection app             3,3
 device_config.py     111 cell maps and the form() helper                       587 lines
 theme.py             the palette, fonts and icons, as plain data               228 lines
 ui_state.py          what the window shows, as plain logic                     174 lines
-access.py            the daily access code                                     138 lines
+access.py            the daily access code                                     144 lines
+runlog.py            the usage log: the outbox, the receipt, the sender        995 lines
+tools/runlog_webapp/ the sheet's end of the usage log (Apps Script)
 tools/audit.py       the archive audit                                         946 lines
 tools/snap_ui.py     renders every screen for design review                    429 lines
 calist.spec          the PyInstaller recipe
@@ -932,6 +959,10 @@ Said plainly, so nobody has to find out the hard way:
   can bring that back. The register's serial column is text, so a serial typed in later keeps it.
 - **A formula cell in a workbook that was never opened in Excel reads blank.** Excel saves a
   formula's last result; a file written by a script has none to read.
+- **The usage log can't get out of some networks.** Behind a proxy that needs a login or a PAC
+  script, or where Google is blocked, its lines wait on the PC (within their limits) and the
+  sheet shows that PC as quiet. The address inside the official build can be dug out of it, so
+  the sheet's end checks every line and caps how many it takes a day.
 - **The access code is a speed bump, not a lock.** The formula is in this public repository and
   the system clock is the only authority on the date. It keeps casual use out; it isn't
   licensing.

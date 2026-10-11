@@ -96,6 +96,37 @@ VSVersionInfo(
 )
 """, encoding="ascii")
 
+# ── run-log address ──────────────────────────────────────────────────────────
+# Official builds report each Build press to the owner's sheet (runlog.py).
+# The address and token arrive from the CI secrets as environment variables
+# and are written into a module the app imports, under build/: git-ignored,
+# and not on a checkout's path, so the source and the tests never have one.
+# Anything but a web app's /exec address on script.google.com is ignored, and
+# a stale module from an earlier build is deleted, so a mistyped secret gives
+# a copy that sends nothing rather than one that sends anywhere. The values
+# are never printed. The flag file tells the release workflow to look for the
+# module in both executables without the workflow ever seeing the secret.
+GEN = HERE / "build" / "_gen"
+GEN.mkdir(parents=True, exist_ok=True)
+ENDPOINT = GEN / "calist_endpoint.py"
+INCLUDED = GEN / "endpoint-included"
+_url = os.environ.get("CALIST_RUNLOG_URL", "").strip()
+_token = os.environ.get("CALIST_RUNLOG_TOKEN", "").strip()
+if re.fullmatch(r"https://script\.google\.com/(?:a/macros/[^/]+|macros)/s/[\w-]+/exec",
+                _url):
+    ENDPOINT.write_text(f"URL = {_url!r}\nTOKEN = {_token!r}\n", encoding="utf-8")
+    INCLUDED.write_text("yes\n", encoding="ascii")
+else:
+    ENDPOINT.unlink(missing_ok=True)
+    INCLUDED.unlink(missing_ok=True)
+    # A step's `if:` cannot read secrets, so the guard lives here: a release
+    # tag must not ship a copy that silently never reports. Local builds and
+    # forks simply get one that sends nothing.
+    if os.environ.get("GITHUB_REF", "").startswith("refs/tags/"):
+        raise SystemExit("CALIST_RUNLOG_URL is missing or not a web app /exec "
+                         "address, so this release would never report. Set the "
+                         "repository secret, or build without a tag.")
+
 # ── analysis ─────────────────────────────────────────────────────────────────
 
 datas = collect_data_files("customtkinter")
@@ -120,15 +151,21 @@ datas += [(str(Path(tkinterdnd2.__file__).parent / "tkdnd" / "win-x64"),
 
 a = Analysis(
     ["calist.py"],
-    pathex=[],
+    pathex=[str(GEN)],
     binaries=[],
     datas=datas,
-    hiddenimports=["ui", "access"],
+    # runlog is imported by ui, and calist_endpoint by runlog inside a
+    # function; listing both is free insurance for a frozen-only failure that
+    # no test can see, the same reason ui and access are here.
+    hiddenimports=["ui", "access", "runlog"]
+    + (["calist_endpoint"] if ENDPOINT.exists() else []),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         # Nothing in the app touches these; leaving them in doubles the size.
+        # Never add ssl, _ssl, http, email, urllib or socket: the run log's
+        # sender needs them, and only the frozen exe would notice them gone.
         "numpy", "matplotlib", "scipy", "pandas",
         "pytest", "_pytest", "pygments", "IPython",
         "PyQt5", "PySide2", "PySide6",

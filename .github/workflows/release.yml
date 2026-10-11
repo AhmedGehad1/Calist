@@ -43,7 +43,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          # Pinned: a new bootloader in the same release as a new behaviour
+          # (the run log) would leave a fresh antivirus verdict impossible to
+          # pin on either. These are what built 2.0.4; move them on purpose.
+          pip install "pyinstaller==6.22.3" "pyinstaller-hooks-contrib==2026.8"
 
       - name: Run tests before shipping anything
         run: |
@@ -66,12 +69,20 @@ jobs:
                        f"{declared} - bump one of them so they agree")
           print(f"tag and __version__ agree on {tag}")
 
+      # The run log's address reaches these two steps only: pip, pytest and
+      # the third-party actions never see it. calist.spec writes it into the
+      # executables, and on a tag refuses to build without it.
       - name: Build Calist.exe (one file)
+        env:
+          CALIST_RUNLOG_URL: ${{ secrets.CALIST_RUNLOG_URL }}
+          CALIST_RUNLOG_TOKEN: ${{ secrets.CALIST_RUNLOG_TOKEN }}
         run: pyinstaller calist.spec --noconfirm --clean
 
       - name: Build the folder version
         env:
           CALIST_ONEDIR: "1"
+          CALIST_RUNLOG_URL: ${{ secrets.CALIST_RUNLOG_URL }}
+          CALIST_RUNLOG_TOKEN: ${{ secrets.CALIST_RUNLOG_TOKEN }}
         run: pyinstaller calist.spec --noconfirm --workpath build/onedir
 
       - name: Check both builds look sane
@@ -99,6 +110,22 @@ jobs:
           Write-Output "version resource: '$($v.ProductName)' $($v.ProductVersion) by '$($v.CompanyName)'"
           if (-not $v.ProductName) { throw "Calist.exe has no version resource" }
           if (-not $v.CompanyName) { throw "Calist.exe has no CompanyName" }
+
+          # The run log fails silently by design, so a build that lost it would
+          # look fine. Read PyInstaller's own record of each archive: runlog is
+          # always there, and the address whenever the spec had one to bake in
+          # (its flag file holds no address, so this step needs no secret).
+          $baked = Test-Path "build/_gen/endpoint-included"
+          foreach ($toc in "build/calist/PYZ-00.toc", "build/onedir/calist/PYZ-00.toc") {
+            if (-not (Test-Path $toc)) { throw "$toc is missing - cannot check what was bundled" }
+            $text = Get-Content $toc -Raw
+            if ($text -notmatch "'runlog'") { throw "$toc has no runlog module" }
+            if ($baked -and $text -notmatch "'calist_endpoint'") {
+              throw "$toc has no calist_endpoint - this build would never report"
+            }
+          }
+          if ($baked) { Write-Output "run log: address included in both builds" }
+          else { Write-Output "::warning::run log: no address in this build - it will never report" }
 
       - name: Package the folder build
         shell: pwsh
@@ -177,3 +204,11 @@ jobs:
 
             Every release is built by GitHub Actions from the tagged, public
             source in this repository — the build log is on the Actions tab.
+
+            ## What Calist sends
+
+            Official builds report each build, crash, launch and PIN lockout
+            to the developer: counts, timings, the save path, your Windows user
+            name and PC name — never anything from inside a form. The full list
+            is in the README under *What Calist sends*. A build from source
+            sends nothing.

@@ -16,11 +16,11 @@ python calist.py                # launch the app
 python calist.py --inspect FORM # dump what each mapped cell of one form reads
 pip install -r requirements.txt # openpyxl + xlrd + customtkinter 6 + tkinterdnd2
 
-python -m pytest                            # the whole suite (598 tests)
+python -m pytest                            # the whole suite (668 tests)
 python -m pytest test_calist.py             # one file
 python -m pytest -k merged                  # one topic, by substring
 python -m pytest test_calist.py::test_a_merged_cell_reads_through_to_its_anchor
-python -c "import calist, theme, ui_state, sys; assert 'tkinter' not in sys.modules"  # GUI-free rule
+python -c "import calist, theme, ui_state, runlog, sys; assert 'tkinter' not in sys.modules"  # GUI-free rule
 
 pyinstaller calist.spec --noconfirm              # -> dist/Calist.exe (one file)
 $env:CALIST_ONEDIR=1; pyinstaller calist.spec    # -> dist/Calist/    (folder)
@@ -49,13 +49,14 @@ emulator first (`firebase emulators:start --only firestore,auth,storage`, then
 (`dry-run-*.json/.txt`) name real hospitals and serials and are git-ignored. Neither tool is needed
 for ordinary work on the app.
 
-Eight test files, all runnable without a display: `test_calist.py` (the pipeline, and the
+Nine test files, all runnable without a display: `test_calist.py` (the pipeline, and the
 register's table on the shipped template), `test_firebase_export.py` (the archive export),
 `test_access.py` (the PIN gate), `test_settings.py`, `test_device_config.py` (the cell maps the
 Calystra app also writes), `test_theme.py` (every colour pairing against WCAG AA in both themes,
 font fallbacks, every icon checked against the font via GDI), `test_ui_state.py` (what the window
-shows) and `test_ui_layout.py` (the window's layout passes, on a stand-in that applies sizes the
-way Tk does).
+shows), `test_ui_layout.py` (the window's layout passes, on a stand-in that applies sizes the
+way Tk does) and `test_runlog.py` (the usage log, against a 127.0.0.1 fake of the sheet's web
+app — no test ever touches the network).
 There is no linter configured; `python -m pyflakes ui.py` is the useful quick check. The two
 `docs/` scripts need Pillow, a dev-only dependency that is deliberately not in `requirements.txt`.
 
@@ -75,7 +76,7 @@ helpers so that values render exactly as they always did.
 
 ## Architecture
 
-Six modules, strictly one direction:
+Seven modules, strictly one direction:
 
 ```
 ui.py  ──imports──>  calist.py  ──imports──>  device_config.py
@@ -83,7 +84,9 @@ ui.py  ──imports──>  calist.py  ──imports──>  device_config.py
    │
    ├──imports──>  ui_state.py   (what the window shows — pure, imports calist)
    ├──imports──>  theme.py      (colours, type, icons — pure data)
-   └──imports──>  access.py     (daily PIN gate — pure, standalone)
+   ├──imports──>  access.py     (daily PIN gate — pure, standalone)
+   └──imports──>  runlog.py     (the usage log — GUI-free; reaches calist only inside
+                                 functions, so importing it loads nothing heavy)
 ```
 
 `theme.py` and `ui_state.py` hold everything about the window that can be decided without one —
@@ -397,6 +400,52 @@ event too, or its thread keeps walking a network share after the window is gone.
 
 `widget.after(0, ...)` called from a worker thread is the common shortcut and is *not* safe — it
 registers a Tcl command from outside the main loop. Use the queues.
+
+A third kind of thread, the run log's sender, follows both rules and adds its own — see *The usage
+log* below. It never touches a widget and **never uses `App._events`**: `_drain` treats any event
+kind it does not know as a finished build (`else: finished = payload`).
+
+### The usage log (`runlog.py`, 2.0.5)
+
+Official builds send one line per Build press, crash, launch and PIN lockout to the owner's Google
+Sheet, through an Apps Script web app (`tools/runlog_webapp/Code.gs`, deployed by the owner; setup
+steps in its header). Diagnostics, never a core function — so every rule here is about not being
+noticed. Load-bearing:
+
+- **The Tk thread never touches the disk or the network.** `record_lockout`, `record_crash("tk")`
+  and `start()` only queue a dict (`_pending`) and `kick()`; the sender writes the file. A build's
+  record is written by the build worker **after** its `put(("done", …))`, so the result is on
+  screen whatever it costs. `record_crash("startup")` writes synchronously: the process is dying.
+- **Like TCP, and no more.** Each record is a file in `%LOCALAPPDATA%\Calist\outbox` (tmp, then
+  `os.replace`), deleted **only** when the sheet answers HTTP 200 with JSON whose `ok` is true and
+  whose `id` is this record's (`is_ack`). Lost receipts are normal — the POST runs the script, the
+  receipt comes from a second host after a 302 — so the script recognises a known id and answers
+  `dup:true` **with the id**, never a second row. A bare `dup:true`, a sign-in or portal page that
+  says 200, a 307: none of them is a receipt.
+- **The busy gate.** Both workers `hold()` / `release()`; the sender waits while held, then
+  `GRACE_S` (5 s) for the results to paint, re-checks before every record, paces 3 s apart, backs
+  off 1, 2, 4 … 60 min, and exits when nothing is left (`kick()` and the exit decision share
+  `_lock`, so a record written at the exit instant is never stranded).
+- **`ssl` and `urllib.request` are imported only on the sender thread** (≈27 ms in the app,
+  measured, plus 13 ms per SSL context — one per run). Importing `runlog` costs ≈1.4 ms and loads
+  nothing heavy; `test_runlog.py` pins that in a subprocess.
+- **No address, no activity.** The address and token are baked in by `calist.spec` from CI
+  secrets (module `calist_endpoint`, generated under `build/_gen/`), or come from
+  `CALIST_RUNLOG_URL` / `CALIST_RUNLOG_TOKEN` for the owner's own testing. A checkout and the
+  tests have neither, so they create no folder, file or thread. `tools/snap_ui.py` pops the two
+  variables before building its App.
+- **The address is public in practice** (it can be dug out of the exe), so the protection lives in
+  the script: token, field whitelist and lengths, body and daily caps, every string written with
+  Sheets' text marker (no formula injection), and a `STOP` switch that every copy obeys for
+  `STOP_HOURS`. Edit the **same** deployment when changing the script; a new deployment strands
+  every shipped exe on the old URL.
+- **No registry read.** The PC's number comes from a random install id in
+  `%LOCALAPPDATA%\Calist\install-id`; reading `MachineGuid` and sending it with user and PC names
+  is the fingerprinting pattern antivirus models hunt for.
+- **What leaves:** counts, timings, the save path, scrubbed error text (paths become `<path>`, 300
+  characters), device codes of at most four letters, the Windows user and PC name. Never a file
+  name, a serial or anything read from a form. README *What Calist sends* is the public statement
+  of it — keep the two in step.
 
 ### Value normalisation
 
@@ -1044,7 +1093,11 @@ Three more things worth not undoing:
 - **Rate limiting is load-bearing.** Even shifted, 5784 of 10000 values are reachable, so unlimited
   guessing would still fall eventually. After 5 failures a cooldown starts at 30s and doubles,
   capped at 15 min, and it is **persisted** — closing the dialog must not shed it, and a correct
-  code entered during a cooldown is still refused.
+  code entered during a cooldown is still refused. **Known bug, not fixed by the owner's choice
+  (2026-10-11):** the persistence is incomplete. `LockPanel` keeps failures in its own copy of the
+  state (`state_dict`), which reaches `settings.json` only on a successful unlock, so closing the
+  app and reopening it resets the count and the cooldown. The run log's lockout rows therefore
+  show per-session counts.
 - **`App.__init__` schedules the day-watcher, it does not call it.** Calling it there raises a second
   lock prompt behind the one `run()` puts up.
 - **The watcher never re-locks mid-run** (`self._cancel is None`). Taking the window away during a
@@ -1293,6 +1346,18 @@ release it came from.
 
 Asset names (`Calist.exe`, `Calist-windows.zip`) must stay stable across releases — the
 `releases/latest/download/<name>` permalinks in the README are built from them.
+
+**The usage log's address** (2.0.5) reaches only the two PyInstaller steps, as step-level `env`
+from the repository secrets `CALIST_RUNLOG_URL` / `CALIST_RUNLOG_TOKEN`. `calist.spec` writes it
+into `build/_gen/calist_endpoint.py` (git-ignored, off every checkout's path) only when it is a
+web app's `/exec` address on script.google.com, and **refuses to build a tag without one** — a
+step's `if:` cannot read secrets, so the guard lives in the spec. It also leaves a flag file with
+no address in it, and the sanity step then checks both `PYZ-00.toc` files for `calist_endpoint`
+(and always for `runlog`), because the log fails silently by design and a build that lost it would
+look fine. **PyInstaller and its hooks are pinned** (6.22.3 / 2026.8, what built 2.0.4): a new
+bootloader in the same release as new network behaviour would make any fresh antivirus verdict
+impossible to attribute. Never add ssl, _ssl, http, email, urllib or socket to the spec's
+excludes — only the frozen exe would notice.
 
 ## The icon
 
