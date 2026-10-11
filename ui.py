@@ -2147,7 +2147,7 @@ class App(_Root):
         # The round is what was added — the same folder the register goes to
         # — and only falls back to the folder the forms share.
         origin = ui_state.origin_folder(self._sources) if self._files else ""
-        name = (os.path.basename(origin.rstrip("\/")) if origin else "") or (
+        name = (os.path.basename(origin.rstrip("\\/")) if origin else "") or (
             ui_state.round_name(self._files) if self._files else "")
         self.title(f"{name} — Calist" if name else "Calist")
         if name:
