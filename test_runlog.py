@@ -349,7 +349,8 @@ def test_each_kind_keeps_its_own_allowance_and_counts_what_it_drops(address,
     kinds = [runlog._kind_of(name) for name in runlog.outbox_names()]
     assert kinds.count("build") == 3 and kinds.count("crash") == 1
     assert runlog._load_state()["dropped"] == {"build": 2}
-    assert runlog._health()["dropped"] == {"build": 2}
+    assert runlog._health("build")["dropped"] == {"build": 2}
+    assert runlog._health("launch")["dropped"] == {}       # no column for it there
 
 
 def test_records_older_than_the_limit_are_dropped(address, tmp_path):
@@ -700,6 +701,25 @@ def test_a_refused_record_is_dropped_and_counted_then_reported(webapp):
     assert wait_for(settled)
     record = next(iter(webapp.rows.values()))
     assert record["health"]["dropped"] == {"build": 1}
+    assert runlog._load_state()["dropped"] == {}
+
+
+def test_drops_wait_for_a_build_row_to_be_shown(webapp):
+    """The Builds tab is the one with a 'Dropped offline' column: drops sent
+    on a launch row were acknowledged and never seen (the owner's first run)."""
+    runlog._count_dropped({"launch": 1, "build": 1})
+    runlog._write(runlog._envelope("launch", time.time(), {}))
+    runlog.kick()
+    assert wait_for(settled)
+    launch = next(iter(webapp.rows.values()))
+    assert launch["health"]["dropped"] == {}
+    assert runlog._load_state()["dropped"] == {"launch": 1, "build": 1}
+
+    runlog.record_build(saved_result(), "", 1.0)
+    runlog.kick()
+    assert wait_for(lambda: settled() and len(webapp.rows) == 2)
+    build = next(r for r in webapp.rows.values() if r["kind"] == "build")
+    assert build["health"]["dropped"] == {"launch": 1, "build": 1}
     assert runlog._load_state()["dropped"] == {}
 
 

@@ -661,13 +661,16 @@ def _count_dropped(counts: dict[str, int]) -> None:
     _update_state(change)
 
 
-def _health() -> dict:
-    """Sent with every record: drops not yet reported, and why sending last
-    failed, so a PC that keeps failing shows up instead of going quiet."""
+def _health(kind: str) -> dict:
+    """Sent with every record: why sending last failed, so a PC that keeps
+    failing shows up instead of going quiet (the PCs tab, for any kind), and
+    the drops not yet reported. Drops ride on build records only: the Builds
+    tab is the one with a column for them, and a count sent on a launch row
+    was acknowledged without ever being shown (the owner's first run)."""
     state = _state or {}
     try:
         dropped = {str(k): int(v) for k, v in (state.get("dropped") or {}).items()
-                   if int(v) > 0}
+                   if int(v) > 0} if kind == "build" else {}
         failures = int(state.get("failures", 0) or 0)
     except (AttributeError, TypeError, ValueError):     # a damaged state.json
         dropped, failures = {}, 0
@@ -968,7 +971,7 @@ def _send(transport: _Transport, folder: str, name: str) -> str:
     except OSError as exc:                         # held for a moment (antivirus)
         _failed(type(exc).__name__)
         return "failed"
-    health = _health()
+    health = _health(kind)
     try:
         payload = dict(record, token=transport.token, health=health)
         body = json.dumps(payload, ensure_ascii=True,

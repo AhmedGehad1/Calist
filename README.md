@@ -890,7 +890,7 @@ classify_file("W01-BZ000-0326.xlsx", real_forms_only=True).detail
 ```powershell
 pip install -r requirements.txt
 pip install pytest
-python -m pytest                       # 680 tests, no display needed
+python -m pytest                       # 681 tests, no display needed
 python -m pytest -k merged             # one topic
 python -m pyflakes ui.py               # the quick lint
 python tools/snap_ui.py --theme dark   # every screen, rendered to docs/review/
@@ -905,7 +905,7 @@ shapes, checks the version resource and file size, writes the checksums and publ
 |---|---:|---|
 | [`test_calist.py`](test_calist.py) | 357 | The pipeline: the reader, layouts and fallbacks, status settling, name repair, copies, sorting, de-duplication, notes, end-to-end runs on workbooks built in the test |
 | [`test_firebase_export.py`](test_firebase_export.py) | 156 | The archive export: stable record ids, repaired names, what gets left out and what gets deleted |
-| [`test_runlog.py`](test_runlog.py) | 78 | The usage log, against a fake of the sheet's web app: a line leaves only when its receipt comes back, a lost receipt never makes a second row, nothing is sent during a build, nothing from a form leaves |
+| [`test_runlog.py`](test_runlog.py) | 79 | The usage log, against a fake of the sheet's web app: a line leaves only when its receipt comes back, a lost receipt never makes a second row, nothing is sent during a build, nothing from a form leaves |
 | [`test_access.py`](test_access.py) | 36 | The daily code: known dates, midnight, rate limiting that survives a restart |
 | [`test_settings.py`](test_settings.py) | 21 | Settings that read and write safely, even when the file is corrupt or the profile is read-only |
 | [`test_ui_state.py`](test_ui_state.py) | 14 | What the window shows: problem groups, search, the save-folder rule, the Turbo threshold |
