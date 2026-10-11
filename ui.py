@@ -1733,6 +1733,12 @@ class App(_Root):
         self._finish_intake(added)
 
     def _add_folder(self) -> None:
+        # Ctrl+O is bound on the root, so it arrives during a build, a scan or
+        # the lock, when the toolbar buttons cannot be pressed. A pick then
+        # would reset the run under it (_enter_setup clears _cancel), so it is
+        # refused on exactly the terms a drop is.
+        if self._drop_refused():
+            return
         start = self._settings.get("last_folder", "")
         chosen = filedialog.askdirectory(title="Choose a folder of inspection forms",
                                          initialdir=start or None)
@@ -1742,6 +1748,8 @@ class App(_Root):
             self._add_paths([chosen])
 
     def _add_files(self) -> None:
+        if self._drop_refused():                      # as _add_folder
+            return
         chosen = filedialog.askopenfilenames(
             title="Choose inspection forms",
             initialdir=self._settings.get("last_folder") or None,
@@ -1842,6 +1850,10 @@ class App(_Root):
         self._add_paths([path for path, _ in self._sources], record=False)
 
     def _remove_selected(self, _event=None) -> None:
+        # The Delete key reaches the table mid-run; _enter_setup would then
+        # clear _cancel, strand the build's result and re-enable Build.
+        if self._cancel is not None or self._scan is not None:
+            return
         for iid in self._tree.selection():
             self._files.pop(iid, None)
         self._enter_setup()
