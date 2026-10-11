@@ -190,6 +190,13 @@ class RunResult:
     second_rows_added: int = 0
     cancelled: bool = False
     error: str | None = None
+    #: Where the run's time went, for the run log: reading the forms
+    #: (extract_records, settling copies included) and writing the register
+    #: (sort, de-duplicate, save). Reading is set once the forms are read,
+    #: a cancelled run included; writing whenever a save was attempted, a
+    #: failed one included, and it stays 0.0 when nothing was written.
+    read_seconds: float = 0.0
+    write_seconds: float = 0.0
 
     @property
     def succeeded(self) -> bool:
@@ -3571,8 +3578,11 @@ def process_files(
         log.error("%s", exc)
         return result
 
+    started = time.perf_counter()
     records, result.outcomes = extract_records(source_files, on_file, cancel,
                                                real_forms_only, quiet)
+    read_done = time.perf_counter()
+    result.read_seconds = read_done - started
     result.second_rows_added = sum(1 for o in result.outcomes
                                    if o.rows == 2 and o.status == OK)
     records = sort_records(records)
@@ -3607,6 +3617,8 @@ def process_files(
         result.error = f"Could not save output file: {exc}"
         log.error("%s", result.error)
         return result
+    finally:
+        result.write_seconds = time.perf_counter() - read_done
 
     result.output_path = output_path
     result.rows_written = len(records)

@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import threading
+import time
 import zipfile
 from pathlib import Path
 from datetime import datetime
@@ -1011,6 +1012,50 @@ def test_cancelling_partway_stops_early(workspace):
     assert result.output_path is None
     assert result.files_read == 1
     assert any(o.status == calist.CANCELLED for o in result.outcomes)
+
+
+def test_a_run_says_where_its_time_went(workspace):
+    """The run log's Reading (s) and Writing (s): both set on a saved run, and
+    together never more than the run itself."""
+    files, template = workspace
+    before = time.perf_counter()
+    result = calist.process_files(files, template)
+    took = time.perf_counter() - before
+
+    assert result.succeeded
+    assert result.read_seconds > 0 and result.write_seconds > 0
+    assert result.read_seconds + result.write_seconds <= took
+
+
+def test_a_failed_save_still_says_how_long_it_tried(workspace, monkeypatch):
+    """A register open in Excel fails after the save was attempted: that time
+    is the clue, so it is kept."""
+    files, template = workspace
+
+    def locked(*_args):
+        time.sleep(0.02)
+        raise PermissionError("the register is open in Excel")
+
+    monkeypatch.setattr(calist, "write_output", locked)
+    result = calist.process_files(files, template)
+
+    assert result.error.startswith("Could not save output file")
+    assert result.read_seconds > 0
+    assert result.write_seconds >= 0.02
+
+
+def test_a_run_that_writes_nothing_has_no_writing_time(workspace, tmp_path):
+    files, template = workspace
+    cancel = threading.Event()
+    cancel.set()
+    cancelled = calist.process_files(files, template, cancel=cancel)
+    nothing = calist.process_files([str(tmp_path / "notes.docx")], template)
+
+    assert cancelled.cancelled
+    assert nothing.error.startswith("No valid records")
+    for result in (cancelled, nothing):
+        assert result.write_seconds == 0.0
+        assert result.read_seconds >= 0.0
 
 
 def test_refuses_to_overwrite_the_template(tmp_path):

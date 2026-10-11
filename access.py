@@ -136,3 +136,9 @@ def cooldown_remaining(state: dict, now: datetime | None = None) -> int:
 def attempts_left(state: dict) -> int:
     """Free attempts remaining before a cooldown kicks in."""
     return max(0, FREE_ATTEMPTS - int((state or {}).get(_FAILURES, 0)))
+
+
+def failure_count(state: dict) -> int:
+    """Wrong entries recorded so far. attempts_left floors at 0, so it cannot
+    say how far past the free attempts a guesser has gone; the run log can."""
+    return int((state or {}).get(_FAILURES, 0))

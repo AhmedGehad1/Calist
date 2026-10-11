@@ -165,6 +165,18 @@ def test_cooldown_doubles_then_stops_growing():
     assert waits == sorted(waits)                     # never goes backwards
 
 
+def test_failure_count_keeps_counting_past_the_free_attempts():
+    """attempts_left stops at 0; the run log's lockout row needs the real count."""
+    now = datetime(2026, 8, 25, 9, 0, 0)
+    state = {}
+    assert access.failure_count(state) == access.failure_count(None) == 0
+    for _ in range(access.FREE_ATTEMPTS + 3):
+        state = access.record_failure(state, now)
+    assert access.failure_count(state) == access.FREE_ATTEMPTS + 3
+    assert access.attempts_left(state) == 0
+    assert access.failure_count(access.mark_unlocked(state, now.date())) == 0
+
+
 def test_cooldown_expires_with_time():
     now = datetime(2026, 8, 25, 9, 0, 0)
     state = {}
