@@ -112,8 +112,8 @@ ENDPOINT = GEN / "calist_endpoint.py"
 INCLUDED = GEN / "endpoint-included"
 _url = os.environ.get("CALIST_RUNLOG_URL", "").strip()
 _token = os.environ.get("CALIST_RUNLOG_TOKEN", "").strip()
-if re.fullmatch(r"https://script\.google\.com/(?:a/macros/[^/]+|macros)/s/[\w-]+/exec",
-                _url):
+if _token and re.fullmatch(
+        r"https://script\.google\.com/(?:a/macros/[^/]+|macros)/s/[\w-]+/exec", _url):
     ENDPOINT.write_text(f"URL = {_url!r}\nTOKEN = {_token!r}\n", encoding="utf-8")
     INCLUDED.write_text("yes\n", encoding="ascii")
 else:
@@ -124,8 +124,9 @@ else:
     # forks simply get one that sends nothing.
     if os.environ.get("GITHUB_REF", "").startswith("refs/tags/"):
         raise SystemExit("CALIST_RUNLOG_URL is missing or not a web app /exec "
-                         "address, so this release would never report. Set the "
-                         "repository secret, or build without a tag.")
+                         "address, or CALIST_RUNLOG_TOKEN is empty, so this "
+                         "release would never report. Set both repository "
+                         "secrets, or build without a tag.")
 
 # ── analysis ─────────────────────────────────────────────────────────────────
 

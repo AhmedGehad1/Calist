@@ -248,6 +248,26 @@ def test_the_environment_wins_over_the_baked_address(monkeypatch):
     assert runlog._resolve_endpoint() == ("http://127.0.0.1:9/exec", "mine")
 
 
+def test_an_address_without_its_token_is_no_address(monkeypatch, tmp_path):
+    """Every record would be refused, and a refused record is deleted: without
+    the token there is nowhere to send, rather than somewhere to lose them."""
+    monkeypatch.setenv("CALIST_RUNLOG_URL", "http://127.0.0.1:9/exec")
+    assert runlog._resolve_endpoint() is None
+    runlog.record_build(saved_result(), "", 1.0)
+    assert not (tmp_path / "local").exists()
+
+    monkeypatch.setitem(sys.modules, "calist_endpoint", SimpleNamespace(
+        URL=f"https://script.google.com/macros/s/{FAKE_ID}/exec", TOKEN=""))
+    monkeypatch.delenv("CALIST_RUNLOG_URL")
+    assert runlog._resolve_endpoint() is None
+
+
+def test_the_check_says_when_only_the_token_is_missing(monkeypatch, capsys):
+    monkeypatch.setenv("CALIST_RUNLOG_URL", "http://127.0.0.1:9/exec")
+    assert runlog.check() == 2
+    assert "CALIST_RUNLOG_TOKEN is not set" in capsys.readouterr().out
+
+
 def test_a_baked_loopback_address_is_refused(monkeypatch):
     """Loopback is for the tests and the owner's own override, never a build."""
     monkeypatch.setitem(sys.modules, "calist_endpoint",

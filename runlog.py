@@ -258,7 +258,9 @@ def _resolve_endpoint() -> tuple[str, str] | None:
             return None
         url = str(getattr(baked, "URL", "") or "").strip()
         token = str(getattr(baked, "TOKEN", "") or "").strip()
-    return (url, token) if valid_url(url, loopback_ok=override) else None
+    # Without the token every record would be refused, and a refused record
+    # is deleted: no token means nowhere to send, not somewhere to lose them.
+    return (url, token) if token and valid_url(url, loopback_ok=override) else None
 
 
 def valid_url(url: str, loopback_ok: bool = False) -> bool:
@@ -1037,9 +1039,13 @@ def check() -> int:
     sheet stays empty. Prints no token. 0 when everything waiting arrived."""
     target = endpoint()
     if target is None:
-        print("No address. In this window, set CALIST_RUNLOG_URL to the web app's\n"
-              "Web app URL (Deploy > Manage deployments; it ends in /exec) and\n"
-              "CALIST_RUNLOG_TOKEN to the TOKENS value, then run this again.")
+        missing = ("CALIST_RUNLOG_TOKEN is not set (the TOKENS value from Script\n"
+                   "Properties), so nothing would be accepted. Set it in this window."
+                   if os.environ.get("CALIST_RUNLOG_URL") else
+                   "No address. In this window, set CALIST_RUNLOG_URL to the web app's\n"
+                   "Web app URL (Deploy > Manage deployments; it ends in /exec) and\n"
+                   "CALIST_RUNLOG_TOKEN to the TOKENS value, then run this again.")
+        print(missing)
         return 2
     url, token = target
     folder = _outbox_dir()
@@ -1050,7 +1056,7 @@ def check() -> int:
     if ident and not ident.startswith("AKfy"):
         print("          This does not look like a deployment id (they start AKfy):\n"
               "          the Script ID from the Settings page is a different thing.")
-    print(f"token     {'set' if token else 'NOT SET'}")
+    print("token     set")
     print(f"waiting   {len(names)} record(s) in {folder}")
     if state:
         print(f"state     {json.dumps(state)}")
