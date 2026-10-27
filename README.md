@@ -9,16 +9,6 @@ one row per device, with its manufacturer, model, serial number, location, date 
 
 <br>
 
-[![Download Calist for Windows](https://img.shields.io/badge/Download%20for%20Windows-0b7a6e?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist-setup.exe)
-&nbsp;
-[![Blocked? Get the ZIP](https://img.shields.io/badge/Blocked%3F%20Get%20the%20ZIP-555?style=for-the-badge)](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist-windows.zip)
-
-![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-lightgrey)
-![No admin rights](https://img.shields.io/badge/admin%20rights-not%20needed-success)
-![Updates itself](https://img.shields.io/badge/updates-automatic-success)
-
-<br>
-
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/screen-round-dark.png">
   <img src="images/screen-round-light.png" alt="Calist with a round of 34 forms loaded: the table of forms, four that need a look grouped into chips, and Build register at the bottom right." width="900">
@@ -51,30 +41,23 @@ one row per device, with its manufacturer, model, serial number, location, date 
 
 ## 1. Install Calist
 
-| Download | What it is |
-|---|---|
-| **[Calist-setup.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist-setup.exe)** | **Recommended.** Installs Calist for you in a few seconds. No admin rights needed, and from then on it keeps itself up to date. |
-| **[Calist.exe](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist.exe)** | The same program as one file. Nothing is installed. It does not update itself. |
-| **[Calist-windows.zip](https://github.com/AhmedGehad1/Calist/releases/latest/download/Calist-windows.zip)** | The same program as a folder: unzip it anywhere and run `Calist.exe` inside. **Use this if Windows blocks the single file.** It does not update itself. |
-
 Calist runs on **Windows 10 or 11** (64-bit). You don't need Python, admin rights or anything else.
 The register template is built in, so there is nothing to set up.
 
 **To install:**
 
-1. Download **Calist-setup.exe** and open it.
+1. Open **Calist-setup.exe**.
 2. If Windows says *"Windows protected your PC"*, click **More info**, then **Run anyway**. The file
    isn't code-signed, which is why Windows asks; you only see this once.
 3. Leave the desktop shortcut ticked if you want one. Calist installs and opens.
 
 You'll find Calist in the Start menu afterwards. It installs into your own user folder, so other
-people on the same PC aren't affected.
+people on the same PC aren't affected. From then on it keeps itself up to date, automatically and
+silently: see [Updates](#12-updates).
 
-> **If your antivirus blocks the download**, use the installer or the ZIP: some scanners react to how
-> the single-file `Calist.exe` unpacks itself, and the other two don't do that. Each release lists
-> the files' checksums in `SHA256SUMS.txt`. You can compare a download with
-> `Get-FileHash .\Calist-setup.exe -Algorithm SHA256` in PowerShell, and an IT department can allow
-> Calist by that hash.
+> **If your antivirus blocks the installer**, your IT department can allow it by its checksum. Each
+> release lists it in `SHA256SUMS.txt`, and `Get-FileHash .\Calist-setup.exe -Algorithm SHA256` in
+> PowerShell gives the one to compare.
 
 ---
 
@@ -416,16 +399,19 @@ shows it's on.
 
 ## 12. Updates
 
-**The installed Calist updates itself. There is nothing to press.**
+**Calist updates itself, automatically and silently. There is nothing to download and nothing to
+press.**
 
-- When a new version is out, Calist downloads it in the background and checks it.
-- It installs **when you close Calist**, so the next time you open it, it's the new version.
-- If the PC was switched off with Calist open, the update installs the next time you start it.
+- When a new version is out, Calist fetches it in the background and checks it. Never while a
+  register is being built.
+- It installs **when you close Calist**, without a window or a question, so the next time you open
+  it, it's the new version.
+- If the PC was switched off with Calist open, the update installs the next time you start it,
+  before the window opens.
 - An update can't leave you without a working Calist: if anything goes wrong, the version you had
   simply opens.
 
-`Calist.exe` and the ZIP don't update themselves. To get updates, install Calist once with
-**Calist-setup.exe**.
+To see which version you have, open **Settings**: it's under About.
 
 ---
 
@@ -434,16 +420,17 @@ shows it's on.
 <details>
 <summary><b>Windows says "Windows protected your PC"</b></summary>
 <br>
-Click <b>More info</b>, then <b>Run anyway</b>. Windows asks because the download isn't code-signed.
+Click <b>More info</b>, then <b>Run anyway</b>. Windows asks because the installer isn't code-signed.
 You only see it the first time.
 </details>
 
 <details>
-<summary><b>My antivirus blocks <code>Calist.exe</code></b></summary>
+<summary><b>My antivirus blocks the installer</b></summary>
 <br>
-Use <b>Calist-setup.exe</b> or <b>Calist-windows.zip</b> instead. Some scanners react to the way the
-single file unpacks itself when it starts; the other two never do. You can check any download
-against the release's <code>SHA256SUMS.txt</code>.
+Ask your IT department to allow <code>Calist-setup.exe</code> by its SHA-256 checksum, which each
+release lists in <code>SHA256SUMS.txt</code>. If it's Windows Defender, the false positive can also
+be reported to Microsoft through
+<a href="https://www.microsoft.com/en-us/wdsi/filesubmission">their submission form</a>.
 </details>
 
 <details>
@@ -506,16 +493,14 @@ you build a register, when Calist starts, and if Calist hits an error:
 - **It never slows you down:** nothing is sent while a register is being built or a folder is being
   read.
 
-The installed Calist also connects to github.com, where its downloads live. Nothing of yours is
-sent there.
+Calist also connects to github.com, where its updates come from. Nothing of yours is sent there.
 
 ---
 
 ## 15. Uninstalling
 
 Open Windows **Settings → Apps**, find **Calist**, and choose **Uninstall**, as with any program.
-Your settings are kept, in case you install it again. `Calist.exe` and the ZIP were never installed:
-just delete them.
+Your settings are kept, in case you install it again.
 
 ---
 
