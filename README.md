@@ -129,10 +129,13 @@ When it's done, the bottom of the window says **Register built** and how many ro
 **Open register** to open it in Excel, or **Show in folder** to see where it is. The table now shows
 only what still needs a look.
 
+For a few seconds a card under **Details** (top right) says how many things there are to look at,
+or that nothing needs a look. Click it to open Details and see what to do about each one.
+
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/screen-results-dark.png">
-  <img src="images/screen-results-light.png" alt="The finished build: Register built, 28 rows from 25 forms, with Open register, Show in folder and Start over. The table lists the 11 forms that need a look." width="860">
+  <img src="images/screen-results-light.png" alt="The finished build: Register built, 28 rows from 25 forms, with Open register, Show in folder and Start over. The table lists the 11 forms that need a look, and a card under Details says 7 things to look at." width="860">
 </picture>
 </div>
 
@@ -351,13 +354,13 @@ Click **Settings** (top right, or <kbd>Ctrl</kbd>+<kbd>,</kbd>).
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/screen-settings-dark.png">
-  <img src="images/screen-settings-light.png" alt="The Settings drawer: Save this round's register in, the options Remove duplicate serial numbers and Real device forms only, Appearance Dark or Light, and About." width="860">
+  <img src="images/screen-settings-light.png" alt="The Settings drawer: a card showing the folder this round's register is saved in, with a Choose a different folder button; the options Remove duplicate serial numbers and Real device forms only, Appearance Dark or Light, and About." width="860">
 </picture>
 </div>
 
 | Setting | What it does |
 |---|---|
-| **Save this round's register in** | Click **Choose** to save this round's register somewhere else. It's for **this round only**: the next round goes back to its own folder. *Use the round's folder* undoes it. |
+| **Save this round's register in** | A card shows the folder the register is saved in, with its full path, and says so if a register already there will be replaced. Click **Choose a different folder** to save this round's register somewhere else. It's for **this round only**: the next round goes back to its own folder. *Use the round's folder* undoes it. |
 | **Remove duplicate serial numbers** | Off by default. When two forms of one device type and visit share a serial, it writes only the first and marks it. Shared serials are listed either way. |
 | **Real device forms only** | Off by default. Leaves out device lists, blank templates and names without a site code, and lists each one under Details with its reason. |
 | **Appearance** | Dark or Light. |
@@ -391,7 +394,7 @@ shows it's on.
 | <kbd>F5</kbd> | Re-check every folder and file again |
 | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Build the register, or open it once it's built |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Settings |
-| <kbd>Esc</kbd> | Back out one step: Settings, then a filter or search, then a running build |
+| <kbd>Esc</kbd> | Back out one step: the card under Details after a build, then Settings, then a filter or search, then a running build |
 | <kbd>Delete</kbd> | Take the selected forms off the list |
 | <kbd>Tab</kbd>, <kbd>Enter</kbd>, <kbd>Space</kbd> | Reach and press every button from the keyboard |
 
