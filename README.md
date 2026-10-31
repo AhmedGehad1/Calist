@@ -52,8 +52,8 @@ The register template is built in, so there is nothing to set up.
 3. Leave the desktop shortcut ticked if you want one. Calist installs and opens.
 
 You'll find Calist in the Start menu afterwards. It installs into your own user folder, so other
-people on the same PC aren't affected. From then on it keeps itself up to date, automatically and
-silently: see [Updates](#12-updates).
+people on the same PC aren't affected. From then on it keeps itself up to date: see
+[Updates](#12-updates).
 
 > **If your antivirus blocks the installer**, your IT department can allow it by its checksum. Each
 > release lists it in `SHA256SUMS.txt`, and `Get-FileHash .\Calist-setup.exe -Algorithm SHA256` in
@@ -259,9 +259,8 @@ means, and what to do:
 | **Left out: same serial as …** | With *Remove duplicate serial numbers* on: a later form of the same device and visit gives the same serial, so only the first is written. | Check it really is the same device. The kept row's serial names the file that was left out. |
 | **Left out: another version is in …** | With *Remove duplicate serial numbers* on: the same form is saved in two folders, and only one is written. | Keep the right one, move or delete the other, then build again. |
 
-With **Real device forms only** on (in Settings), device lists, blank templates and names without a
-site code don't appear in the table at all. **Details** lists each one, with the reason it was left
-out.
+Device lists, blank templates and files named without a site code are never read: they don't
+appear in the table at all, and **Details** lists each one, with the reason it was left out.
 
 **Same serial**, picked as a chip, groups the forms under the serial they share, with each one's
 model and location, so you can tell a copied form from one device numbered twice:
@@ -354,17 +353,17 @@ Click **Settings** (top right, or <kbd>Ctrl</kbd>+<kbd>,</kbd>).
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/screen-settings-dark.png">
-  <img src="images/screen-settings-light.png" alt="The Settings drawer: a card showing the folder this round's register is saved in, with a Choose a different folder button; the options Remove duplicate serial numbers and Real device forms only, Appearance Dark or Light, and About." width="860">
+  <img src="images/screen-settings-light.png" alt="The Settings drawer: a card showing the folder this round's register is saved in, with a Choose a different folder button; the option Remove duplicate serial numbers, Appearance Dark or Light, and About." width="860">
 </picture>
 </div>
 
 | Setting | What it does |
 |---|---|
+| **Update now** | Only while a new version is ready, at the top. Installs it now: Calist closes for about 20 seconds and opens again with your forms. |
 | **Save this round's register in** | A card shows the folder the register is saved in, with its full path, and says so if a register already there will be replaced. Click **Choose a different folder** to save this round's register somewhere else. It's for **this round only**: the next round goes back to its own folder. *Use the round's folder* undoes it. |
 | **Remove duplicate serial numbers** | Off by default. When two forms of one device type and visit share a serial, it writes only the first and marks it. Shared serials are listed either way. |
-| **Real device forms only** | Off by default. Leaves out device lists, blank templates and names without a site code, and lists each one under Details with its reason. |
 | **Appearance** | Dark or Light. |
-| **About** | Your Calist version. |
+| **About** | Your Calist version, and whether it's up to date. |
 
 Calist remembers your settings between sessions (all except the save folder, which is for one round).
 
@@ -394,7 +393,7 @@ shows it's on.
 | <kbd>F5</kbd> | Re-check every folder and file again |
 | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Build the register, or open it once it's built |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Settings |
-| <kbd>Esc</kbd> | Back out one step: the card under Details after a build, then Settings, then a filter or search, then a running build |
+| <kbd>Esc</kbd> | Back out one step: the update question (Later), the card under Details after a build, then Settings, then a filter or search, then a running build |
 | <kbd>Delete</kbd> | Take the selected forms off the list |
 | <kbd>Tab</kbd>, <kbd>Enter</kbd>, <kbd>Space</kbd> | Reach and press every button from the keyboard |
 
@@ -402,19 +401,30 @@ shows it's on.
 
 ## 12. Updates
 
-**Calist updates itself, automatically and silently. There is nothing to download and nothing to
-press.**
+**Calist updates itself. There is nothing to download, and you never have to press anything — but
+when an update is ready, Calist tells you, and you can install it at once.**
 
 - When a new version is out, Calist fetches it in the background and checks it. Never while a
   register is being built.
-- It installs **when you close Calist**, without a window or a question, so the next time you open
-  it, it's the new version.
+- About a minute after Calist opens, it asks. **Update now** installs it straight away: Calist
+  closes for about 20 seconds and opens again with the forms you added. **Later** leaves it for
+  when you close Calist. While an update waits, **Settings** shows **Update now** at the top too.
+- If you don't press anything, it installs **when you close Calist**, without a window, so the next
+  time you open it, it's the new version.
 - If the PC was switched off with Calist open, the update installs the next time you start it,
   before the window opens.
+- After an update, Calist says **"Calist was updated to …"**, once.
 - An update can't leave you without a working Calist: if anything goes wrong, the version you had
-  simply opens.
+  simply opens, says why, and offers **Try again**.
 
-To see which version you have, open **Settings**: it's under About.
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/screen-update-dark.png">
+  <img src="images/screen-update-light.png" alt="Calist asking about an update: the window dimmed, a card saying Calist 2.0.11 is ready, downloaded and checked, with Later and Update now." width="860">
+</picture>
+</div>
+
+To see which version you have and whether it's up to date, open **Settings**: it's under About.
 
 ---
 
